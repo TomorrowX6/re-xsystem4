@@ -1,0 +1,194 @@
+name: Build
+
+on: [push, pull_request]
+
+jobs:
+  linux-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-type: ["debug", "release"]
+
+    name: Linux ${{ matrix.build-type }}
+    steps:
+    - name: Checkout Source
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install flex bison meson libfreetype-dev libglew-dev libffi-dev libpng-dev libsndfile-dev libturbojpeg0-dev libwebp-dev libsdl2-dev zlib1g-dev
+
+    - name: Build
+      run: |
+        mkdir -p out/${{ matrix.build-type }}
+        meson -Dbuildtype=${{ matrix.build-type }} out/${{ matrix.build-type }}
+        ninja -C out/${{ matrix.build-type }}
+
+    - name: Test
+      run: out/${{ matrix.build-type }}/src/xsystem4 test/Run/test.ain
+
+  flatpak-build:
+    name: Flatpak
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-48
+      options: --privileged
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      with:
+        bundle: xsystem4-linux-x86_64-nightly.flatpak
+        manifest-path: technology.haniwa.xsystem4.yml
+        cache-key: flatpak-builder-${{ github.sha }}
+
+  windows-build:
+    runs-on: windows-latest
+    name: Windows
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            base-devel
+            git
+            nasm
+            diffutils
+            zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libwebp
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-libsndfile
+            mingw-w64-x86_64-glew
+
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: FFmpeg/destdir
+          key: ${{ runner.os }}-ffmpeg-n7.1.2
+
+      - name: Build FFmpeg
+        if: ${{ steps.cache-ffmpeg.outputs.cache-hit != 'true' }}
+        run: |
+          git clone --depth 1 --branch n7.1.2 https://github.com/FFmpeg/FFmpeg.git
+          cd FFmpeg
+          ./configure --disable-everything \
+            --enable-decoder=mpegvideo \
+            --enable-decoder=mpeg1video \
+            --enable-decoder=mpeg2video \
+            --enable-decoder=mp2 \
+            --enable-parser=mpegaudio \
+            --enable-parser=mpegvideo \
+            --enable-demuxer=mpegps \
+            --enable-demuxer=mpegts \
+            --enable-demuxer=mpegtsraw \
+            --enable-demuxer=mpegvideo \
+            --enable-decoder=vc1 \
+            --enable-decoder=wmapro \
+            --enable-parser=vc1 \
+            --enable-hwaccel=vc1_d3d11va \
+            --enable-hwaccel=vc1_d3d11va2 \
+            --enable-hwaccel=vc1_dxva2 \
+            --enable-demuxer=asf \
+            --enable-protocol=file \
+            --enable-filter=scale \
+            --enable-static \
+            --disable-shared \
+            --extra-libs=-static \
+            --extra-cflags=--static \
+            --prefix=/mingw64
+          make -j$(nproc)
+          mkdir destdir
+          DESTDIR=destdir make install
+          cd ..
+
+      - name: Install FFmpeg
+        run: |
+          cp -a FFmpeg/destdir/. /
+
+      - name: Build
+        run: |
+          mkdir debug
+          meson debug -Dbuildtype=debug
+          ninja -C debug
+          mkdir release
+          meson release -Dbuildtype=release
+          ninja -C release
+
+      - name: Test
+        run: |
+          debug/src/xsystem4.exe test/Run/test.ain
+          release/src/xsystem4.exe test/Run/test.ain
+
+      - name: Copy licenses
+        run: |
+          ls /mingw64/share/licenses
+          mkdir dist
+          cp -r /mingw64/share/licenses dist/
+
+      - name: Package
+        run: |
+          cp release/src/xsystem4.exe COPYING README.md game_compatibility.md dist/
+          cp debug/src/xsystem4.exe dist/xsystem4-debug.exe
+          cp /mingw64/bin/glew32.dll dist/
+          cp extra/*.lnk dist/
+          cp -r fonts dist/
+          cp -r shaders dist/
+          mv dist xsystem4
+          zip -r -9 xsystem4-windows-x86_64-nightly.zip xsystem4
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xsystem4
+          path: xsystem4-windows-x86_64-nightly.zip
+
+  nightly:
+    name: Update nightly release
+    needs: [windows-build, flatpak-build]
+    if: ${{ github.repository == 'nunuhara/xsystem4' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+
+      - name: Update nightly tag
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: nightly
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release nightly
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          name: nightly
+          tag_name: nightly
+          files: |
+            xsystem4-windows-x86_64-nightly.zip
+            xsystem4-linux-x86_64-nightly.flatpak
+          fail_on_unmatched_files: true

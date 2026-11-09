@@ -1,0 +1,2775 @@
+/* Copyright (C) 2019 Nunuhara Cabbage <nunuhara@haniwa.technology>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://gnu.org/licenses/>.
+ */
+
+#define VM_PRIVATE
+
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <setjmp.h>
+#include <assert.h>
+#include <SDL.h> // for system.MsgBox
+
+#include "system4.h"
+#include "system4/ain.h"
+#include "system4/instructions.h"
+#include "system4/file.h"
+#include "system4/little_endian.h"
+#include "system4/string.h"
+#include "system4/utfsjis.h"
+
+#include "debugger.h"
+#include "input.h"
+#include "savedata.h"
+#include "vm.h"
+#include "vm/heap.h"
+#include "vm/page.h"
+#include "vm/v12.h"
+#include "xsystem4.h"
+
+static inline int32_t lint_clamp(int64_t n)
+{
+	if (n < 0)
+		return 0;
+	if (n > INT32_MAX)
+		return INT32_MAX;
+	return (int32_t)n;
+}
+
+#define INITIAL_STACK_SIZE 4096
+
+// When the IP is set to VM_RETURN, the VM halts
+#define VM_RETURN 0xFFFFFFFF
+
+/*
+ * NOTE: The current implementation is a simple bytecode interpreter.
+ *       System40.exe uses a JIT compiler, and we should too.
+ */
+
+// The stack
+union vm_value *stack = NULL; // the stack
+int32_t stack_ptr = 0;        // pointer to the top of the stack
+static size_t stack_size;     // current size of the stack
+
+// Stack of function call frames
+struct function_call call_stack[4096];
+int32_t call_stack_ptr = 0;
+
+struct ain *ain;
+size_t instr_ptr = 0;
+bool dg_callbegin_pending = false;
+
+bool vm_reset_once = false;
+
+static const char *current_instruction_name(void)
+{
+	int16_t opcode = get_opcode(instr_ptr);
+	if (opcode >= 0 && opcode < NR_OPCODES)
+		return instructions[opcode].name;
+	return "UNKNOWN OPCODE";
+}
+
+static int local_page_slot(void)
+{
+	return call_stack[call_stack_ptr-1].page_slot;
+}
+
+struct page *local_page(void)
+{
+	return heap[local_page_slot()].page;
+}
+
+struct page *get_local_page(int frame_no)
+{
+	if (frame_no < 0 || frame_no >= call_stack_ptr)
+		return NULL;
+	int slot = call_stack[call_stack_ptr - (frame_no + 1)].page_slot;
+	return slot < 1 ? NULL : heap[slot].page;
+}
+
+union vm_value local_get(int varno)
+{
+	return local_page()->values[varno];
+}
+
+static void local_set(int varno, int32_t value)
+{
+	local_page()->values[varno].i = value;
+}
+
+static union vm_value *local_ptr(int varno)
+{
+	return local_page()->values + varno;
+}
+
+struct page *global_page(void)
+{
+	return heap[0].page;
+}
+
+union vm_value global_get(int varno)
+{
+	return heap[0].page->values[varno];
+}
+
+void global_set(int varno, union vm_value val, bool call_dtors)
+{
+	switch (ain->globals[varno].type.data) {
+	case AIN_STRING:
+	case AIN_STRUCT:
+	case AIN_ARRAY_TYPE:
+	case AIN_ARRAY:
+		if (heap[0].page->values[varno].i > 0) {
+			if (call_dtors)
+				heap_unref(heap[0].page->values[varno].i);
+			else
+				exit_unref(heap[0].page->values[varno].i);
+		}
+	default:
+		break;
+	}
+	heap[0].page->values[varno] = val;
+}
+
+static int32_t struct_page_slot(void)
+{
+	return call_stack[call_stack_ptr-1].struct_page;
+}
+
+static struct page *struct_page(void)
+{
+	return heap[struct_page_slot()].page;
+}
+
+struct page *get_struct_page(int frame_no)
+{
+	if (frame_no < 0 || frame_no >= call_stack_ptr)
+		return NULL;
+	int slot = call_stack[call_stack_ptr - (frame_no + 1)].struct_page;
+	return slot < 1 ? NULL : heap[slot].page;
+}
+
+union vm_value member_get(int varno)
+{
+	return struct_page()->values[varno];
+}
+
+static void member_set(int varno, int32_t value)
+{
+	struct_page()->values[varno].i = value;
+}
+
+union vm_value stack_peek(int n)
+{
+	return stack[stack_ptr - (1 + n)];
+}
+
+union vm_value stack_pop(void)
+{
+	stack_ptr--;
+	return stack[stack_ptr];
+}
+
+static union vm_value *stack_peek_ptr(int n)
+{
+	return &stack[stack_ptr - (1 + n)];
+}
+
+// Pop a reference off the stack, returning the address of the referenced object.
+static union vm_value *stack_pop_var(void)
+{
+	int32_t page_index = stack_pop().i;
+	int32_t heap_index = stack_pop().i;
+	if (unlikely(!heap_index_valid(heap_index)))
+		VM_ERROR("Out of bounds heap index: %d/%d", heap_index, page_index);
+	if (unlikely(heap[heap_index].type != VM_PAGE))
+		VM_ERROR("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
+	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars))
+		VM_ERROR("Out of bounds page index: %d/%d", heap_index, page_index);
+	return &heap[heap_index].page->values[page_index];
+}
+
+union vm_value *stack_peek_var(void)
+{
+	int32_t page_index = stack_peek(0).i;
+	int32_t heap_index = stack_peek(1).i;
+	if (unlikely(!heap_index_valid(heap_index)))
+		VM_ERROR("Out of bounds heap index: %d/%d", heap_index, page_index);
+	if (unlikely(heap[heap_index].type != VM_PAGE))
+		VM_ERROR("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
+	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars))
+		VM_ERROR("Out of bounds page index: %d/%d", heap_index, page_index);
+	return &heap[heap_index].page->values[page_index];
+}
+
+static void stack_push_string(struct string *s)
+{
+	int32_t heap_slot = heap_alloc_slot(VM_STRING);
+	heap[heap_slot].s = s;
+	stack[stack_ptr++].i = heap_slot;
+}
+
+static struct string *stack_peek_string(int n)
+{
+	return heap[stack_peek(n).i].s;
+}
+
+int vm_string_ref(struct string *s)
+{
+	int slot = heap_alloc_slot(VM_STRING);
+	heap[slot].s = string_ref(s);
+	return slot;
+}
+
+int vm_copy_page(int source)
+{
+	struct page *page = heap_get_page(source);
+	int slot = heap_alloc_slot(VM_PAGE);
+	heap_set_page(slot, copy_page(page));
+	heap_copy_delegate_targets(source, slot);
+	return slot;
+}
+
+union vm_value vm_copy(union vm_value v, enum ain_data_type type)
+{
+	switch (type) {
+	case AIN_STRING:
+		return (union vm_value) { .i = vm_string_ref(heap_get_string(v.i)) };
+	case AIN_STRUCT:
+	case AIN_DELEGATE:
+	case AIN_ARRAY_TYPE:
+	case AIN_ARRAY:
+		return (union vm_value) { .i = vm_copy_page(v.i) };
+	case AIN_REF_TYPE:
+	case AIN_IFACE:
+		heap_ref(v.i);
+		return v;
+	default:
+		return v;
+	}
+}
+
+static int get_function_by_name(const char *name)
+{
+	for (int i = 0; i < ain->nr_functions; i++) {
+		if (!strcmp(name, ain->functions[i].name))
+			return i;
+	}
+	return -1;
+}
+
+// Check whether a function's signature is compatible with a delegate type.
+static bool function_matches_delegate(int dg_no, int fno)
+{
+	if (dg_no < 0 || dg_no >= ain->nr_delegates)
+		return false;
+	if (fno < 0 || fno >= ain->nr_functions)
+		return false;
+	struct ain_function_type *dg = &ain->delegates[dg_no];
+	struct ain_function *f = &ain->functions[fno];
+
+	if (dg->return_type.data != f->return_type.data ||
+	    dg->return_type.struc != f->return_type.struc)
+		return false;
+	if (dg->nr_arguments != f->nr_args)
+		return false;
+	for (int i = 0; i < dg->nr_arguments; i++) {
+		struct ain_type *a = &dg->variables[i].type;
+		struct ain_type *b = &f->vars[i].type;
+		if (a->data != b->data || a->struc != b->struc || a->rank != b->rank)
+			return false;
+	}
+	return true;
+}
+
+static int scenario_label_addr(const char *lname)
+{
+	for (int i = 0; i < ain->nr_scenario_labels; i++) {
+		if (!strcmp(ain->scenario_labels[i].name, lname)) {
+			return ain->scenario_labels[i].address;
+		}
+	}
+	VM_ERROR("Invalid scenario label: %s", display_sjis0(lname));
+}
+
+static int alloc_scenario_page(const char *fname)
+{
+	int fno, slot;
+	struct ain_function *f;
+
+	if ((fno = get_function_by_name(fname)) < 0)
+		VM_ERROR("Invalid scenario function: %s", display_sjis0(fname));
+	f = &ain->functions[fno];
+
+	slot = heap_alloc_slot(VM_PAGE);
+	heap_set_page(slot, alloc_page(LOCAL_PAGE, fno, f->nr_vars));
+	for (int i = 0; i < f->nr_vars; i++) {
+		heap[slot].page->values[i] = variable_initval_typed(&f->vars[i].type);
+	}
+	return slot;
+}
+
+static void set_struct_page(int slot)
+{
+	call_stack[call_stack_ptr-1].struct_page = slot;
+	// Keep `this` alive during the call (from Rance9 onwards).
+	if (AIN_VERSION_GTE(ain, 6, 1))
+		heap_ref(slot);
+}
+
+static void unref_call_frame(struct function_call *frame)
+{
+	if (frame->struct_page >= 0 && AIN_VERSION_GTE(ain, 6, 1))
+		heap_unref(frame->struct_page);
+	heap_unref(frame->page_slot);
+}
+
+static void scenario_jump(int address)
+{
+	// flush call stack
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		unref_call_frame(&call_stack[i]);
+	}
+	call_stack_ptr = 0;
+	instr_ptr = address;
+	dg_callbegin_pending = false;
+}
+
+static void scenario_call(int slot)
+{
+	int fno = heap[slot].page->index;
+	// flush call stack
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		unref_call_frame(&call_stack[i]);
+	}
+	call_stack[0] = (struct function_call) {
+		.fno = fno,
+		.call_address = instr_ptr,
+		.return_address = VM_RETURN,
+		.page_slot = slot,
+		.struct_page = -1,
+	};
+	call_stack_ptr = 1;
+	instr_ptr = ain->functions[fno].address;
+	dg_callbegin_pending = false;
+}
+
+static int *lambda_parents;
+
+static void init_lambda_parents(void)
+{
+	free(lambda_parents);
+	lambda_parents = NULL;
+	if (ain->version < 11) return;
+	lambda_parents = xmalloc(ain->nr_functions * sizeof(int));
+	for (int i = 0; i < ain->nr_functions; i++) lambda_parents[i] = -1;
+	int *nesting = xmalloc(ain->nr_functions * sizeof(int));
+	int depth = 0;
+	for (size_t address = 0; address < ain->code_size;) {
+		unsigned op = LittleEndian_getW(ain->code, address) & ~OPTYPE_MASK;
+		if (op >= NR_OPCODES || address + instruction_width(op) > ain->code_size)
+			VM_ERROR("Invalid instruction while reading lexical scopes at 0x%zx", address);
+		if (op == FUNC) {
+			int fno = LittleEndian_getDW(ain->code, address + 2);
+			if (fno < 0 || fno >= ain->nr_functions || depth >= ain->nr_functions)
+				VM_ERROR("Invalid function scope at 0x%zx", address);
+			if (ain->functions[fno].is_lambda && depth)
+				lambda_parents[fno] = nesting[depth - 1];
+			nesting[depth++] = fno;
+		} else if (op == ENDFUNC && depth) {
+			depth--;
+		}
+		address += instruction_width(op);
+	}
+	free(nesting);
+}
+
+int vm_capture_environment(int fno)
+{
+	if (ain->version < 11 || !ain->functions[fno].is_lambda || !call_stack_ptr)
+		return -1;
+	int parent = lambda_parents[fno];
+	if (parent < 0) return call_stack[call_stack_ptr - 1].page_slot;
+	// Sibling lambdas (including delegate calls made inside an Array callback)
+	// capture the enclosing function, not the callback's argument page.
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		int slot = call_stack[i].page_slot;
+		while (slot >= 0) {
+			struct page *page = heap_get_page(slot);
+			if (!page || page->type != LOCAL_PAGE) break;
+			if (page->index == parent) return slot;
+			slot = page->local.parent_page;
+		}
+	}
+	VM_ERROR("Closure environment is no longer active: %s", display_sjis0(ain->functions[fno].name));
+}
+
+/*
+ * System 4 calling convention:
+ *   - caller pushes arguments, in order
+ *   - CALLFUNC creates stack frame, pops arguments into local page
+ *   - callee pushes return value on the stack
+ *   - RETURN jumps to return address (saved in stack frame)
+ */
+static int _function_call(int fno, int return_address, int environment)
+{
+	if (fno < 0 || fno >= ain->nr_functions)
+		VM_ERROR("Invalid function index: %d", fno);
+	if (call_stack_ptr >= 4096)
+		VM_ERROR("Function call stack overflow");
+	struct ain_function *f = &ain->functions[fno];
+	int slot = heap_alloc_slot(VM_PAGE);
+	heap_set_page(slot, alloc_page(LOCAL_PAGE, fno, f->nr_vars));
+	heap[slot].page->local.struct_ptr = -1;
+	// A callback's object is its `this` binding, separate from lexical locals.
+	heap[slot].page->local.parent_page = environment;
+	heap_ref(environment);
+
+	call_stack[call_stack_ptr++] = (struct function_call) {
+		.fno = fno,
+		.call_address = instr_ptr,
+		.return_address = return_address,
+		.page_slot = slot,
+		.struct_page = -1,
+	};
+	// initialize local variables
+	for (int i = f->nr_args; i < f->nr_vars; i++) {
+		heap[slot].page->values[i] = variable_initval_typed(&f->vars[i].type);
+		if (ain->version <= 1 && f->vars[i].type.data == AIN_STRUCT) {
+			create_struct(f->vars[i].type.struc, &heap[slot].page->values[i]);
+		}
+	}
+	// jump to function start
+	instr_ptr = ain->functions[fno].address;
+
+	return slot;
+}
+
+static void function_call(int fno, int return_address)
+{
+	int slot = _function_call(fno, return_address, vm_capture_environment(fno));
+
+	// pop arguments, store in local page
+	struct ain_function *f = &ain->functions[fno];
+	for (int i = f->nr_args - 1; i >= 0; i--) {
+		heap[slot].page->values[i] = stack_pop();
+		switch (f->vars[i].type.data) {
+		case AIN_REF_TYPE:
+		case AIN_IFACE:
+			heap_ref(heap[slot].page->values[i].i);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+static void method_call(int fno, int return_address)
+{
+	function_call(fno, return_address);
+	int struct_page = stack_pop().i;
+	set_struct_page(struct_page);
+	heap[call_stack[call_stack_ptr-1].page_slot].page->local.struct_ptr = struct_page;
+}
+
+static void vm_execute(void);
+
+static int delegate_return_width(const struct ain_function_type *dg)
+{
+	if (dg->return_type.data == AIN_VOID) return 0;
+	return dg->return_type.data == AIN_IFACE ? 2 : 1;
+}
+
+static void delegate_call(int dg_no, int return_address)
+{
+	if (dg_no < 0 || dg_no >= ain->nr_delegates)
+		VM_ERROR("Invalid delegate index");
+
+	bool first_call = dg_callbegin_pending;
+	dg_callbegin_pending = false;
+
+	// stack: [arg0, ..., dg_page] on first call, or [arg0, ..., dg_page, return_value] after RETURN
+	int return_values = delegate_return_width(&ain->delegates[dg_no]);
+	int dg_page = stack_peek(first_call ? 0 : return_values).i;
+	struct page *page = heap_get_delegate_page(dg_page);
+	int dg_index = page ? page->delegate.cursor : 0;
+	int obj, fun, environment;
+	if (page && dg_index < page->delegate.end && delegate_get(page, dg_index, &obj, &fun, &environment)) {
+		if (!first_call) {
+			union vm_value previous[2];
+			for (int i = return_values - 1; i >= 0; i--) previous[i] = stack_pop();
+			// The original VM does not run destructors for replaced multicast
+			// results. Release their storage without invoking script callbacks.
+			if (return_values && previous[0].i >= 0) {
+				switch (ain->delegates[dg_no].return_type.data) {
+				case AIN_STRING: case AIN_STRUCT: case AIN_DELEGATE:
+				case AIN_ARRAY_TYPE: case AIN_ARRAY: case AIN_IFACE:
+					exit_unref(previous[0].i);
+					break;
+				default: break;
+				}
+			}
+		}
+		page->delegate.cursor = dg_index + 1;
+
+		int slot = _function_call(fun, instr_ptr + instruction_width(DG_CALL), environment);
+
+		// copy arguments into local page
+		struct ain_function_type *dg = &ain->delegates[dg_no];
+		for (int i = 0; i < dg->nr_arguments; i++) {
+			union vm_value arg = stack_peek(dg->nr_arguments - i);
+			heap[slot].page->values[i] = vm_copy(arg, dg->variables[i].type.data);
+		}
+
+		set_struct_page(obj);
+		heap[slot].page->local.struct_ptr = obj;
+	} else {
+		// call finished: clean up stack and jump to return address
+		union vm_value r[2];
+		if (first_call) {
+			for (int i = 0; i < return_values; i++)
+				r[i] = vm_int(ain->delegates[dg_no].return_type.data == AIN_IFACE && !i ? -1 : 0);
+		} else {
+			for (int i = return_values - 1; i >= 0; i--) r[i] = stack_pop();
+		}
+		stack_pop(); // dg_page
+		for (int i = ain->delegates[dg_no].nr_variables - 1; i >= 0; i--) {
+			union vm_value v = stack_pop();
+			enum ain_data_type type = ain->delegates[dg_no].variables[i].type.data;
+			switch (type) {
+			case AIN_REF_TYPE:
+			case AIN_IFACE:
+				// References and interface arguments are borrowed at the call
+				// site. Each invoked function owns its vm_copy reference only.
+				break;
+			default:
+				variable_fini(v, type, true);
+				break;
+			}
+		}
+		for (int i = 0; i < return_values; i++) stack_push(r[i]);
+		instr_ptr = return_address;
+	}
+}
+
+void vm_call(int fno, int struct_page)
+{
+	size_t saved_ip = instr_ptr;
+	function_call(fno, VM_RETURN);
+	if (struct_page >= 0) {
+		set_struct_page(struct_page);
+		local_page()->local.struct_ptr = struct_page;
+	}
+	vm_execute();
+	instr_ptr = saved_ip;
+}
+
+static void function_return(void)
+{
+	unref_call_frame(&call_stack[call_stack_ptr-1]);
+	instr_ptr = call_stack[call_stack_ptr-1].return_address;
+	call_stack_ptr--;
+}
+
+static const SDL_MessageBoxButtonData ok_cancel_buttons[] = {
+	{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK" },
+	{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel" },
+};
+
+static const SDL_MessageBoxButtonData stop_continue_buttons[] = {
+	{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Stop" },
+	{ 0, 0, "Continue" },
+};
+
+static struct string *get_func_stack_name(int index)
+{
+	int i = call_stack_ptr - (1 + index);
+	if (i < 0 || i >= call_stack_ptr) {
+		return string_ref(&EMPTY_STRING);
+	}
+	struct function_call *call = &call_stack[i];
+	struct ain_function *fun = &ain->functions[call->fno];
+	return cstr_to_string(fun->name);
+}
+
+void vm_system_call(int code)
+{
+	switch (code) {
+	case SYS_EXIT: {// system.Exit(int nResult)
+		vm_exit(stack_pop().i);
+		break;
+	}
+	case SYS_GLOBAL_SAVE: { // system.GlobalSave(string szKeyName, string szFileName)
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		stack_push(save_globals(heap_get_string(keyname)->text, heap_get_string(filename)->text, NULL, NULL));
+		heap_unref(filename);
+		heap_unref(keyname);
+		break;
+	}
+	case SYS_GLOBAL_LOAD: { // system.GlobalLoad(string szKeyName, string szFileName)
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		stack_push(load_globals(heap_get_string(keyname)->text, heap_get_string(filename)->text, NULL, NULL));
+		heap_unref(filename);
+		heap_unref(keyname);
+		break;
+	}
+	case SYS_LOCK_PEEK: // system.LockPeek(void)
+	case SYS_UNLOCK_PEEK: {// system.UnlockPeek(void)
+		stack_push(1);
+		break;
+	}
+	case SYS_RESET: {
+		vm_reset();
+		break;
+	}
+	case SYS_OUTPUT: {// system.Output(string szText)
+		struct string *str = stack_peek_string(0);
+		log_message("stdout", "%s", display_sjis0(str->text));
+		// XXX: caller S_POPs
+		break;
+	}
+	case SYS_MSGBOX: {
+		struct string *str = stack_peek_string(0);
+		char *utf = sjis2utf(str->text, str->size);
+		SDL_ShowSimpleMessageBox(0, "xsystem4", utf, NULL);
+		free(utf);
+		// XXX: caller S_POPs
+		break;
+	}
+	case SYS_MSGBOX_OK_CANCEL: {
+		int result = 0;
+		struct string *str = stack_peek_string(0);
+		char *utf = sjis2utf(str->text, str->size);
+
+		const SDL_MessageBoxData mbox = {
+			SDL_MESSAGEBOX_INFORMATION,
+			NULL,
+			"xsystem4",
+			utf,
+			SDL_arraysize(ok_cancel_buttons),
+			ok_cancel_buttons,
+			NULL
+		};
+		if (SDL_ShowMessageBox(&mbox, &result)) {
+			WARNING("Error displaying message box");
+		}
+		free(utf);
+		heap_unref(stack_pop().i);
+		stack_push(result);
+		break;
+	}
+	case SYS_RESUME_SAVE: {
+		union vm_value *success = stack_pop_var();
+		int filename_slot = stack_pop().i;
+		int keyname_slot = stack_pop().i;
+		struct string *filename = string_ref(heap_get_string(filename_slot));
+		struct string *keyname = string_ref(heap_get_string(keyname_slot));
+		heap_unref(filename_slot);
+		heap_unref(keyname_slot);
+		success->i = vm_save_image(keyname->text, filename->text);
+		free_string(filename);
+		free_string(keyname);
+		stack_push(1);
+		break;
+	}
+	case SYS_RESUME_LOAD: {
+		int filename_slot = stack_pop().i;
+		int key_slot = stack_pop().i;
+		struct string *filename = string_ref(heap_get_string(filename_slot));
+		struct string *key = string_ref(heap_get_string(key_slot));
+		vm_load_image(key->text, filename->text);
+		free_string(filename);
+		free_string(key);
+		stack_push(0);
+		break;
+	}
+	case SYS_EXISTS_FILE: { // system.ExistsFile(string szFileName)
+		int str = stack_pop().i;
+		char *path = gamedir_path(heap_get_string(str)->text);
+		int len = strlen(path);
+		// Return true for directories, but false if the path ends with a directory separator.
+		if (len > 0 && (path[len-1] == '/' || path[len-1] == '\\')) {
+			stack_push(0);
+		} else {
+			stack_push(file_exists(path));
+		}
+		heap_unref(str);
+		free(path);
+		break;
+	}
+	case SYS_OPEN_WEB: {
+#if !SDL_VERSION_ATLEAST(2, 0, 14)
+		WARNING("SDL_OpenURL not available");
+#else
+		struct string *url = stack_peek_string(0);
+		if (SDL_OpenURL(url->text) < 0) {
+			WARNING("SDL_OpenURL failed: %s", SDL_GetError());
+		}
+#endif
+		heap_unref(stack_pop().i);
+		break;
+	};
+	case SYS_GET_SAVE_FOLDER_NAME: {// system.GetSaveFolderName(void)
+		if (config.save_dir) {
+			char *sjis = utf2sjis(config.save_dir, strlen(config.save_dir));
+			stack_push_string(make_string(sjis, strlen(sjis)));
+			free(sjis);
+		} else {
+			stack_push_string(string_ref(&EMPTY_STRING));
+		}
+		break;
+	}
+	case SYS_GET_TIME: {// system.GetTime(void)
+		stack_push(vm_time());
+		break;
+	}
+	case SYS_GET_GAME_NAME: {// system.GetGameName(void)
+		stack_push_string(make_string(config.game_name, strlen(config.game_name)));
+		break;
+	}
+	case SYS_ERROR: {// system.Error(string szText)
+		int result = 0;
+		struct string *str = stack_peek_string(0);
+		char *utf = sjis2utf(str->text, str->size);
+		sys_warning("*GAME ERROR*: %s\n", utf);
+		const SDL_MessageBoxData mbox = {
+			SDL_MESSAGEBOX_ERROR,
+			NULL,
+			"Game Error - xsystem4",
+			utf,
+			SDL_arraysize(stop_continue_buttons),
+			stop_continue_buttons,
+			NULL
+		};
+		if (SDL_ShowMessageBox(&mbox, &result)) {
+			WARNING("Error displaying message box");
+		}
+		free(utf);
+		if (result == 1) {
+			// stop execution
+			vm_exit(1);
+		}
+		// XXX: caller S_POPs
+		break;
+	}
+	case SYS_EXISTS_SAVE_FILE: {
+		int slot = stack_pop().i;
+		char *path = savedir_path(heap_get_string(slot)->text);
+		stack_push(file_exists(path));
+		heap_unref(slot);
+		free(path);
+		break;
+	}
+	case SYS_IS_DEBUG_MODE: {// system.IsDebugMode(void)
+		stack_push(0);
+		break;
+	}
+	case SYS_GET_FUNC_STACK_NAME: { // system.GetFuncStackName(int nIndex)
+		stack_push_string(get_func_stack_name(stack_pop().i));
+		break;
+	}
+	case SYS_PEEK: {// system.Peek(void)
+		handle_events();
+		break;
+	}
+	case SYS_SLEEP: {// system.Sleep(int nSleep)
+		int ms = stack_pop().i;
+		vm_sleep(ms);
+		break;
+	}
+	case SYS_RESUME_READ_COMMENT: {// system.ResumeReadComment(string szKeyName, string szFileName, ref array@string aszComment)
+		int success;
+		int comment = stack_pop().i;
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		// FIXME: free ref'd array if allocated
+		heap_set_page(comment, vm_load_image_comments(heap_get_string(keyname)->text,
+							      heap_get_string(filename)->text,
+							      &success));
+		heap_unref(filename);
+		heap_unref(keyname);
+		stack_push(success);
+		break;
+	}
+	case SYS_RESUME_WRITE_COMMENT: { // system.ResumeWriteComment(string szKeyName, string szFileName, ref array@string aszComment)
+		int comment = stack_pop().i;
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		stack_push(vm_write_image_comments(heap_get_string(keyname)->text,
+						   heap_get_string(filename)->text,
+						   heap_get_page(comment)));
+		heap_unref(filename);
+		heap_unref(keyname);
+		break;
+	}
+	case SYS_GROUP_SAVE: { // system.GroupSave(string szKeyName, string szFileName, string szGroupName, ref int nNumofLoad)
+		union vm_value *n = stack_pop_var();
+		int groupname = stack_pop().i;
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		stack_push(save_globals(heap_get_string(keyname)->text,
+				      heap_get_string(filename)->text,
+				      heap_get_string(groupname)->text,
+				      &n->i));
+		heap_unref(groupname);
+		heap_unref(filename);
+		heap_unref(keyname);
+		break;
+	}
+	case SYS_GROUP_LOAD: { // system.GroupLoad(string szKeyName, string szFileName, string szGroupName, ref int nNumofLoad)
+		union vm_value *n = stack_pop_var();
+		int groupname = stack_pop().i;
+		int filename = stack_pop().i;
+		int keyname = stack_pop().i;
+		stack_push(load_globals(heap_get_string(keyname)->text,
+					heap_get_string(filename)->text,
+					heap_get_string(groupname)->text,
+					&n->i));
+		heap_unref(groupname);
+		heap_unref(filename);
+		heap_unref(keyname);
+		break;
+	}
+	case SYS_DELETE_SAVE_FILE: { // system.DeleteSaveFile(string szFileName)
+		int filename = stack_pop().i;
+		stack_push(delete_save_file(heap_get_string(filename)->text));
+		heap_unref(filename);
+		break;
+	}
+	case SYS_EXIST_FUNC: { // system.ExistFunc(string szFuncName)
+		int funcname = stack_pop().i;
+		stack_push(ain_get_function(ain, heap_get_string(funcname)->text) > 0);
+		heap_unref(funcname);
+		break;
+	}
+	case SYS_COPY_SAVE_FILE: { // system.CopySaveFile(string szDestFileName, string szSourceFileName)
+		int src = stack_pop().i;
+		int dst = stack_pop().i;
+		char *u_src = savedir_path(heap_get_string(src)->text);
+		char *u_dst = savedir_path(heap_get_string(dst)->text);
+		stack_push(file_copy(u_src, u_dst));
+		free(u_src);
+		free(u_dst);
+		heap_unref(src);
+		heap_unref(dst);
+		break;
+	}
+	default:
+		// xsystem4-specific system calls (used for hacks)
+		switch ((enum vm_extra_syscall)code) {
+		case VM_XSYS_KEY_IS_DOWN:
+			stack_push(key_is_down(stack_pop().i));
+			break;
+		default:
+			VM_ERROR("Unimplemented syscall: 0x%X", code);
+		}
+	}
+}
+
+uint32_t get_switch_address(int no, int val)
+{
+	struct ain_switch *s = &ain->switches[no];
+	for (int i = 0; i < s->nr_cases; i++) {
+		if (s->cases[i].value == val) {
+			return s->cases[i].address;
+		}
+	}
+	if (s->default_address > 0)
+		return s->default_address;
+	else
+		return instr_ptr + instruction_width(SWITCH);
+}
+
+uint32_t get_strswitch_address(int no, struct string *str)
+{
+	struct ain_switch *s = &ain->switches[no];
+	for (int i = 0; i < s->nr_cases; i++) {
+		if (!strcmp(str->text, ain->strings[s->cases[i].value]->text)) {
+			return s->cases[i].address;
+		}
+	}
+	if (s->default_address > 0)
+		return s->default_address;
+	else
+		return instr_ptr + instruction_width(STRSWITCH);
+}
+
+static void echo_message(int i)
+{
+	NOTICE("MSG %d: %s", i, display_sjis0(ain->messages[i]->text));
+}
+
+static enum opcode execute_instruction(enum opcode opcode)
+{
+	switch (opcode) {
+	//
+	// --- Stack Management ---
+	//
+	case PUSH: {
+		stack_push(get_argument(0));
+		break;
+	}
+	case POP: {
+		stack_pop();
+		break;
+	}
+	case F_PUSH: {
+		stack_push(get_argument_float(0));
+		break;
+	}
+	case REF: {
+		// Dereference a reference to a value.
+		stack_push(stack_pop_var()->i);
+		break;
+	}
+	case REFREF: {
+		// Dereference a reference to a reference.
+		union vm_value *ref = stack_pop_var();
+		stack_push(ref[0].i);
+		stack_push(ref[1].i);
+		break;
+	}
+	case DUP: {
+		// A -> AA
+		stack_push(stack_peek(0).i);
+		break;
+	}
+	case DUP2: {
+		// AB -> ABAB
+		int a = stack_peek(1).i;
+		int b = stack_peek(0).i;
+		stack_push(a);
+		stack_push(b);
+		break;
+	}
+	case DUP_X2: {
+		// ABC -> CABC
+		int a = stack_peek(2).i;
+		int b = stack_peek(1).i;
+		int c = stack_peek(0).i;
+		stack_set(2, c);
+		stack_set(1, a);
+		stack_set(0, b);
+		stack_push(c);
+		break;
+	}
+	case DUP2_X1: {
+		// ABC -> BCABC
+		int a = stack_peek(2).i;
+		int b = stack_peek(1).i;
+		int c = stack_peek(0).i;
+		stack_set(2, b);
+		stack_set(1, c);
+		stack_set(0, a);
+		stack_push(b);
+		stack_push(c);
+		break;
+	}
+	case DUP_U2: {
+		// AB -> ABA
+		stack_push(stack_peek(1).i);
+		break;
+	}
+	case SWAP: {
+		int a = stack_peek(1).i;
+		stack_set(1, stack_peek(0));
+		stack_set(0, a);
+		break;
+	}
+	//
+	// --- Variables ---
+	//
+	case PUSHGLOBALPAGE: {
+		stack_push(0);
+		break;
+	}
+	case PUSHLOCALPAGE: {
+		stack_push(local_page_slot());
+		break;
+	}
+	case PUSHSTRUCTPAGE: {
+		stack_push(struct_page_slot());
+		break;
+	}
+	case ASSIGN:
+	case F_ASSIGN: {
+		union vm_value val = stack_pop();
+		stack_pop_var()[0] = val;
+		stack_push(val);
+		break;
+	}
+	case SH_GLOBALREF: { // VARNO
+		stack_push(global_get(get_argument(0)).i);
+		break;
+	}
+	case SH_LOCALREF: { // VARNO
+		stack_push(local_get(get_argument(0)).i);
+		break;
+	}
+	case _EOF: // In Ain v0, opcode 0x62 is not EOF but SH_STRUCTREF
+		if (ain->version != 0)
+			VM_ERROR("Illegal opcode: 0x%04x", opcode);
+		// fallthrough
+	case SH_STRUCTREF: { // VARNO
+		stack_push(member_get(get_argument(0)));
+		break;
+	}
+	case SH_LOCALASSIGN: { // VARNO, VALUE
+		local_set(get_argument(0), get_argument(1));
+		break;
+	}
+	case SH_LOCALINC: { // VARNO
+		int varno = get_argument(0);
+		local_set(varno, local_get(varno).i+1);
+		break;
+	}
+	case SH_LOCALDEC: { // VARNO
+		int varno = get_argument(0);
+		local_set(varno, local_get(varno).i-1);
+		break;
+	}
+	case SH_LOCALDELETE: {
+		int slot = local_get(get_argument(0)).i;
+		if (slot != -1) {
+			heap_unref(slot);
+			local_set(get_argument(0), -1);
+		}
+		break;
+	}
+	case SH_LOCALCREATE: { // VARNO, STRUCTNO
+		create_struct(get_argument(1), local_ptr(get_argument(0)));
+		break;
+	}
+	case R_ASSIGN: {
+		int src_var = stack_pop().i;
+		int src_page = stack_pop().i;
+		int dst_var = stack_pop().i;
+		struct page *dst = heap_get_page(stack_pop().i);
+		page_set_var(dst, dst_var, src_page);
+		page_set_var(dst, dst_var+1, src_var);
+		stack_push(src_page);
+		stack_push(src_var);
+		break;
+	}
+	case R_EQUALE: {
+		int rhs_var = stack_pop().i;
+		int rhs_page = stack_pop().i;
+		int lhs_var = stack_pop().i;
+		int lhs_page = stack_pop().i;
+		stack_push(lhs_page == rhs_page && lhs_var == rhs_var ? 1 : 0);
+		break;
+	}
+	case R_NOTE: {
+		int rhs_var = stack_pop().i;
+		int rhs_page = stack_pop().i;
+		int lhs_var = stack_pop().i;
+		int lhs_page = stack_pop().i;
+		stack_push(lhs_page == rhs_page && lhs_var == rhs_var ? 0 : 1);
+		break;
+	}
+	case NEW: {
+		union vm_value v;
+		if (ain->version >= 11) {
+			int type = get_argument(0);
+			int constructor = get_argument(1);
+			if (type < 0 || type >= ain->nr_structures)
+				VM_ERROR("Invalid NEW structure: %d", type);
+			v.i = alloc_struct(type);
+			if (constructor < 0) {
+				init_struct(type, v.i);
+			} else {
+				struct ain_struct *s = &ain->structures[type];
+				for (int i = 0; i < s->nr_members; i++) {
+					if (s->members[i].type.data == AIN_STRUCT)
+						init_struct(s->members[i].type.struc, heap_get_page(v.i)->values[i].i);
+				}
+				vm_call(constructor, v.i);
+			}
+		} else {
+			create_struct(stack_pop().i, &v);
+		}
+		stack_push(v);
+		break;
+	}
+	case DELETE: {
+		int slot = stack_pop().i;
+		if (slot != -1)
+			heap_unref(slot);
+		break;
+	}
+	case SP_INC: {
+		heap_ref(stack_pop().i);
+		break;
+	}
+	case OBJSWAP: {
+		if (ain->version < 11)
+			stack_pop(); // type is immediate in v11+
+		union vm_value *b = stack_pop_var();
+		union vm_value *a = stack_pop_var();
+		union vm_value tmp = *a;
+		*a = *b;
+		*b = tmp;
+		break;
+	}
+	//
+	// --- Control Flow ---
+	//
+	case CALLFUNC: {
+		function_call(get_argument(0), instr_ptr + instruction_width(CALLFUNC));
+		break;
+	}
+	case CALLFUNC2: {
+		stack_pop(); // function-type index (only needed for compilation)
+		function_call(stack_pop().i, instr_ptr + instruction_width(CALLFUNC2));
+		break;
+	}
+	case CALLMETHOD: {
+		int fno = get_argument(0);
+		if (ain->version >= 11) {
+			int argc = get_argument(0);
+			if (argc < 0 || argc + 2 > stack_ptr)
+				VM_ERROR("Invalid CALLMETHOD argument count: %d", argc);
+			int pos = stack_ptr - argc - 1;
+			fno = stack[pos].i;
+			memmove(stack + pos, stack + pos + 1, argc * sizeof(*stack));
+			stack_ptr--;
+		}
+		method_call(fno, instr_ptr + instruction_width(CALLMETHOD));
+		break;
+	}
+	case CALLHLL: {
+		if (ain->version < 11 || !v12_hll_call(get_argument(0), get_argument(1), get_argument(2)))
+			hll_call(get_argument(0), get_argument(1));
+		break;
+	}
+	case RETURN: {
+		function_return();
+		break;
+	}
+	case CALLSYS: {
+		vm_system_call(get_argument(0));
+		break;
+	}
+	case CALLONJUMP: {
+		int str = stack_pop().i;
+		if (ain->scenario_labels) {
+			stack_push(scenario_label_addr(heap_get_string(str)->text));
+		} else {
+			// XXX: I am GUESSING that the VM pre-allocates the scenario function's
+			//      local page here. It certainly pushes what appears to be a page
+			//      index to the stack.
+			stack_push(alloc_scenario_page(heap_get_string(str)->text));
+		}
+		heap_unref(str);
+		break;
+	}
+	case SJUMP: {
+		if (ain->scenario_labels) {
+			scenario_jump(stack_pop().i);
+		} else {
+			scenario_call(stack_pop().i);
+		}
+		break;
+	}
+	case _MSG: {
+		if ((unsigned)get_argument(0) >= ain->nr_messages)
+			VM_ERROR("Invalid message index: %d", get_argument(0));
+		if (config.echo)
+			echo_message(get_argument(0));
+		if (ain->msgf < 0)
+			break;
+		if (ain->msgf >= ain->nr_functions || !ain->functions[ain->msgf].address)
+			VM_ERROR("Invalid message handler: %d", ain->msgf);
+		stack_push(get_argument(0));
+		stack_push(ain->nr_messages);
+		stack_push_string(string_ref(ain->messages[get_argument(0)]));
+		function_call(ain->msgf, instr_ptr + instruction_width(_MSG));
+		break;
+	}
+	case JUMP: { // ADDR
+		instr_ptr = get_argument(0);
+		break;
+	}
+	case IFZ: { // ADDR
+		if (!stack_pop().i)
+			instr_ptr = get_argument(0);
+		else
+			instr_ptr += instruction_width(IFZ);
+		break;
+	}
+	case IFNZ: { // ADDR
+		if (stack_pop().i)
+			instr_ptr = get_argument(0);
+		else
+			instr_ptr += instruction_width(IFNZ);
+		break;
+	}
+	case SWITCH: {
+		instr_ptr = get_switch_address(get_argument(0), stack_pop().i);
+		break;
+	}
+	case STRSWITCH: {
+		int str = stack_pop().i;
+		instr_ptr = get_strswitch_address(get_argument(0), heap_get_string(str));
+		heap_unref(str);
+		break;
+	}
+	case ASSERT: {
+		int line = stack_pop().i; // line number
+		int file = stack_pop().i; // filename
+		int expr = stack_pop().i; // expression
+		if (!stack_pop().i) {
+			sys_message("Assertion failed at %s:%d: %s\n",
+					display_sjis0(heap_get_string(file)->text),
+					line,
+					display_sjis1(heap_get_string(expr)->text));
+			vm_exit(1);
+		}
+		heap_unref(file);
+		heap_unref(expr);
+		break;
+	}
+	//
+	// --- Arithmetic ---
+	//
+	case INV: {
+		stack[stack_ptr-1].i = -stack[stack_ptr-1].i;
+		break;
+	}
+	case NOT: {
+		stack[stack_ptr-1].i = !stack[stack_ptr-1].i;
+		break;
+	}
+	case COMPL: {
+		stack[stack_ptr-1].i = ~stack[stack_ptr-1].i;
+		break;
+	}
+	case ADD: {
+		stack[stack_ptr-2].i += stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case SUB: {
+		stack[stack_ptr-2].i -= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case MUL: {
+		stack[stack_ptr-2].i *= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case DIV: {
+		if (!stack[stack_ptr-1].i) {
+			stack[stack_ptr-2].i = 0;
+		} else {
+			stack[stack_ptr-2].i /= stack[stack_ptr-1].i;
+		}
+		stack_ptr--;
+		break;
+	}
+	case MOD: {
+		if (!stack[stack_ptr-1].i) {
+			stack[stack_ptr-2].i = 0;
+		} else {
+			stack[stack_ptr-2].i %= stack[stack_ptr-1].i;
+		}
+		stack_ptr--;
+		break;
+	}
+	case AND: {
+		stack[stack_ptr-2].i &= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case OR: {
+		stack[stack_ptr-2].i |= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case XOR: {
+		stack[stack_ptr-2].i ^= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case LSHIFT: {
+		stack[stack_ptr-2].i <<= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	case RSHIFT: {
+		stack[stack_ptr-2].i >>= stack[stack_ptr-1].i;
+		stack_ptr--;
+		break;
+	}
+	// Numeric Comparisons
+	case LT: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a < b ? 1 : 0);
+		break;
+	}
+	case GT: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a > b ? 1 : 0);
+		break;
+	}
+	case LTE: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a <= b ? 1 : 0);
+		break;
+	}
+	case GTE: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a >= b ? 1 : 0);
+		break;
+	}
+	case NOTE: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a != b ? 1 : 0);
+		break;
+	}
+	case EQUALE: {
+		int32_t b = stack_pop().i;
+		int32_t a = stack_pop().i;
+		stack_push(a == b ? 1 : 0);
+		break;
+	}
+	// +=, -=, etc.
+	case PLUSA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i += n);
+		break;
+	}
+	case MINUSA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i -= n);
+		break;
+	}
+	case MULA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i *= n);
+		break;
+	}
+	case DIVA: {
+		int32_t n = stack_pop().i;
+		stack_push(n ? stack_pop_var()->i /= n : 0);
+		break;
+	}
+	case MODA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i %= n);
+		break;
+	}
+	case ANDA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i &= n);
+		break;
+	}
+	case ORA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i |= n);
+		break;
+	}
+	case XORA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i ^= n);
+		break;
+	}
+	case LSHIFTA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i <<= n);
+		break;
+	}
+	case RSHIFTA: {
+		int32_t n = stack_pop().i;
+		stack_push(stack_pop_var()->i >>= n);
+		break;
+	}
+	case INC: {
+		stack_pop_var()[0].i++;
+		break;
+	}
+	case DEC: {
+		stack_pop_var()[0].i--;
+		break;
+	}
+	case ITOB: {
+		stack_set(0, !!stack_peek(0).i);
+		break;
+	}
+	//
+	// --- 64-bit integers ---
+	//
+	case ITOLI: {
+		stack_set(0, lint_clamp(stack_peek(0).i));
+		break;
+	}
+	case LI_ADD: {
+		int64_t a = stack[stack_ptr-2].i;
+		int64_t b = stack[stack_ptr-1].i;
+		stack[stack_ptr-2].i = lint_clamp(a + b);
+		stack_ptr--;
+		break;
+	}
+	case LI_SUB: {
+		int64_t a = stack[stack_ptr-2].i;
+		int64_t b = stack[stack_ptr-1].i;
+		stack[stack_ptr-2].i = lint_clamp(a - b);
+		stack_ptr--;
+		break;
+	}
+	case LI_MUL: {
+		int64_t a = stack[stack_ptr-2].i;
+		int64_t b = stack[stack_ptr-1].i;
+		stack[stack_ptr-2].i = lint_clamp(a * b);
+		stack_ptr--;
+		break;
+	}
+	case LI_DIV: {
+		int64_t a = stack[stack_ptr-2].i;
+		int64_t b = stack[stack_ptr-1].i;
+		stack[stack_ptr-2].i = b ? lint_clamp(a / b) : 0;
+		stack_ptr--;
+		break;
+	}
+	case LI_MOD: {
+		int64_t a = stack[stack_ptr-2].i;
+		int64_t b = stack[stack_ptr-1].i;
+		stack[stack_ptr-2].i = lint_clamp(a % b);
+		stack_ptr--;
+		break;
+	}
+	case LI_ASSIGN: {
+		int64_t v = stack_pop().i;
+		stack_push(stack_pop_var()->i = lint_clamp(v));
+		break;
+	}
+	case LI_PLUSA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i + n));
+		break;
+	}
+	case LI_MINUSA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i - n));
+		break;
+	}
+	case LI_MULA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i * n));
+		break;
+	}
+	case LI_DIVA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = (n ? lint_clamp((int64_t)v->i / n) : 0));
+		break;
+	}
+	case LI_MODA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i % n));
+		break;
+	}
+	case LI_ANDA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i & n));
+		break;
+	}
+	case LI_ORA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i | n));
+		break;
+	}
+	case LI_XORA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i ^ n));
+		break;
+	}
+	case LI_LSHIFTA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i << n));
+		break;
+	}
+	case LI_RSHIFTA: {
+		int64_t n = stack_pop().i;
+		union vm_value *v = stack_pop_var();
+		stack_push(v->i = lint_clamp((int64_t)v->i >> n));
+		break;
+	}
+	case LI_INC: {
+		union vm_value *v = stack_pop_var();
+		v->i = lint_clamp((int64_t)v->i + (int64_t)1);
+		break;
+	}
+	case LI_DEC: {
+		union vm_value *v = stack_pop_var();
+		v->i = lint_clamp((int64_t)v->i - (int64_t)1);
+		break;
+	}
+	//
+	// --- Floating Point Arithmetic ---
+	//
+	case FTOI: {
+		stack_set(0, (int32_t)stack_peek(0).f);
+		break;
+	}
+	case ITOF: {
+		stack_set(0, (float)stack_peek(0).i);
+		break;
+	}
+	case F_INV: {
+		stack_set(0, -stack_peek(0).f);
+		break;
+	}
+	case F_ADD: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f + f);
+		break;
+	}
+	case F_SUB: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f - f);
+		break;
+	}
+	case F_MUL: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f * f);
+		break;
+	}
+	case F_DIV: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f / f);
+		break;
+	}
+	// floating point comparison
+	case F_LT: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f < f ? 1 : 0);
+		break;
+	}
+	case F_GT: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f > f ? 1 : 0);
+		break;
+	}
+	case F_LTE: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f <= f ? 1 : 0);
+		break;
+	}
+	case F_GTE: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f >= f ? 1 : 0);
+		break;
+	}
+	case F_NOTE: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f != f ? 1 : 0);
+		break;
+	}
+	case F_EQUALE: {
+		float f = stack_pop().f;
+		stack_set(0, stack_peek(0).f == f ? 1 : 0);
+		break;
+	}
+	case F_PLUSA: {
+		float n = stack_pop().f;
+		stack_push(stack_pop_var()->f += n);
+		break;
+	}
+	case F_MINUSA: {
+		float n = stack_pop().f;
+		stack_push(stack_pop_var()->f -= n);
+		break;
+	}
+	case F_MULA: {
+		float n = stack_pop().f;
+		stack_push(stack_pop_var()->f *= n);
+		break;
+	}
+	case F_DIVA: {
+		float n = stack_pop().f;
+		stack_push(stack_pop_var()->f /= n);
+		break;
+	}
+	//
+	// --- Strings ---
+	//
+	case S_PUSH: {
+		if (ain->version == 0)
+			stack_push_string(string_ref(ain->messages[get_argument(0)]));
+		else
+			stack_push_string(string_ref(ain->strings[get_argument(0)]));
+		break;
+	}
+	case S_POP: {
+		heap_unref(stack_pop().i);
+		break;
+	}
+	case S_REF: {
+		// Dereference a reference to a string
+		int str = stack_pop_var()->i;
+		stack_push_string(string_ref(heap_get_string(str)));
+		break;
+	}
+	//case S_REFREF: // ???: why/how is this different from regular REFREF?
+	case S_ASSIGN: { // A = B
+		int rval = stack_peek(0).i;
+		int lval = stack_peek(1).i;
+		heap_string_assign(lval, heap_get_string(rval));
+		// remove A from the stack, but leave B
+		stack_set(1, rval);
+		stack_pop();
+		break;
+	}
+	case S_PLUSA:
+	case S_PLUSA2: {
+		int a = stack_peek(1).i;
+		int b = stack_peek(0).i;
+		string_append(&heap[a].s, heap[b].s);
+		heap_unref(b);
+		stack_pop();
+		stack_pop();
+		stack_push_string(string_ref(heap[a].s));
+		break;
+	}
+	case S_ADD: {
+		int b = stack_pop().i;
+		int a = stack_pop().i;
+		// TODO: can use string_append here?
+		stack_push_string(string_concatenate(heap_get_string(a), heap_get_string(b)));
+		heap_unref(a);
+		heap_unref(b);
+		break;
+	}
+	case S_LT: {
+		bool lt = strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text) < 0;
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(lt);
+		break;
+	}
+	case S_GT: {
+		bool gt = strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text) > 0;
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(gt);
+		break;
+	}
+	case S_LTE: {
+		bool lte = strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text) <= 0;
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(lte);
+		break;
+	}
+	case S_GTE: {
+		bool gte = strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text) >= 0;
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(gte);
+		break;
+	}
+	case S_NOTE: {
+		bool noteq = !!strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text);
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(noteq);
+		break;
+	}
+	case S_EQUALE: {
+		bool eq = !strcmp(stack_peek_string(1)->text, stack_peek_string(0)->text);
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(eq);
+		break;
+	}
+	case S_LENGTH: {
+		int str = stack_pop_var()->i;
+		stack_push(sjis_count_char(heap_get_string(str)->text));
+		break;
+	}
+	case S_LENGTH2: {
+		int str = stack_pop().i;
+		stack_push(sjis_count_char(heap_get_string(str)->text));
+		heap_unref(str);
+		break;
+	}
+	case S_LENGTHBYTE: {
+		int str = stack_pop_var()->i;
+		stack_push(heap_get_string(str)->size);
+		break;
+	}
+	case S_EMPTY: {
+		bool empty = !stack_peek_string(0)->size;
+		heap_unref(stack_pop().i);
+		stack_push(empty);
+		break;
+	}
+	case S_FIND: {
+		int i = string_find(stack_peek_string(1), stack_peek_string(0));
+		heap_unref(stack_pop().i);
+		heap_unref(stack_pop().i);
+		stack_push(i);
+		break;
+	}
+	case S_GETPART: {
+		int len = stack_pop().i; // length
+		int i = stack_pop().i; // index
+		struct string *s = string_copy(stack_peek_string(0), i, len);
+		heap_unref(stack_pop().i);
+		stack_push_string(s);
+		break;
+	}
+	//case S_PUSHBACK: // ???
+	case S_PUSHBACK2: {
+		int c = stack_pop().i;
+		int str = stack_pop().i;
+		string_push_back(&heap[str].s, c);
+		break;
+	}
+	//case S_POPBACK: // ???
+	case S_POPBACK2: {
+		int str = stack_pop().i;
+		string_pop_back(&heap[str].s);
+		break;
+	}
+	//case S_ERASE: // ???
+	case S_ERASE2: {
+		stack_pop(); // ???
+		int i = stack_pop().i; // index
+		int str = stack_pop().i;
+		string_erase(&heap[str].s, i);
+		break;
+	}
+	case S_MOD: {
+		int type = ain->version >= 11 ? get_argument(0) : stack_pop().i;
+		union vm_value val = stack_pop();
+		int fmt = stack_pop().i;
+		int dst = heap_alloc_slot(VM_STRING);
+		heap[dst].s = string_format(heap[fmt].s, val, type);
+		heap_unref(fmt);
+		stack_push(dst);
+		break;
+	}
+	case I_STRING: {
+		stack_push_string(integer_to_string(stack_pop().i));
+		break;
+	}
+	case FTOS: {
+		int precision = stack_pop().i;
+		stack_push_string(float_to_string(stack_pop().f, precision));
+		break;
+	}
+	case STOI: {
+		int str = stack_pop().i;
+		stack_push(string_to_integer(heap[str].s));
+		heap_unref(str);
+		break;
+	}
+	case FT_ASSIGNS: {
+		//int functype = stack_pop().i;
+		stack_pop();
+		int str = stack_pop().i;
+		int fno = get_function_by_name(heap_get_string(str)->text);
+		stack_pop_var()->i = fno > 0 ? fno : 0;
+		stack_push(str);
+		break;
+	}
+	// --- Characters ---
+	case C_REF: {
+		int i = stack_pop().i;
+		int str = stack_pop().i;
+		int32_t ch = string_get_char(heap_get_string(str), i);
+		// 'é' for EN Rance Quest
+		if (game_rance8_mg && ch == -91)
+			stack_push(165);
+		else
+			stack_push(ch);
+		break;
+	}
+	case C_ASSIGN: {
+		int c = stack_pop().i;
+		int i = stack_pop().i;
+		int str = stack_pop().i;
+		string_set_char(&heap[str].s, i, c);
+		stack_push(c);
+		break;
+	}
+	//
+	// --- Structs/Classes ---
+	//
+	case SR_REF: {
+		stack_push(vm_copy_page(stack_pop_var()->i));
+		break;
+	}
+	case SR_REF2: {
+		stack_push(vm_copy_page(stack_pop().i));
+		break;
+	}
+	case SR_POP: {
+		heap_unref(stack_pop().i);
+		break;
+	}
+	case SR_ASSIGN: {
+		if (ain->version > 1 && ain->version < 11)
+			stack_pop(); // struct type
+		int rval = stack_pop().i;
+		int lval = stack_pop().i;
+		heap_struct_assign(lval, rval);
+		stack_push(rval);
+		break;
+	}
+	//
+	// -- Arrays --
+	//
+	case A_ALLOC: {
+		int struct_type;
+		int rank = stack_pop().i;
+		int varno = stack_peek(rank).i;
+		int pageno = stack_peek(rank+1).i;
+		int array = heap[pageno].page->values[varno].i;
+		enum ain_data_type data_type = variable_type(heap[pageno].page, varno, &struct_type, NULL);
+		if (heap[array].page) {
+			delete_page_vars(heap[array].page);
+			free_page(heap[array].page);
+		}
+		heap_set_page(array, alloc_array(rank, stack_peek_ptr(rank-1), data_type, struct_type, true));
+		stack_ptr -= rank + 2;
+		break;
+	}
+	case A_REALLOC: {
+		int struct_type;
+		int rank = stack_pop().i; // rank
+		int varno = stack_peek(rank).i;
+		int pageno = stack_peek(rank+1).i;
+		int array = heap[pageno].page->values[varno].i;
+		enum ain_data_type data_type = variable_type(heap[pageno].page, varno, &struct_type, NULL);
+		heap_set_page(array, realloc_array(heap[array].page, rank, stack_peek_ptr(rank-1), data_type, struct_type, true));
+		stack_ptr -= rank + 2;
+		break;
+	}
+	case A_FREE: {
+		int array = stack_pop_var()->i;
+		if (heap[array].page) {
+			delete_page_vars(heap[array].page);
+			free_page(heap[array].page);
+			heap_set_page(array, NULL);
+		}
+		break;
+	}
+	case A_REF: {
+		int array = stack_pop().i;
+		if (ain->version >= 11 && string_index_valid(array)) {
+			stack_push(vm_string_ref(heap_get_string(array)));
+			break;
+		}
+		stack_push(vm_copy_page(array));
+		break;
+	}
+	case A_NUMOF: {
+		int rank = stack_pop().i; // rank
+		int array = stack_pop_var()->i;
+		stack_push(array_numof(heap[array].page, rank));
+		break;
+	}
+	case A_COPY: {
+		int n = stack_pop().i;
+		int src_i = stack_pop().i;
+		int src = stack_pop().i;
+		int dst_i = stack_pop().i;
+		int dst = stack_pop_var()->i;
+		array_copy(heap[dst].page, dst_i, heap[src].page, src_i, n);
+		stack_push(n);
+		break;
+	}
+	case A_FILL: {
+		union vm_value val = stack_pop();
+		int n = stack_pop().i;
+		int i = stack_pop().i;
+		int array = stack_pop_var()->i;
+		stack_push(array_fill(heap[array].page, i, n, val));
+		break;
+	}
+	case A_PUSHBACK: {
+		int struct_type;
+		union vm_value val = stack_pop();
+		int varno = stack_pop().i;
+		int pageno = stack_pop().i;
+		int array = heap[pageno].page->values[varno].i;
+		enum ain_data_type data_type = variable_type(heap[pageno].page, varno, &struct_type, NULL);
+		heap_set_page(array, array_pushback(heap[array].page, val, data_type, struct_type));
+		break;
+	}
+	case A_POPBACK: {
+		int array = stack_pop_var()->i;
+		heap_set_page(array, array_popback(heap[array].page));
+		break;
+	}
+	case A_EMPTY: {
+		struct page *array = heap_get_page(stack_pop_var()->i);
+		stack_push(!array || !array->nr_vars);
+		break;
+	}
+	case A_ERASE: {
+		int i = stack_pop().i;
+		int array = stack_pop_var()->i;
+		bool success = false;
+		heap_set_page(array, array_erase(heap[array].page, i, &success));
+		stack_push(success);
+		break;
+	}
+	case A_INSERT: {
+		int struct_type;
+		union vm_value val = stack_pop();
+		int i = stack_pop().i;
+		int varno = stack_pop().i;
+		int pageno = stack_pop().i;
+		int array = heap[pageno].page->values[varno].i;
+		enum ain_data_type data_type = variable_type(heap[pageno].page, varno, &struct_type, NULL);
+		heap_set_page(array, array_insert(heap[array].page, i, val, data_type, struct_type));
+		break;
+	}
+	case A_SORT: {
+		int fno = stack_pop().i;
+		int array = stack_pop_var()->i;
+		array_sort(heap[array].page, fno);
+		break;
+	}
+	case A_FIND: {
+		int fno = stack_pop().i;
+		union vm_value v = stack_pop();
+		int end = stack_pop().i;
+		int start = stack_pop().i;
+		struct page *array = heap_get_page(stack_pop_var()->i);
+		stack_push(array_find(array, start, end, v, fno));
+		// FIXME: string key isn't freed if array is empty
+		if (array && array_type(array->a_type) == AIN_STRING) {
+			heap_unref(v.i);
+		}
+		break;
+	}
+	case A_REVERSE: {
+		int array = stack_pop_var()->i;
+		array_reverse(heap[array].page);
+		break;
+	}
+	//
+	// -- Shorthand Instructions (added in Alice 2010) ---
+	//
+	case SH_SR_ASSIGN: {
+		int rval = stack_pop_var()->i;
+		int lval = stack_pop().i;
+		heap_struct_assign(lval, rval);
+		break;
+	}
+	case SH_MEM_ASSIGN_LOCAL: {
+		member_set(get_argument(0), local_get(get_argument(1)).i);
+		break;
+	}
+	case A_NUMOF_GLOB_1: {
+		int array = global_get(get_argument(0)).i;
+		stack_push(array_numof(heap_get_page(array), 1));
+		break;
+	}
+	case A_NUMOF_STRUCT_1: {
+		int array = member_get(get_argument(0)).i;
+		stack_push(array_numof(heap_get_page(array), 1));
+		break;
+	}
+	case SH_MEM_ASSIGN_IMM: {
+		member_set(get_argument(0), get_argument(1));
+		break;
+	}
+	case SH_LOCALREFREF: {
+		stack_push(local_get(get_argument(0)));
+		stack_push(local_get(get_argument(0)+1));
+		break;
+	}
+	case SH_LOCALASSIGN_SUB_IMM: {
+		int n = get_argument(0);
+		local_set(n, local_get(n).i - get_argument(1));
+		break;
+	}
+	case SH_IF_LOC_LT_IMM: {
+		if (local_get(get_argument(0)).i < get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_LOC_LT_IMM);
+		break;
+	}
+	case SH_IF_LOC_GE_IMM: {
+		if (local_get(get_argument(0)).i >= get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_LOC_GE_IMM);
+		break;
+	}
+	case SH_LOCREF_ASSIGN_MEM: {
+		struct page *page = heap_get_page(local_get(get_argument(0)).i);
+		int index = local_get(get_argument(0)+1).i;
+		page_set_var(page, index, member_get(get_argument(1)));
+		break;
+	}
+	case PAGE_REF: {
+		struct page *page = heap_get_page(stack_pop().i);
+		stack_push(page_get_var(page, get_argument(0)));
+		break;
+	}
+	case SH_GLOBAL_ASSIGN_LOCAL: {
+		global_set(get_argument(0), local_get(get_argument(1)), true);
+		break;
+	}
+	case SH_STRUCTREF_GT_IMM: {
+		stack_push(member_get(get_argument(0)).i > get_argument(1) ? 1 : 0);
+		break;
+	}
+	case SH_STRUCT_ASSIGN_LOCALREF_ITOB: {
+		member_set(get_argument(0), !!local_get(get_argument(1)).i);
+		break;
+	}
+	case SH_LOCAL_ASSIGN_STRUCTREF: {
+		local_set(get_argument(0), member_get(get_argument(1)).i);
+		break;
+	}
+	case SH_IF_STRUCTREF_NE_LOCALREF: {
+		if (member_get(get_argument(0)).i != local_get(get_argument(1)).i)
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCTREF_NE_LOCALREF);
+		break;
+	}
+	case SH_IF_STRUCTREF_GT_IMM: {
+		if (member_get(get_argument(0)).i > get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCTREF_GT_IMM);
+		break;
+	}
+	case SH_STRUCTREF_CALLMETHOD_NO_PARAM: {
+		int memb_page = member_get(get_argument(0)).i;
+		function_call(get_argument(1), instr_ptr + instruction_width(SH_STRUCTREF_CALLMETHOD_NO_PARAM));
+		set_struct_page(memb_page);
+		break;
+	}
+	case SH_STRUCTREF2: {
+		int memb = member_get(get_argument(0)).i;
+		stack_push(page_get_var(heap_get_page(memb), get_argument(1)));
+		break;
+	}
+	case SH_REF_STRUCTREF2: {
+		int page = stack_pop().i;
+		int memb = page_get_var(heap_get_page(page), get_argument(0)).i;
+		stack_push(page_get_var(heap_get_page(memb), get_argument(1)));
+		break;
+	}
+	case SH_STRUCTREF3: {
+		int memb0 = member_get(get_argument(0)).i;
+		int memb1 = page_get_var(heap_get_page(memb0), get_argument(1)).i;
+		stack_push(page_get_var(heap_get_page(memb1), get_argument(2)));
+		break;
+	}
+	case SH_STRUCTREF2_CALLMETHOD_NO_PARAM: {
+		int memb1 = member_get(get_argument(0)).i;
+		int memb2 = page_get_var(heap_get_page(memb1), get_argument(1)).i;
+		function_call(get_argument(2), instr_ptr + instruction_width(SH_STRUCTREF2_CALLMETHOD_NO_PARAM));
+		set_struct_page(memb2);
+		break;
+	}
+	case SH_IF_STRUCTREF_Z: {
+		if (!member_get(get_argument(0)).i)
+			instr_ptr = get_argument(1);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCTREF_Z);
+		break;
+	}
+	case SH_IF_STRUCT_A_NOT_EMPTY: {
+		struct page *array = heap_get_page(member_get(get_argument(0)).i);
+		if (array && array->nr_vars)
+			instr_ptr = get_argument(1);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCT_A_NOT_EMPTY);
+		break;
+	}
+	case SH_IF_LOC_GT_IMM: {
+		if (local_get(get_argument(0)).i > get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_LOC_GT_IMM);
+		break;
+	}
+	case SH_IF_STRUCTREF_NE_IMM: {
+		if (member_get(get_argument(0)).i != get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCTREF_NE_IMM);
+		break;
+	}
+	case THISCALLMETHOD_NOPARAM: {
+		int this_page = struct_page_slot();
+		function_call(get_argument(0), instr_ptr + instruction_width(THISCALLMETHOD_NOPARAM));
+		set_struct_page(this_page);
+		break;
+	}
+	case SH_IF_LOC_NE_IMM: {
+		if (local_get(get_argument(0)).i != get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_LOC_NE_IMM);
+		break;
+	}
+	case SH_IF_STRUCTREF_EQ_IMM: {
+		if (member_get(get_argument(0)).i == get_argument(1))
+			instr_ptr = get_argument(2);
+		else
+			instr_ptr += instruction_width(SH_IF_STRUCTREF_EQ_IMM);
+		break;
+	}
+	case SH_GLOBAL_ASSIGN_IMM: {
+		global_set(get_argument(0), (union vm_value) { .i = get_argument(1) }, false);
+		break;
+	}
+	case SH_LOCALSTRUCT_ASSIGN_IMM: {
+		struct page *page = heap_get_page(local_get(get_argument(0)).i);
+		page_set_var(page, get_argument(1), get_argument(2));
+		break;
+	}
+	case SH_STRUCT_A_PUSHBACK_LOCAL_STRUCT: {
+		int struct_type;
+		int array = member_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRUCT);
+		enum ain_data_type data_type = variable_type(struct_page(), get_argument(0), &struct_type, NULL);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, data_type, struct_type));
+		break;
+	}
+	case SH_GLOBAL_A_PUSHBACK_LOCAL_STRUCT: {
+		int struct_type;
+		int array = global_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRUCT);
+		enum ain_data_type data_type = variable_type(global_page(), get_argument(0), &struct_type, NULL);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, data_type, struct_type));
+		break;
+	}
+	case SH_LOCAL_A_PUSHBACK_LOCAL_STRUCT: {
+		int struct_type;
+		int array = local_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRUCT);
+		enum ain_data_type data_type = variable_type(local_page(), get_argument(0), &struct_type, NULL);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, data_type, struct_type));
+		break;
+	}
+	case SH_IF_SREF_NE_STR0: {
+		struct string *a = heap_get_string(stack_pop_var()->i);
+		struct string *b = ain->strings[get_argument(0)];
+		if (strcmp(a->text, b->text))
+			instr_ptr = get_argument(1);
+		else
+			instr_ptr += instruction_width(SH_IF_SREF_NE_STR0);
+		break;
+	}
+	case SH_S_ASSIGN_REF: {
+		int rval = stack_pop_var()->i;
+		int lval = stack_pop().i;
+		heap_string_assign(lval, heap_get_string(rval));
+		break;
+	}
+	case SH_A_FIND_SREF: {
+		union vm_value *v = stack_pop_var();
+		int end = stack_pop().i;
+		int start = stack_pop().i;
+		int array = stack_pop_var()->i;
+		stack_push(array_find(heap_get_page(array), start, end, *v, 0));
+		break;
+	}
+	case SH_SREF_EMPTY: {
+		stack_push(!heap_get_string(stack_pop_var()->i)->size);
+		break;
+	}
+	case SH_STRUCTSREF_EQ_LOCALSREF: {
+		struct string *a = heap_get_string(member_get(get_argument(0)).i);
+		struct string *b = heap_get_string(local_get(get_argument(1)).i);
+		stack_push(!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_LOCALSREF_EQ_STR0: {
+		struct string *a = heap_get_string(local_get(get_argument(0)).i);
+		struct string *b = ain->strings[get_argument(1)];
+		stack_push(!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_STRUCTSREF_NE_LOCALSREF: {
+		struct string *a = heap_get_string(member_get(get_argument(0)).i);
+		struct string *b = heap_get_string(local_get(get_argument(1)).i);
+		stack_push(!!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_LOCALSREF_NE_STR0: {
+		struct string *a = heap_get_string(local_get(get_argument(0)).i);
+		struct string *b = ain->strings[get_argument(1)];
+		stack_push(!!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_STRUCT_SR_REF: {
+		int sr = member_get(get_argument(0)).i;
+		stack_push(vm_copy_page(sr));
+		// NOTE: argument 1 (struct type) not used
+		break;
+	}
+	case SH_STRUCT_S_REF: {
+		int str = member_get(get_argument(0)).i;
+		stack_push_string(string_ref(heap_get_string(str)));
+		break;
+	}
+	case S_REF2: {
+		struct page *page = heap_get_page(stack_pop().i);
+		struct string *s = heap_get_string(page_get_var(page, get_argument(0)).i);
+		stack_push_string(string_ref(s));
+		break;
+	}
+	case SH_REF_LOCAL_ASSIGN_STRUCTREF2: {
+		struct page *memb = heap_get_page(member_get(get_argument(0)).i);
+		int page = local_get(get_argument(1)).i;
+		int var = local_get(get_argument(1) + 1).i;
+		page_set_var(heap_get_page(page), var, page_get_var(memb, get_argument(2)));
+		break;
+	}
+	case SH_GLOBAL_S_REF: {
+		int str = global_get(get_argument(0)).i;
+		stack_push_string(string_ref(heap_get_string(str)));
+		break;
+	}
+	case SH_LOCAL_S_REF: {
+		int str = local_get(get_argument(0)).i;
+		stack_push_string(string_ref(heap_get_string(str)));
+		break;
+	}
+	case SH_LOCALREF_SASSIGN_LOCALSREF: {
+		int lval = local_get(get_argument(0)).i;
+		int rval = local_get(get_argument(1)).i;
+		heap_string_assign(lval, heap_get_string(rval));
+		break;
+	}
+	case SH_LOCAL_APUSHBACK_LOCALSREF: {
+		int array = local_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRING);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, AIN_ARRAY_STRING, -1));
+		break;
+	}
+	case SH_S_ASSIGN_CALLSYS19: {
+		struct string *name = get_func_stack_name(stack_pop().i);
+		heap_string_assign(stack_pop().i, name);
+		free_string(name);
+		break;
+	}
+	case SH_S_ASSIGN_STR0: {
+		int lval = stack_pop().i;
+		heap_string_assign(lval, ain->strings[get_argument(0)]);
+		break;
+	}
+	case SH_SASSIGN_LOCALSREF: {
+		int lval = stack_pop().i;
+		struct string *rval = heap_get_string(local_get(get_argument(0)).i);
+		heap_string_assign(lval, rval);
+		break;
+	}
+	case SH_STRUCTREF_SASSIGN_LOCALSREF: {
+		int lval = member_get(get_argument(0)).i;
+		int rval = local_get(get_argument(1)).i;
+		heap_string_assign(lval, heap_get_string(rval));
+		break;
+	}
+	case SH_LOCALSREF_EMPTY: {
+		stack_push(!heap_get_string(local_get(get_argument(0)).i)->size);
+		break;
+	}
+	case SH_GLOBAL_APUSHBACK_LOCALSREF: {
+		int array = global_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRING);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, AIN_ARRAY_STRING, -1));
+		break;
+	}
+	case SH_STRUCT_APUSHBACK_LOCALSREF: {
+		int array = member_get(get_argument(0)).i;
+		union vm_value val = vm_copy(local_get(get_argument(1)), AIN_STRING);
+		heap_set_page(array, array_pushback(heap_get_page(array), val, AIN_ARRAY_STRING, -1));
+		break;
+	}
+	case SH_STRUCTSREF_EMPTY: {
+		stack_push(!heap_get_string(member_get(get_argument(0)).i)->size);
+		break;
+	}
+	case SH_GLOBALSREF_EMPTY: {
+		stack_push(!heap_get_string(global_get(get_argument(0)).i)->size);
+		break;
+	}
+	case SH_SASSIGN_STRUCTSREF: {
+		int lval = stack_pop().i;
+		int rval = member_get(get_argument(0)).i;
+		heap_string_assign(lval, heap_get_string(rval));
+		break;
+	}
+	case SH_SASSIGN_GLOBALSREF: {
+		int lval = stack_pop().i;
+		int rval = global_get(get_argument(0)).i;
+		heap_string_assign(lval, heap_get_string(rval));
+		break;
+	}
+	case SH_STRUCTSREF_NE_STR0: {
+		struct string *a = heap_get_string(member_get(get_argument(0)).i);
+		struct string *b = ain->strings[get_argument(1)];
+		stack_push(!!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_GLOBALSREF_NE_STR0: {
+		struct string *a = heap_get_string(global_get(get_argument(0)).i);
+		struct string *b = ain->strings[get_argument(1)];
+		stack_push(!!strcmp(a->text, b->text));
+		break;
+	}
+	case SH_LOC_LT_IMM_OR_LOC_GE_IMM: {
+		int i = local_get(get_argument(0)).i;
+		stack_push(i < get_argument(1) || i >= get_argument(2));
+		break;
+	}
+	case A_SORT_MEM: {
+		int mno = stack_pop().i;
+		int array = stack_pop_var()->i;
+		array_sort_mem(heap[array].page, mno);
+		break;
+	}
+	case DG_SET: {
+		int fun = stack_pop().i;
+		int obj = stack_pop().i;
+		int dg_i = stack_pop().i;
+		delete_page(dg_i);
+		heap_set_page(dg_i, delegate_new_from_method(obj, fun));
+		break;
+	}
+	case DG_ADD: {
+		int fun = stack_pop().i;
+		int obj = stack_pop().i;
+		int dg_i = stack_pop().i;
+		struct page *dg = heap_get_delegate_page(dg_i);
+		heap_set_page(dg_i, delegate_append(dg, obj, fun));
+		break;
+	}
+	case DG_CALL: { // DG_TYPE, ADDR
+		delegate_call(get_argument(0), get_argument(1));
+		break;
+	}
+	case DG_NUMOF: {
+		int dg = stack_pop().i;
+		stack_push(delegate_numof(heap_get_delegate_page(dg)));
+		break;
+	}
+	case DG_EXIST: {
+		int fun = stack_pop().i;
+		int obj = stack_pop().i;
+		int dg_i = stack_pop().i;
+		stack_push(delegate_contains(heap_get_delegate_page(dg_i), obj, fun));
+		break;
+	}
+	case DG_ERASE: {
+		int fun = stack_pop().i;
+		int obj = stack_pop().i;
+		int dg_i = stack_pop().i;
+		delegate_erase(heap_get_delegate_page(dg_i), obj, fun);
+		break;
+	}
+	case DG_CLEAR: {
+		int slot = stack_pop().i;
+		if (!slot)
+			break;
+		heap_set_page(slot, delegate_clear(heap_get_delegate_page(slot)));
+		break;
+	}
+	case DG_COPY: {
+		stack_push(vm_copy_page(stack_pop().i));
+		break;
+	}
+	case DG_ASSIGN: {
+		int set_i = stack_pop().i;
+		int dst_i = stack_pop().i;
+		struct page *set = heap_get_delegate_page(set_i);
+		struct page *new_dg = copy_page(set);
+		delete_page(dst_i);
+		heap_set_page(dst_i, new_dg);
+		stack_push(set_i);
+		break;
+	}
+	case DG_PLUSA: {
+		int add_i = stack_pop().i;
+		int dst_i = stack_pop().i;
+		struct page *add = heap_get_delegate_page(add_i);
+		struct page *dst = heap_get_delegate_page(dst_i);
+		heap_set_page(dst_i, delegate_plusa(dst, add));
+		stack_push(add_i);
+		break;
+	}
+	case DG_MINUSA: {
+		int minus_i = stack_pop().i;
+		int dst_i = stack_pop().i;
+		struct page *minus = heap_get_delegate_page(minus_i);
+		struct page *dst = heap_get_delegate_page(dst_i);
+		heap_set_page(dst_i, delegate_minusa(dst, minus));
+		stack_push(minus_i);
+		break;
+	}
+	case DG_POP: {
+		heap_unref(stack_pop().i);
+		break;
+	}
+	case DG_NEW_FROM_METHOD: {
+		int fun = stack_pop().i;
+		int obj = stack_pop().i;
+		stack_push(heap_alloc_page(delegate_new_from_method(obj, fun)));
+		break;
+	}
+	case DG_CALLBEGIN: { // DG_TYPE
+		int dg_no = get_argument(0);
+		if (dg_no < 0 || dg_no >= ain->nr_delegates)
+			VM_ERROR("Invalid delegate index");
+		struct ain_function_type *dg = &ain->delegates[dg_no];
+
+		// Stack before: [dg_page, arg0, ...]
+		// Stack after:  [arg0, ..., dg_page]
+		int dg_page = stack_peek(dg->nr_arguments).i;
+		for (int i = 0; i < dg->nr_arguments; i++) {
+			int pos = (stack_ptr - dg->nr_arguments) + i;
+			stack[pos-1] = stack[pos];
+		}
+		stack[stack_ptr-1].i = dg_page;
+		struct page *page = heap_get_delegate_page(dg_page);
+		if (page) {
+			page->delegate.cursor = 0;
+			page->delegate.end = delegate_numof(page);
+		}
+		dg_callbegin_pending = true;
+		break;
+	}
+	case DG_NEW: {
+		stack_push(heap_alloc_page(alloc_page(DELEGATE_PAGE, 0, 0)));
+		break;
+	}
+	case DG_STR_TO_METHOD: {
+		int dg_no = ain->version >= 11 ? get_argument(0) : stack_pop().i;
+		int str = stack_pop().i;
+		int fno = get_function_by_name(heap_get_string(str)->text);
+		stack_push(function_matches_delegate(dg_no, fno) ? fno : 0);
+		heap_unref(str);
+		break;
+	}
+	case X_GETENV: {
+		int slot = stack_pop().i;
+		struct page *page = heap_get_page(slot);
+		if (!page || page->type != LOCAL_PAGE || page->local.parent_page < 0)
+			VM_ERROR("Missing closure environment for page %d", slot);
+		stack_push(page->local.parent_page);
+		break;
+	}
+	case X_SET: {
+		int source = stack_pop().i;
+		int destination = stack_pop().i;
+		heap_struct_assign(destination, source);
+		stack_push(source);
+		break;
+	}
+	case X_ICAST: {
+		int object = stack_pop().i;
+		int target = get_argument(0);
+		int offset = 0;
+		bool found = false;
+		if (object >= 0) {
+			struct page *page = heap_get_page(object);
+			if (!page || page->type != STRUCT_PAGE)
+				VM_ERROR("Interface cast on non-structure page");
+			found = page->index == target;
+			struct ain_struct *type = &ain->structures[page->index];
+			for (int i = 0; !found && i < type->nr_interfaces; i++) {
+				if (type->interfaces[i].struct_type == target) {
+					offset = type->interfaces[i].vtable_offset;
+					found = true;
+				}
+			}
+		}
+		stack_push(found ? object : -1);
+		stack_push(offset);
+		// The third result is tested against -1 by the compiler. Both the
+		// object and interface offset must survive that test.
+		stack_push(found ? offset : -1);
+		break;
+	}
+	// -- NOOPs ---
+	case FUNC:
+		break;
+	default:
+#ifdef DEBUGGER_ENABLED
+		if ((opcode & OPTYPE_MASK) == BREAKPOINT) {
+			dbg_handle_breakpoint();
+			return execute_instruction(opcode & ~OPTYPE_MASK);
+		}
+#endif
+		VM_ERROR("Illegal opcode: 0x%04x", opcode);
+	}
+	return opcode;
+}
+
+static void vm_execute(void)
+{
+	for (;;) {
+		uint16_t opcode;
+		if (instr_ptr == VM_RETURN)
+			return;
+		if (unlikely(instr_ptr >= ain->code_size)) {
+			VM_ERROR("Illegal instruction pointer: 0x%08lX", instr_ptr);
+		}
+		opcode = get_opcode(instr_ptr);
+		opcode = execute_instruction(opcode);
+		instr_ptr += instructions[opcode].ip_inc;
+	}
+}
+
+static void call_global_destructors(void)
+{
+	if (heap_size <= 0 || heap[0].ref <= 0)
+		return;
+	struct page *global_page = heap_get_page(0);
+	// Call global variable destructors, but do not unref them because the
+	// destructors may reference other global variables.
+	for (int i = global_page->nr_vars - 1; i >= 0; i--) {
+		if (variable_type(global_page, i, NULL, NULL) != AIN_STRUCT)
+			continue;
+		int slot = global_page->values[i].i;
+		delete_struct(heap_get_page(slot)->index, slot);
+	}
+}
+
+static void vm_free(void)
+{
+	if (game_dungeons_and_dolls) {
+		// Dungeons & Dolls saves the game state in destructors of global variables
+		call_global_destructors();
+	}
+
+	// call library exit routines
+	exit_libraries();
+	// flush call stack
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		if (call_stack[i].struct_page >= 0 && AIN_VERSION_GTE(ain, 6, 1))
+			exit_unref(call_stack[i].struct_page);
+		exit_unref(call_stack[i].page_slot);
+	}
+	// free globals
+	if (heap_size > 0 && heap[0].ref > 0)
+		exit_unref(0);
+
+	vm_reset_once = true;
+}
+
+static jmp_buf reset_buf;
+
+_Noreturn void vm_reset(void)
+{
+	vm_free();
+	longjmp(reset_buf, 1);
+}
+
+int vm_execute_ain(struct ain *program)
+{
+	ain = program;
+	init_lambda_parents();
+	setjmp(reset_buf);
+
+	// initialize VM state
+	if (!stack) {
+		stack_size = INITIAL_STACK_SIZE;
+		stack = xmalloc(INITIAL_STACK_SIZE * sizeof(union vm_value));
+	}
+	stack_ptr = 0;
+	call_stack_ptr = 0;
+	dg_callbegin_pending = false;
+
+	heap_init();
+	init_libraries();
+
+	// Initialize globals
+	heap[0].ref = 1;
+	heap[0].seq = heap_next_seq++;
+	heap_set_page(0, alloc_page(GLOBAL_PAGE, 0, ain->nr_globals));
+	for (int i = 0; i < ain->nr_globals; i++) {
+		if (ain->globals[i].type.data == AIN_STRUCT) {
+			// XXX: need to allocate storage for global structs BEFORE calling
+			//      constructors.
+			heap[0].page->values[i].i = alloc_struct(ain->globals[i].type.struc);
+		} else {
+			heap[0].page->values[i] = variable_initval_typed(&ain->globals[i].type);
+		}
+	}
+	for (int i = 0; i < ain->nr_initvals; i++) {
+		int32_t index;
+		struct ain_initval *v = &ain->global_initvals[i];
+		switch (v->data_type) {
+		case AIN_STRING:
+			index = heap_alloc_slot(VM_STRING);
+			heap[0].page->values[v->global_index].i = index;
+			heap[index].s = make_string(v->string_value, strlen(v->string_value));
+			break;
+		default:
+			heap[0].page->values[v->global_index].i = v->int_value;
+			break;
+		}
+	}
+
+	if (ain->alloc >= 0)
+		vm_call(ain->alloc, -1); // function "0": allocate global arrays
+
+	// XXX: global constructors must be called AFTER initializing non-struct variables
+	//      otherwise a global set in a constructor will be clobbered by its initval
+	for (int i = 0; i < ain->nr_globals; i++) {
+		if (ain->globals[i].type.data == AIN_STRUCT)
+			init_struct(ain->globals[i].type.struc, heap[0].page->values[i].i);
+	}
+
+	vm_call(ain->main, -1);
+	return stack_pop().i;
+}
+
+void vm_stack_trace(void)
+{
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		struct ain_function *f = &ain->functions[call_stack[i].fno];
+		uint32_t addr = (i == call_stack_ptr - 1) ? instr_ptr : call_stack[i+1].call_address;
+		sys_warning("\t0x%08x in %s\n", addr, display_sjis0(f->name));
+	}
+}
+
+size_t vm_format_stack_trace(char *buf, size_t size, bool safe_signal)
+{
+	if (!buf || size == 0)
+		return 0;
+	size_t off = 0;
+	buf[0] = '\0';
+
+	if (!ain) {
+		int n = snprintf(buf + off, size - off, "  (AIN VM not initialized)\n");
+		if (n > 0)
+			off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+		return off;
+	}
+
+	int16_t opcode = -1;
+	const char *op_name = "INVALID_IP";
+	if (ain->code && instr_ptr + 2 <= ain->code_size) {
+		opcode = get_opcode(instr_ptr);
+		op_name = current_instruction_name();
+	}
+	const char *hll_lib = NULL;
+	const char *hll_func = NULL;
+	vm_get_last_hll_call(&hll_lib, &hll_func);
+
+	int n = snprintf(buf + off, size - off,
+		"  instr_ptr      : 0x%08zx (opcode=0x%04x %s)\n"
+		"  stack_ptr      : %d\n"
+		"  call_stack_ptr : %d\n"
+		"  last_hll_call  : %s.%s\n"
+		"  call_stack     :\n",
+		instr_ptr, (unsigned)(uint16_t)opcode, op_name,
+		stack_ptr, call_stack_ptr,
+		hll_lib ? hll_lib : "(none)",
+		hll_func ? hll_func : "(none)");
+	if (n > 0)
+		off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+
+	int max_frames = call_stack_ptr;
+	if (max_frames > 64)
+		max_frames = 64;
+	for (int idx = 0; idx < max_frames && off + 1 < size; idx++) {
+		int i = call_stack_ptr - 1 - idx;
+		if (i < 0 || i >= 4096)
+			break;
+		int fno = call_stack[i].fno;
+		uint32_t addr = (i == call_stack_ptr - 1) ? (uint32_t)instr_ptr : call_stack[i + 1].call_address;
+		const char *fname = "<invalid fno>";
+		if (ain->functions && fno >= 0 && fno < ain->nr_functions && ain->functions[fno].name) {
+			fname = safe_signal ? ain->functions[fno].name : display_sjis0(ain->functions[fno].name);
+		}
+		n = snprintf(buf + off, size - off,
+			"    #%02d 0x%08x in %s (fno=%d, page=%d, struct_page=%d)\n",
+			idx, addr, fname, fno, call_stack[i].page_slot, call_stack[i].struct_page);
+		if (n > 0)
+			off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+	}
+	return off;
+}
+
+_Noreturn void _vm_error(const char *fmt, ...)
+{
+	// Format before stack tracing: display_sjis0() reuses its string buffer.
+	char msg[1024];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	sys_warning("%s", msg);
+	sys_warning("at %s (0x%X) in:\n", current_instruction_name(), instr_ptr);
+	vm_stack_trace();
+
+	dbg_repl(DBG_STOP_ERROR, msg);
+	sys_error("%s", msg);
+}
+
+int vm_time(void)
+{
+	return SDL_GetTicks();
+}
+
+void vm_sleep(int ms)
+{
+	SDL_Delay(ms);
+}
+
+_Noreturn void vm_exit(int code)
+{
+	sys_warning("vm_exit(%d) at %s (0x%X) in:\n", code, current_instruction_name(), instr_ptr);
+	vm_stack_trace();
+	vm_free();
+#ifdef DEBUG_HEAP
+	for (size_t i = 0; i < heap_size; i++) {
+		if (heap[i].ref > 0)
+			heap_describe_slot(i);
+	}
+	sys_message("Number of leaked objects: %d\n", heap_free_ptr);
+#endif
+	sys_exit(code);
+}

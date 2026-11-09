@@ -1,0 +1,60 @@
+// -*-mode: C; coding: sjis; -*-
+
+void test_math(void)
+{
+	int i, ia, ib;
+	float fa, fb;
+	array@int ar[10];
+	test_float("Math.Cos(40)", Math.Cos(40), 0.766044);
+	test_float("Math.Sin(40)", Math.Sin(40), 0.642788);
+	test_float("Math.Atan(40)", Math.Atan(40), 1.545802);
+	test_float("Math.Atan2(20, 40)", Math.Atan2(20, 40), 0.463648);
+	test_float("Math.Pow(0.5, 1.5)", Math.Pow(0.5, 1.5), 0.353553);
+	test_equal("Math.Abs(-3)", Math.Abs(-3), 3);
+	test_float("Math.AbsF(-3.5)", Math.Abs(-3.5), 3.0); // XXX: why not 3.5?
+	test_equal("Math.Min(1, 2)", Math.Min(1, 2), 1);
+	test_equal("Math.Min(2, 1)", Math.Min(2, 1), 1);
+	test_float("Math.MinF(1.0, 2.0)", Math.MinF(1.0, 2.0), 1.0);
+	test_float("Math.MinF(2.0, 1.0)", Math.MinF(2.0, 1.0), 1.0);
+	test_equal("Math.Max(1, 2)", Math.Max(1, 2), 2);
+	test_equal("Math.Max(2, 1)", Math.Max(2, 1), 2);
+	test_float("Math.MaxF(1.0, 2.0)", Math.MaxF(1.0, 2.0), 2.0);
+	test_float("Math.MaxF(2.0, 1.0)", Math.MaxF(2.0, 1.0), 2.0);
+
+	ia = 1, ib = 2;
+	Math.Swap(ia, ib);
+	test_equal("Math.Swap(a, b), a", ia, 2);
+	test_equal("Math.Swap(a, b), b", ib, 1);
+
+	fa = 1.0, fb = 2.0;
+	Math.SwapF(fa, fb);
+	test_float("Math.SwapF(a, b), a", fa, 2.0);
+	test_float("Math.SwapF(a, b), b", fb, 1.0);
+
+	// The default seed is 4357. This must run before any other random
+	// number is drawn.
+	test_equal("Math.Rand() #1 (default seed)", Math.Rand(), 1362922229);
+	test_equal("Math.Rand() #2 (default seed)", Math.Rand(), 2143450242);
+
+	Math.SetSeed(12345);
+	test_equal("Math.Rand() #1 (seed 12345)", Math.Rand(), 2120104832);
+	test_equal("Math.Rand() #2 (seed 12345)", Math.Rand(), 377474682);
+
+	// SetSeed ORs the seed with 1.
+	Math.SetSeed(12344);
+	test_equal("Math.Rand() #1 (seed 12344)", Math.Rand(), 2120104832);
+	test_equal("Math.Rand() #2 (seed 12344)", Math.Rand(), 377474682);
+
+	Math.SetSeed(12345);
+	test_float("Math.RandF() #1", Math.RandF(), 0.993625);
+	test_float("Math.RandF() #2", Math.RandF(), 0.587888);
+	test_float("Math.RandF() #3", Math.RandF(), 0.857469);
+
+	Math.RandTableInit(42, 10);
+	for (i = 0; i < 10; i++) {
+		ar[Math.RandTable(42)] = 1;
+	}
+	for (i = 0; i < 10; i++) {
+		test_equal(string(i) + " appears in random shuffle table", ar[i], 1);
+	}
+}

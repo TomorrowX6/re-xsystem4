@@ -1,0 +1,121 @@
+// -*-mode: C; coding: sjis; -*-
+
+void test_strings(void)
+{
+	int i;
+	float f;
+	string s;
+	bool b;
+	test_bool("\"a\" == \"a\"", "a" == "a", true);
+	test_bool("\"a\" != \"b\"", "a" == "b", false);
+	test_bool("\"a\" < \"b\"",  "a" < "b",  true);
+	test_bool("\"a\" < \"a\"",  "a" < "a",  false);
+	test_bool("\"b\" < \"a\"",  "b" < "a",  false);
+	test_bool("\"a\" > \"b\"",  "a" > "b",  false);
+	test_bool("\"a\" > \"a\"",  "a" > "a",  false);
+	test_bool("\"b\" > \"a\"",  "b" > "a",  true);
+	test_bool("\"a\" <= \"b\"", "a" <= "b", true);
+	test_bool("\"a\" <= \"a\"", "a" <= "a", true);
+	test_bool("\"b\" <= \"a\"", "b" <= "a", false);
+	test_bool("\"a\" >= \"b\"", "a" >= "b", false);
+	test_bool("\"a\" >= \"a\"", "a" >= "a", true);
+	test_bool("\"b\" >= \"a\"", "b" >= "a", true);
+	test_bool("var = \"str\"", (s = "str", s == "str"), true);
+	test_string("foo += \"bar\"", (s = "foo", s += "bar"), "foobar");
+	// S_ADD
+	test_string("\"a\" + \"b\"", "a" + "b", "ab");
+	// S_LENGTH
+	test_equal("\"\".Length()", (s = "", s.Length()), 0);
+	test_equal("\"abc\".Length()", (s = "abc", s.Length()), 3);
+	test_equal("\"‚ bc\".Length()", (s = "‚ bc", s.Length()), 3);
+	// S_LENGTHBYTE
+	test_equal("\"\".LengthByte()", (s = "", s.LengthByte()), 0);
+	test_equal("\"abc\".LengthByte()", (s = "abc", s.LengthByte()), 3);
+	test_equal("\"‚ bc\".LengthByte()", (s = "‚ bc", s.LengthByte()), 4);
+	// S_EMPTY
+	test_bool("\"\".Empty()", (s = "", s.Empty()), true);
+	test_bool("\"a\".Empty()", (s = "a", s.Empty()), false);
+	// S_FIND
+	test_equal("\"ab‚ ‚¢‚¤\".Find(\"b‚ \")", (s = "ab‚ ‚¢‚¤", s.Find("b‚ ")), 1);
+	test_equal("\"ab‚ ‚¢‚¤\".Find(\"b‚ \")", (s = "ab‚ ‚¢‚¤", s.Find("‚¢")), 3);
+	test_equal("\"ab‚ ‚¢‚¤\".Find(\"‚¤‚¦‚¨\")", (s = "ab‚ ‚¢‚¤", s.Find("‚¤‚¦‚¨")), -1);
+	// S_GETPART
+	test_string("\"ab‚ ‚¢‚¤\".GetPart(0, 0)", (s = "ab‚ ‚¢‚¤", s.GetPart(0, 0)), "");
+	test_string("\"ab‚ ‚¢‚¤\".GetPart(16, 2)", (s = "ab‚ ‚¢‚¤", s.GetPart(16, 2)), "");
+	test_string("\"ab‚ ‚¢‚¤\".GetPart(1, 3)", (s = "ab‚ ‚¢‚¤", s.GetPart(1, 3)), "b‚ ‚¢");
+	test_string("\"ab‚ ‚¢‚¤\".GetPart(-1, 3)", (s = "ab‚ ‚¢‚¤", s.GetPart(-1, 3)), "ab‚ ");
+	test_string("\"ab‚ ‚¢‚¤\".GetPart(2, 16)", (s = "ab‚ ‚¢‚¤", s.GetPart(2, 16)), "‚ ‚¢‚¤");
+	// S_PUSHBACK2
+	test_string("\"\".PushBack('a')", (s = "", s.PushBack('a'), s), "a");
+	test_string("\"‚ \".PushBack('a')", (s = "‚ ", s.PushBack('a'), s), "‚ a");
+	// S_POPBACK2
+	test_string("\"‚ a\".PopBack()", (s = "‚ a", s.PopBack(), s), "‚ ");
+	test_string("\"‚ \".PopBack()", (s = "‚ ", s.PopBack(), s), "");
+	// S_ERASE2
+	test_string("\"\".Erase(-1)",   (s = "",   s.Erase(-1), s), "");
+	test_string("\"\".Erase(0)",    (s = "",   s.Erase(0),  s), "");
+	test_string("\"\".Erase(1)",    (s = "",   s.Erase(1),  s), "");
+	test_string("\"a\".Erase(-1)",  (s = "a",  s.Erase(-1), s), "");
+	test_string("\"a\".Erase(0)",   (s = "a",  s.Erase(0),  s), "");
+	test_string("\"a\".Erase(1)",   (s = "a",  s.Erase(1),  s), "a");
+	test_string("\"‚ \".Erase(-1)", (s = "‚ ", s.Erase(-1), s), "");
+	test_string("\"‚ \".Erase(0)",  (s = "‚ ", s.Erase(0),  s), "");
+	test_string("\"‚ \".Erase(1)",  (s = "‚ ", s.Erase(1),  s), "‚ ");
+	test_string("\"‚ bc\".Erase(1)",  (s = "‚ bc", s.Erase(1),  s), "‚ c");
+	// S_MOD
+	// int
+	test_string("%d % 42", "%d" % 42, "42");
+	test_string("abc%d % 42", "abc%d" % 42, "abc42");
+	test_string("%dabc % 42", "%dabc" % 42, "42abc");
+	test_string("abc%ddef % 42", "abc%ddef" % 42, "abc42def");
+	test_string("abc%4ddef % 42", "abc%4ddef" % 42, "abc  42def");
+	test_string("abc%04ddef % 42", "abc%04ddef" % 42, "abc0042def");
+	test_string("abc%Ddef % 42", "abc%Ddef" % 42, "abc‚S‚Qdef");
+	test_string("abc%4Ddef % 42", "abc%4Ddef" % 42, "abc@@‚S‚Qdef");
+	test_string("abc%04Ddef % 42", "abc%04Ddef" % 42, "abc‚O‚O‚S‚Qdef");
+	test_string("\"%d %d\" % 42 % 43", "%d %d" % 42 % 43, "42 43");
+	test_string("%s %d % 42", "%s %d" % 42, "%s 42");
+	// float
+	test_string("abc%fdef % 12.3", "abc%fdef" % 12.3, "abc12.300000def");
+	test_string("abc%.2fdef % 12.3", "abc%.2fdef" % 12.3, "abc12.30def");
+	test_string("abc%8.2fdef % 12.3", "abc%8.2fdef" % 12.3, "abc   12.30def");
+	test_string("abc%Fdef % 12.3", "abc%Fdef" % 12.3, "abc‚P‚QD‚R‚O‚O‚O‚O‚OFdef");
+	test_string("abc%.2Fdef % 12.3", "abc%.2Fdef" % 12.3, "abc‚P‚QD‚R‚OFdef");
+	test_string("abc%8.2Fdef % 12.3", "abc%8.2Fdef" % 12.3, "abc@@@‚P‚QD‚R‚OFdef");
+	// string
+	test_string("abc%sdef % \"‚ ‚¢‚¤\"", "abc%sdef" % "‚ ‚¢‚¤", "abc‚ ‚¢‚¤def");
+	test_string("(%8s) % \"‚ b\"", "(%8s)" % "‚ b", "(     ‚ b)");
+	// char
+	test_string("abc%cdef % '‚ '", "abc%cdef" % '‚ ', "abc‚ def");
+	// bool
+	test_string("abc%bdef % 1", "abc%bdef" % (b = 1), "abctruedef");
+	test_string("abc%bdef % 0", "abc%bdef" % (b = 0), "abcfalsedef");
+	// type mismatch
+	test_string("%s % 42", "%s" % 42, "%s");
+
+	// I_STRING
+	test_bool("(42).String()", (i = 42, i.String() == "42"), true);
+	// FTOS
+	test_bool("(4.2).String()", (f = 4.2, f.String() == "4.200000"), true);
+	test_bool("(4.222).String(2)", (f = 4.222, f.String(2) == "4.22"), true);
+	// C_REF
+	test_equal("ab‚ ‚¢‚¤[3]", (s = "ab‚ ‚¢‚¤", s[3]), '‚¢');
+	test_equal("abc[3]", (s = "abc", s[3]), 0);
+	test_equal("ab‚ ‚¢‚¤[5]", (s = "ab‚ ‚¢‚¤", s[5]), 0);
+	test_equal("ab‚ ‚¢‚¤[8]", (s = "ab‚ ‚¢‚¤", s[8]), 0);
+	// This throws
+	// test_equal("ab‚ ‚¢‚¤[9]", (s = "ab‚ ‚¢‚¤", s[9]), 0);
+
+	// C_ASSIGN
+	test_string("ab‚ ‚¢‚¤[1] = 'c'", (s = "ab‚ ‚¢‚¤", s[1] = 'c', s), "ac‚ ‚¢‚¤");
+	test_string("ab‚ ‚¢‚¤[3] = '‚ '", (s = "ab‚ ‚¢‚¤", s[3] = '‚ ', s), "ab‚ ‚ ‚¤");
+	test_string("ab‚ ‚¢‚¤[1] = '‚ '", (s = "ab‚ ‚¢‚¤", s[1] = '‚ ', s), "a‚ ‚ ‚¢‚¤");
+	test_string("ab‚ ‚¢‚¤[3] = 'c'", (s = "ab‚ ‚¢‚¤", s[3] = 'c', s), "ab‚ c‚¤");
+	test_string("ab‚ ‚¢‚¤[5] = 'c'", (s = "ab‚ ‚¢‚¤", s[5] = 'c', s), "ab‚ ‚¢‚¤");
+	test_string("ab‚ ‚¢‚¤[7] = 'c'", (s = "ab‚ ‚¢‚¤", s[7] = 'c', s), "ab‚ ‚¢‚¤");
+	// This throws
+	// test_string("ab‚ ‚¢‚¤[8] = 'c'", (s = "ab‚ ‚¢‚¤", s[8] = 'c', s), "ab‚ ‚¢‚¤");
+	// Assigning 0 to a character truncates the string.
+	test_string("ab‚ ‚¢‚¤[3] = 0", (s = "ab‚ ‚¢‚¤", s[3] = 0, s), "ab‚ ");
+	test_equal("(ab‚ ‚¢‚¤[3] = 0).Length", (s = "ab‚ ‚¢‚¤", s[3] = 0, s.Length()), 3);
+}

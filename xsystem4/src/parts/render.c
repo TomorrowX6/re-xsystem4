@@ -1,0 +1,886 @@
+/* Copyright (C) 2019 Nunuhara Cabbage <nunuhara@haniwa.technology>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://gnu.org/licenses/>.
+ */
+
+#include <limits.h>
+#include <math.h>
+#include <assert.h>
+#include <string.h>
+#include <cglm/cglm.h>
+
+#include "system4.h"
+#include "system4/hashtable.h"
+#include "system4/string.h"
+#include "system4/flat.h"
+
+#include "gfx/gfx.h"
+#include "sact.h"
+#include "scene.h"
+#include "sprite.h"
+#include "xsystem4.h"
+
+#include "parts_internal.h"
+
+static struct {
+	struct shader shader;
+	GLint blend_rate;
+	GLint bot_left;
+	GLint top_right;
+	GLint add_color;
+	GLint multiply_color;
+	GLint draw_filter;
+	GLint use_clipper;
+	GLint clipper_tex;
+	GLint inv_clipper_transform;
+} parts_shader;
+
+static void set_draw_filter_blend_func(int draw_filter)
+{
+	switch (draw_filter) {
+	case PARTS_DRAW_FILTER_ADDITIVE:
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
+		break;
+	case PARTS_DRAW_FILTER_MULTIPLY:
+		glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE);
+		break;
+	case PARTS_DRAW_FILTER_SCREEN:
+		glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ZERO, GL_ONE);
+		break;
+	default:
+		break;
+	}
+}
+
+static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rectangle *rect, float blend_rate, vec3 add_color, vec3 multiply_color, int draw_filter, int alpha_clipper)
+{
+	mat4 wv_transform = WV_TRANSFORM(config.view_width, config.view_height);
+	mat4 world_transform;
+	glm_mat4_copy(mw_transform, world_transform);
+	world_transform[0][2] = 0.0f;
+	world_transform[1][2] = 0.0f;
+	world_transform[2][2] = 0.0f;
+	world_transform[3][2] = 0.0f;
+
+	struct gfx_render_job job = {
+		.shader = &parts_shader.shader,
+		.shape = GFX_RECTANGLE,
+		.texture = texture->handle,
+		.world_transform = world_transform[0],
+		.view_transform = wv_transform[0],
+		.data = texture,
+	};
+
+	gfx_prepare_job(&job);
+	glUniform1f(parts_shader.blend_rate, blend_rate);
+	glUniform2f(parts_shader.bot_left, rect->x, rect->y);
+	glUniform2f(parts_shader.top_right, rect->x + rect->w, rect->y + rect->h);
+	glUniform3fv(parts_shader.add_color, 1, add_color);
+	glUniform3fv(parts_shader.multiply_color, 1, multiply_color);
+	glUniform1i(parts_shader.draw_filter, draw_filter);
+
+	struct parts *clipper = alpha_clipper ? parts_try_get(alpha_clipper) : NULL;
+	if (clipper) {
+		struct parts_common *c_common = &clipper->states[clipper->state].common;
+
+		// Calculate the inverse of the clipper's world matrix.
+		mat4 clip_mw;
+		parts_world_matrix(clipper, clip_mw);
+		glm_translate(clip_mw, (vec3){ c_common->origin_offset.x, c_common->origin_offset.y, 0 });
+		glm_scale(clip_mw, (vec3){ c_common->w, c_common->h, 1.0 });
+		mat4 clip_inv;
+		glm_mat4_inv(clip_mw, clip_inv);
+
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(GL_TEXTURE_2D, c_common->texture.handle);
+		glActiveTexture(GL_TEXTURE0);
+
+		glUniform1i(parts_shader.use_clipper, 1);
+		glUniform1i(parts_shader.clipper_tex, 1);
+		glUniformMatrix4fv(parts_shader.inv_clipper_transform, 1, GL_FALSE, clip_inv[0]);
+	} else {
+		glUniform1i(parts_shader.use_clipper, 0);
+	}
+
+	gfx_run_job(&job);
+}
+
+static void parts_render_text(struct parts *parts, struct parts_text *t,
+		struct parts_message_window *message)
+{
+	vec3 add_color = {
+		parts->global.add_color.r / 255.0f,
+		parts->global.add_color.g / 255.0f,
+		parts->global.add_color.b / 255.0f
+	};
+	vec3 multiply_color = {
+		parts->global.multiply_color.r / 255.0f,
+		parts->global.multiply_color.g / 255.0f,
+		parts->global.multiply_color.b / 255.0f,
+	};
+	float blend_rate = parts->global.alpha / 255.0;
+
+	mat4 base;
+	parts_world_matrix(parts, base);
+	int x = t->common.origin_offset.x;
+	int y = t->common.origin_offset.y;
+	for (int i = 0; i < t->nr_lines; i++) {
+		struct parts_text_line *line = &t->lines[i];
+		for (int j = 0; j < line->nr_chars; j++) {
+			struct parts_text_char *ch = &line->chars[j];
+			float alpha = blend_rate;
+			if (message && !message->fixed) {
+				double time = message->elapsed - ch->fade_start;
+				alpha *= time < 0 ? 0 : ch->fade_time > 0 ? min(1., time / ch->fade_time) : 1.;
+			}
+			Rectangle r = { 0, 0, ch->t.w, ch->t.h };
+			if (message) {
+				Rectangle a = message->text_area;
+				a.x += parts->states[0].common.origin_offset.x;
+				a.y += parts->states[0].common.origin_offset.y;
+				if (a.w > 0) { r.x = max(0, a.x - x); r.w = min(ch->t.w, a.x + a.w - x) - r.x; }
+				if (a.h > 0) { r.y = max(0, a.y - y); r.h = min(ch->t.h, a.y + a.h - y) - r.y; }
+			}
+			mat4 mw_transform;
+			glm_mat4_copy(base, mw_transform);
+			glm_translate(mw_transform, (vec3){x, y, 0});
+			glm_scale(mw_transform, (vec3){ch->t.w, ch->t.h, 1});
+			if (alpha > 0 && r.w > 0 && r.h > 0 && ch->t.handle)
+				parts_render_texture(&ch->t, mw_transform, &r, alpha, add_color,
+						multiply_color, 0, parts->alpha_clipper_parts_no);
+			x += ch->advance;
+		}
+		x = t->common.origin_offset.x;
+		y += line->height + line->line_space;
+	}
+}
+
+static void parts_render_cg(struct parts *parts, struct parts_common *common)
+{
+	set_draw_filter_blend_func(parts->draw_filter);
+
+	mat4 mw_transform;
+	parts_world_matrix(parts, mw_transform);
+	glm_translate(mw_transform, (vec3){ common->origin_offset.x, common->origin_offset.y, 0 });
+
+	switch (parts->sprite_deform) {
+	// Flip horizontally
+	case 1:
+		glm_translate(mw_transform, (vec3){ common->w, 0.0f, 0.0f });
+		glm_scale(mw_transform, (vec3){ -common->w, common->h, 1.0f });
+		break;
+	// Flip vertically
+	case 2:
+		glm_translate(mw_transform, (vec3){ 0.0f, common->h, 0.0f });
+		glm_scale(mw_transform, (vec3){ common->w, -common->h, 1.0f });
+		break;
+	default:
+		WARNING("Invalid sprite_deform: %d", parts->sprite_deform);
+	// No deform
+	case 0:
+		glm_scale(mw_transform, (vec3){ common->w, common->h, 1.0 });
+		break;
+	}
+
+	Rectangle r = common->surface_area;
+	if (!r.w && !r.h) {
+		r = (Rectangle) { 0, 0, common->texture.w, common->texture.h };
+	}
+
+	vec3 add_color = {
+		parts->global.add_color.r / 255.0f,
+		parts->global.add_color.g / 255.0f,
+		parts->global.add_color.b / 255.0f
+	};
+	vec3 multiply_color = {
+		parts->global.multiply_color.r / 255.0f,
+		parts->global.multiply_color.g / 255.0f,
+		parts->global.multiply_color.b / 255.0f,
+	};
+	parts_render_texture(&common->texture, mw_transform, &r, parts->global.alpha / 255.0, add_color, multiply_color, parts->draw_filter, parts->alpha_clipper_parts_no);
+
+	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+}
+
+struct emitter_render_ud {
+	struct parts_flat *f;
+	mat4 transform;       // root * base * layer for this emitter+birth_frame
+	float parent_alpha;
+	vec2 align;
+	int alpha_clipper;
+	int draw_filter;
+	vec3 add_color;
+	vec3 mul_color;
+};
+
+static void render_emitter_particle_cb(const struct flat_emitter_particle *p,
+		void *ud)
+{
+	struct emitter_render_ud *d = ud;
+	if (p->cg_lib_idx < 0 || (size_t)p->cg_lib_idx >= d->f->nr_libraries)
+		return;
+	Texture *tex = &d->f->textures[p->cg_lib_idx];
+	if (!tex->handle)
+		return;
+
+	mat4 m = GLM_MAT4_IDENTITY_INIT;
+	glm_translate(m, (vec3){ p->pos[0], p->pos[1], 0 });
+	if (p->rot[2] != 0)
+		glm_rotate_z(m, glm_rad(p->rot[2]), m);
+	if (p->rot[0] != 0)
+		glm_rotate_x(m, glm_rad(-p->rot[0]), m);
+	if (p->rot[1] != 0)
+		glm_rotate_y(m, glm_rad(p->rot[1]), m);
+	glm_scale(m, (vec3){ p->scale[0], p->scale[1], 1.0f });
+	glm_translate(m, (vec3){ -d->align[0], -d->align[1], 0 });
+
+	// Bring particle into screen space, then kill the Z-output row so
+	// clip_z stays at the near plane.
+	glm_mat4_mul(d->transform, m, m);
+	m[0][2] = m[1][2] = m[2][2] = m[3][2] = 0.0f;
+	glm_scale(m, (vec3){ tex->w, tex->h, 1.0f });
+
+	if (d->draw_filter != PARTS_DRAW_FILTER_NORMAL)
+		set_draw_filter_blend_func(d->draw_filter);
+
+	float blend_rate = d->parent_alpha * p->fade_alpha;
+	Rectangle rect = { 0, 0, tex->w, tex->h };
+	parts_render_texture(tex, m, &rect, blend_rate,
+			d->add_color, d->mul_color, d->draw_filter, d->alpha_clipper);
+
+	if (d->draw_filter != PARTS_DRAW_FILTER_NORMAL)
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+}
+
+static void render_flat_emitter(struct parts *parts, struct parts_flat *f,
+		int emitter_lib_idx, int tl_idx, int local, int frame_count,
+		const struct flat_timeline *timeline,
+		struct flat_layer_state *state,
+		mat4 root, float parent_alpha,
+		struct flat_key_stack *key_stack)
+{
+	vec2 align;
+	if (!parts_flat_emitter_get_align_offset(f, emitter_lib_idx, align))
+		return;
+
+	struct flat_emitter *em = &f->flat->libraries[emitter_lib_idx].emitter;
+	int active_frames = max(1, frame_count - em->particle_lifetime + 1);
+	float parts_alpha = parts->global.alpha / 255.0f;
+
+	mat4 current_base;
+	parts_flat_build_emitter_base_matrix(em, key_stack, current_base);
+
+	int min_birth = max(0, local - em->particle_lifetime + 1);
+	int max_birth = min(active_frames - 1, local);
+	// Retain only live birth positions, rather than growing a history for
+	// every frame of long animations.
+	for (struct flat_emitter_birth **at = &state->emitter_births; *at;) {
+		struct flat_emitter_birth *birth = *at;
+		if ((birth->timeline == timeline || birth->timeline_idx == tl_idx)
+				&& (birth->frame < min_birth || birth->frame > local)) {
+			*at = birth->next;
+			free(birth);
+		} else {
+			at = &birth->next;
+		}
+	}
+	for (int birth_frame = min_birth; birth_frame <= max_birth; birth_frame++) {
+		int age = local - birth_frame;
+		for (unsigned instance = 0; instance < parts_flat_key_count(timeline, birth_frame); instance++) {
+
+		// Color, opacity and inherited scale/rotation follow the current key.
+		// Position tracking is independent: 0 = world origin, 1 = current
+		// emitter position, 2 = emitter position when the particle was born.
+		const struct flat_key_data_graphic *birth_key = parts_flat_key(timeline, birth_frame, instance);
+		const struct flat_key_data_graphic *key = parts_flat_key(timeline, local, instance);
+		if (!key)
+			continue;
+
+		bool need_birth_record = (em->pos_track_mode == 2)
+				|| (key_stack->count > 0 && em->parent_key_mode == 2);
+		struct flat_emitter_birth *birth = parts_flat_get_emitter_birth(
+				state, timeline, tl_idx, birth_frame, instance, need_birth_record);
+		if (birth && !birth->has_ancestor_keys && key_stack->count > 0) {
+			birth->ancestor_count = key_stack->count;
+			for (int d = 0; d < key_stack->count; d++) {
+				const struct flat_key_data_graphic *ak = NULL;
+				const struct flat_timeline *atl = key_stack->timelines[d];
+				if (atl && atl->frame_count > 0) {
+					int anc_local = key_stack->locals[d] - age;
+					anc_local = min(max(0, anc_local), (int)atl->frame_count - 1);
+					ak = parts_flat_key(atl, anc_local, key_stack->instances[d]);
+				}
+				birth->ancestor_keys[d] = ak ? *ak : *key_stack->keys[d];
+			}
+			birth->has_ancestor_keys = true;
+		}
+
+		mat4 base;
+		if (em->parent_key_mode == 2 && birth && birth->has_ancestor_keys) {
+			struct flat_key_stack birth_stack = { .count = birth->ancestor_count };
+			for (int d = 0; d < birth->ancestor_count; d++)
+				birth_stack.keys[d] = &birth->ancestor_keys[d];
+			parts_flat_build_emitter_base_matrix(em, &birth_stack, base);
+		} else {
+			glm_mat4_copy(current_base, base);
+		}
+
+		float layer_alpha = parent_alpha * key->alpha / 255.0f;
+
+		struct flat_emitter_layer_effective eff;
+		parts_flat_emitter_resolve_layer(em, key,
+				parts_alpha, layer_alpha, &eff);
+		if (em->pos_track_mode == 2 && birth_key) {
+			eff.pos[0] = birth_key->pos_x;
+			eff.pos[1] = birth_key->pos_y;
+		}
+
+		// Build the layer matrix with the selected position and the current
+		// key's remaining properties, filtered by the inherit_* flags.
+		mat4 layer_m;
+		parts_flat_build_layer_matrix(key, eff.pos,
+				eff.use_rotation, eff.use_scale, eff.use_origin,
+				eff.reverse_lr, eff.reverse_tb,
+				layer_m);
+
+		struct emitter_render_ud ud = {
+			.f = f,
+			.parent_alpha = eff.alpha,
+			.alpha_clipper = parts->alpha_clipper_parts_no,
+			.draw_filter = eff.draw_filter,
+		};
+		glm_vec2_copy(align, ud.align);
+		glm_vec3_copy(eff.add_color, ud.add_color);
+		glm_vec3_copy(eff.mul_color, ud.mul_color);
+		glm_mat4_mul(base, layer_m, ud.transform);
+		glm_mat4_mul(root, ud.transform, ud.transform);
+		if (em->pos_track_mode == 0) {
+			ud.transform[3][0] = 0;
+			ud.transform[3][1] = 0;
+			ud.transform[3][2] = 0;
+		} else if (em->pos_track_mode == 2 && birth) {
+			if (!birth->has_position) {
+				if (key_stack->count > 0 && birth->has_ancestor_keys && em->parent_key_mode != 2) {
+					struct flat_key_stack birth_stack = { .count = birth->ancestor_count };
+					for (int d = 0; d < birth->ancestor_count; d++)
+						birth_stack.keys[d] = &birth->ancestor_keys[d];
+					mat4 birth_base, birth_transform;
+					parts_flat_build_emitter_base_matrix(em, &birth_stack, birth_base);
+					glm_mat4_mul(birth_base, layer_m, birth_transform);
+					glm_mat4_mul(root, birth_transform, birth_transform);
+					glm_vec3_copy(birth_transform[3], birth->position);
+				} else {
+					glm_vec3_copy(ud.transform[3], birth->position);
+				}
+				birth->has_position = true;
+			}
+			glm_vec3_copy(birth->position, ud.transform[3]);
+		}
+		parts_flat_foreach_emitter_particle(f, emitter_lib_idx, timeline, instance,
+				birth_frame, age, frame_count,
+				render_emitter_particle_cb, &ud);
+		}
+	}
+}
+
+struct flat_draw_ctx {
+	mat4 matrix;
+	float alpha;
+	vec3 add_color;
+	vec3 mul_color;
+	int draw_filter;
+};
+
+static void render_flat_layer(struct parts *parts, struct parts_flat *f,
+		struct flat_layer_state *state,
+		struct flat_timeline *timelines, size_t nr_timelines,
+		struct flat_draw_ctx *ctx, mat4 root,
+		struct flat_key_stack *key_stack);
+
+static void render_flat_cg(struct parts *parts, Texture *tex,
+		const struct flat_key_data_graphic *key, struct flat_draw_ctx *ctx)
+{
+	if (!tex->handle)
+		return;
+
+	set_draw_filter_blend_func(ctx->draw_filter);
+
+	mat4 render_m;
+	glm_mat4_copy(ctx->matrix, render_m);
+	// uk2 is the texture anchor in the 1..9 grid, independent of explicit origin.
+	if (key->uk2 >= 1 && key->uk2 <= 9) {
+		int width = key->area_width > 0 ? key->area_width : tex->w;
+		int height = key->area_height > 0 ? key->area_height : tex->h;
+		int anchor = key->uk2 - 1;
+		glm_translate(render_m, (vec3){-(anchor % 3) * width / 2.0f,
+				-(anchor / 3) * height / 2.0f, 0});
+	}
+	// Kill the Z-output row to pin clip_z at the near plane, avoiding
+	// near/far clipping of 3D-rotated sprites.
+	render_m[0][2] = render_m[1][2] = render_m[2][2] = render_m[3][2] = 0.0f;
+	// area_x/area_y select a sub-rectangle of the texture atlas, but
+	// should not shift the on-screen position. This translation cancels
+	// the offset that the sub-rect's top-left would otherwise introduce.
+	glm_translate(render_m, (vec3){ -(float)key->area_x, -(float)key->area_y, 0.0f });
+	glm_scale(render_m, (vec3){ tex->w, tex->h, 1.0f });
+
+	Rectangle rect;
+	if (key->area_width && key->area_height) {
+		rect = (Rectangle){ key->area_x, key->area_y, key->area_width, key->area_height };
+	} else {
+		rect = (Rectangle){ 0, 0, tex->w, tex->h };
+	}
+
+	parts_render_texture(tex, render_m, &rect, ctx->alpha, ctx->add_color, ctx->mul_color,
+			ctx->draw_filter, parts->alpha_clipper_parts_no);
+
+	if (ctx->draw_filter != PARTS_DRAW_FILTER_NORMAL)
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+}
+
+static void render_flat_item(struct parts *parts, struct parts_flat *f,
+		struct flat_layer_state *state, size_t tl_idx,
+		struct flat_timeline *tl, int local,
+		const struct flat_key_data_graphic *key,
+		struct flat_draw_ctx *parent, mat4 root,
+		struct flat_key_stack *key_stack)
+{
+	int lib_idx = parts_flat_find_library(f->flat, tl->library_name->text);
+	if (lib_idx < 0 || (size_t)lib_idx >= f->flat->nr_libraries)
+		return;
+
+	struct flat_library *lib = &f->flat->libraries[lib_idx];
+	mat4 layer_m;
+	vec2 pos = { key->pos_x, key->pos_y };
+	parts_flat_build_layer_matrix(key, pos,
+			true, true, true,
+			key->reverse_lr, key->reverse_tb,
+			layer_m);
+
+	struct flat_draw_ctx ctx;
+	glm_mat4_mul(parent->matrix, layer_m, ctx.matrix);
+	ctx.alpha = parent->alpha * key->alpha / 255.0f;
+	vec3 key_add = { key->add_r / 255.0f, key->add_g / 255.0f, key->add_b / 255.0f };
+	vec3 key_mul = { key->mul_r / 255.0f, key->mul_g / 255.0f, key->mul_b / 255.0f };
+	glm_vec3_add(parent->add_color, key_add, ctx.add_color);
+	glm_vec3_mul(parent->mul_color, key_mul, ctx.mul_color);
+	ctx.draw_filter = key->draw_filter != PARTS_DRAW_FILTER_NORMAL
+			? key->draw_filter : parent->draw_filter;
+
+	switch (lib->type) {
+	case FLAT_LIB_CG:
+		render_flat_cg(parts, &f->textures[lib_idx], key, &ctx);
+		break;
+	case FLAT_LIB_TIMELINE: {
+		struct flat_layer_state *child = state->children[tl_idx];
+		if (child && key_stack->count < FLAT_MAX_ANCESTOR_DEPTH) {
+			int d = key_stack->count++;
+			key_stack->keys[d] = key;
+			key_stack->timelines[d] = tl;
+			key_stack->locals[d] = local;
+			key_stack->instances[d] = 0;
+			render_flat_layer(parts, f, child,
+					lib->timeline.timelines, lib->timeline.nr_timelines,
+					&ctx, root, key_stack);
+			key_stack->count--;
+		}
+		break;
+	}
+	case FLAT_LIB_STOP_MOTION: {
+		int cg_idx = parts_flat_stop_motion_get_cg_lib(f, lib_idx, local);
+		if (cg_idx >= 0 && (size_t)cg_idx < f->nr_libraries)
+			render_flat_cg(parts, &f->textures[cg_idx], key, &ctx);
+		break;
+	}
+	case FLAT_LIB_EMITTER:
+		// cannot happen, handled above
+		break;
+	case FLAT_LIB_MEMORY:
+		// not implemented
+		break;
+	}
+}
+
+static void render_flat_layer(struct parts *parts, struct parts_flat *f,
+		struct flat_layer_state *state,
+		struct flat_timeline *timelines, size_t nr_timelines,
+		struct flat_draw_ctx *ctx, mat4 root,
+		struct flat_key_stack *key_stack)
+{
+	if (state->current_frame < state->last_rendered_frame)
+		parts_flat_clear_emitter_births(state);
+	state->last_rendered_frame = state->current_frame;
+	// reverse order for correct z-ordering
+	for (size_t i = nr_timelines; i-- > 0;) {
+		if (state->disabled_timelines && i < state->nr_timelines && state->disabled_timelines[i])
+			continue;
+		struct flat_timeline *tl = &timelines[i];
+		if (tl->type != FLAT_TIMELINE_GRAPHIC)
+			continue;
+		int local = state->current_frame - tl->begin_frame;
+		if (local < 0 || local >= tl->frame_count)
+			continue;
+
+		int lib_idx = parts_flat_find_library(f->flat, tl->library_name->text);
+		if (lib_idx >= 0 && f->flat->libraries[lib_idx].type == FLAT_LIB_EMITTER) {
+			render_flat_emitter(parts, f, lib_idx, (int)i, local, tl->frame_count, tl, state,
+					root, ctx->alpha, key_stack);
+			continue;
+		}
+		for (unsigned instance = 0; instance < parts_flat_key_count(tl, local); instance++)
+			render_flat_item(parts, f, state, i, tl, local, parts_flat_key(tl, local, instance),
+					ctx, root, key_stack);
+	}
+}
+
+static void parts_render_flat(struct parts *parts, struct parts_flat *f)
+{
+	if (!f->flat || !f->root_state)
+		return;
+
+	struct flat_draw_ctx ctx;
+	parts_world_matrix(parts, ctx.matrix);
+	glm_translate(ctx.matrix, (vec3){f->common.origin_offset.x, f->common.origin_offset.y, 0});
+	ctx.alpha = parts->global.alpha / 255.0f;
+	ctx.add_color[0] = parts->global.add_color.r / 255.0f;
+	ctx.add_color[1] = parts->global.add_color.g / 255.0f;
+	ctx.add_color[2] = parts->global.add_color.b / 255.0f;
+	ctx.mul_color[0] = parts->global.multiply_color.r / 255.0f;
+	ctx.mul_color[1] = parts->global.multiply_color.g / 255.0f;
+	ctx.mul_color[2] = parts->global.multiply_color.b / 255.0f;
+	ctx.draw_filter = parts->draw_filter;
+
+	struct flat_key_stack key_stack = { .count = 0 };
+	render_flat_layer(parts, f, f->root_state,
+			f->flat->timelines, f->flat->nr_timelines,
+			&ctx, ctx.matrix, &key_stack);
+}
+
+static void parts_render_3dlayer(struct parts *parts, struct parts_3dlayer *l)
+{
+	if (l->sprite_no < 0)
+		return;
+	struct sact_sprite *sp = sact_try_get_sprite(l->sprite_no);
+	if (!sp)
+		return;
+	struct texture *tex = sprite_get_texture(sp);
+	if (!tex->handle)
+		return;
+	// The bound sprite's texture is recreated by RE_set_viewport, so
+	// refresh the parts_common's view of it each frame.
+	l->common.texture = *tex;
+	l->common.w = tex->w;
+	l->common.h = tex->h;
+	parts_render_cg(parts, &l->common);
+}
+
+static void parts_render_flash_shape(struct parts *parts, struct parts_flash *f, struct parts_flash_object *obj, struct swf_tag_define_shape *tag)
+{
+	struct texture *src = ht_get_int(f->bitmaps, tag->fill_style.bitmap_id, NULL);
+	if (!src)
+		ERROR("undefined bitmap id %d", tag->fill_style.bitmap_id);
+
+	mat4 mw_transform = GLM_MAT4_IDENTITY_INIT;
+	glm_translate(mw_transform, (vec3) { parts->global.pos.x, parts->global.pos.y, 0 });
+	glm_rotate_z(mw_transform, parts->local.rotation.z, mw_transform);
+	glm_scale(mw_transform, (vec3){ parts->global.scale.x, parts->global.scale.y, 1.0 });
+	glm_translate(mw_transform, (vec3){ f->common.origin_offset.x, f->common.origin_offset.y, 0 });
+
+	glm_mul(mw_transform, obj->matrix, mw_transform);
+
+	glm_translate(mw_transform, (vec3){
+		twips_to_float(tag->bounds.x_min),
+		twips_to_float(tag->bounds.y_min),
+		0});
+	glm_scale(mw_transform, (vec3){
+		twips_to_float(tag->bounds.x_max - tag->bounds.x_min),
+		twips_to_float(tag->bounds.y_max - tag->bounds.y_min),
+		1.0});
+
+	Rectangle r = { 0, 0, src->w, src->h };
+
+	float blend_rate = (parts->global.alpha / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[3]);
+	vec3 add_color = {
+		(parts->global.add_color.r + obj->color_transform.add_terms[0]) / 255.0f,
+		(parts->global.add_color.g + obj->color_transform.add_terms[1]) / 255.0f,
+		(parts->global.add_color.b + obj->color_transform.add_terms[2]) / 255.0f
+	};
+	vec3 multiply_color = {
+		(parts->global.multiply_color.r / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[0]),
+		(parts->global.multiply_color.g / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[1]),
+		(parts->global.multiply_color.b / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[2])
+	};
+	parts_render_texture(src, mw_transform, &r, blend_rate, add_color, multiply_color, 0, parts->alpha_clipper_parts_no);
+}
+
+static void parts_render_flash_sprite(struct parts *parts, struct parts_flash *f, struct parts_flash_object *obj, struct swf_tag_define_sprite *tag)
+{
+	struct parts_flash_object *obj2 = ht_get_int(f->sprites, tag->sprite_id, NULL);
+	if (!obj2)
+		return;  // sprite has no visual elements.
+
+	struct swf_tag *child = ht_get_int(f->dictionary, obj2->character_id, NULL);
+	if (!child)
+		ERROR("character %d is not defined", obj2->character_id);
+	if (child->type != TAG_DEFINE_SHAPE)
+		ERROR("unexpected child type %d", child->type);
+
+	struct parts_flash_object transform;
+	glm_mul(obj->matrix, obj2->matrix, transform.matrix);
+	for (int i = 0; i < 4; i++) {
+		transform.color_transform.add_terms[i] =
+			obj->color_transform.add_terms[i] + obj2->color_transform.add_terms[i];
+	}
+	for (int i = 0; i < 4; i++) {
+		transform.color_transform.mult_terms[i] =
+			fixed16_mul(obj->color_transform.mult_terms[i], obj2->color_transform.mult_terms[i]);
+	}
+	parts_render_flash_shape(parts, f, &transform, (struct swf_tag_define_shape*)child);
+}
+
+static void parts_render_flash(struct parts *parts, struct parts_flash *f)
+{
+	struct parts_flash_object *obj;
+	TAILQ_FOREACH(obj, &f->display_list, entry) {
+		struct swf_tag *tag = ht_get_int(f->dictionary, obj->character_id, NULL);
+		if (!tag) {
+			WARNING("character %d is not defined", obj->character_id);
+			continue;
+		}
+		// set blend mode
+		switch (obj->blend_mode) {
+		case PARTS_FLASH_BLEND_MULTIPLY:
+			glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE);
+			break;
+		case PARTS_FLASH_BLEND_SCREEN:
+			glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ZERO, GL_ONE);
+			break;
+		case PARTS_FLASH_BLEND_ADD:
+			glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
+			break;
+		default:
+			break;
+		}
+		// render object
+		switch (tag->type) {
+		case TAG_DEFINE_SHAPE:
+			parts_render_flash_shape(parts, f, obj, (struct swf_tag_define_shape*)tag);
+			break;
+		case TAG_DEFINE_SPRITE:
+			parts_render_flash_sprite(parts, f, obj, (struct swf_tag_define_sprite*)tag);
+			break;
+		default:
+			ERROR("unknown tag %d", tag->type);
+		}
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+	}
+}
+
+static void parts_render_state(struct parts *parts, struct parts_state *state)
+{
+	switch (state->type) {
+	case PARTS_UNINITIALIZED:
+	case PARTS_RECT_DETECTION:
+	case PARTS_LAYOUT_BOX:
+		break;
+	case PARTS_CG:
+	case PARTS_ANIMATION:
+	case PARTS_NUMERAL:
+	case PARTS_HGAUGE:
+	case PARTS_VGAUGE:
+	case PARTS_CONSTRUCTION_PROCESS:
+	case PARTS_MOVIE:
+		if (state->common.texture.handle)
+			parts_render_cg(parts, &state->common);
+		break;
+	case PARTS_TEXT:
+		parts_render_text(parts, &state->text, NULL);
+		break;
+	case PARTS_FLASH:
+		parts_render_flash(parts, &state->flash);
+		break;
+	case PARTS_FLAT:
+		parts_render_flat(parts, &state->flat);
+		break;
+	case PARTS_3DLAYER:
+		parts_render_3dlayer(parts, &state->layer3d);
+		break;
+	}
+}
+
+static void parts_render_message_key(struct parts *parts)
+{
+	struct parts_message_window *w = parts->message_box;
+	if (!w->key_show) return;
+	struct parts_state key = w->key_wait;
+	key.common.origin_offset.x = parts->states[0].common.origin_offset.x + w->key_x;
+	key.common.origin_offset.y = parts->states[0].common.origin_offset.y + w->key_y;
+	parts_render_state(parts, &key);
+}
+
+static void parts_render_scrollbar(struct parts *parts)
+{
+	struct parts_scrollbar *s = parts->scrollbar;
+	Rectangle rects[4];
+	parts_scrollbar_rects(parts, rects);
+	const int order[] = {3, 0, 1, 2};
+	for (int i = 0; i < 4; i++) {
+		int piece = order[i], index = parts_scrollbar_skin_state(s, piece);
+		Rectangle rect = rects[piece];
+		if (rect.w <= 0 || rect.h <= 0 || (piece == 2 && !parts_scrollbar_range(s))) continue;
+		struct parts_state state = s->skins[piece][index];
+		if (state.common.w <= 0 || state.common.h <= 0) continue;
+		struct parts proxy = *parts;
+		proxy.parent = parts;
+		proxy.position_is_ratio = false;
+		memset(proxy.scroll_links, 0, sizeof(proxy.scroll_links));
+		proxy.local.pos = (SDL_FPoint){rect.x + parts->states[0].common.origin_offset.x,
+			rect.y + parts->states[0].common.origin_offset.y};
+		proxy.local.rotation.x = proxy.local.rotation.y = proxy.local.rotation.z = 0;
+		proxy.local.scale.x = !s->loaded[piece][index] ? (float)rect.w / state.common.w : 1.f;
+		proxy.local.scale.y = !s->loaded[piece][index] ? (float)rect.h / state.common.h : 1.f;
+		if (piece == 3 && state.type == PARTS_CG && s->loaded[piece][index]) {
+			// Sys43 clips a background skin to the track; it does not stretch it.
+			state.common.surface_area = (Rectangle){0, 0,
+				min(rect.w, state.common.w), min(rect.h, state.common.h)};
+		}
+		state.common.origin_offset = (Point){0, 0};
+		parts_render_state(&proxy, &state);
+	}
+}
+
+void parts_render(struct parts *parts)
+{
+	if (parts->textures_suspended || !parts_is_visible(parts))
+		return;
+	if (parts->scrollbar) {
+		parts_render_scrollbar(parts);
+		return;
+	}
+	struct parts_state *state = parts_display_state(parts);
+	if (parts->message_box) {
+		struct parts_message_window *w = parts->message_box;
+		struct parts p = *parts;
+		if (!w->active) {
+			p.global.multiply_color.r = p.global.multiply_color.r * min(255, max(0, w->inactive_color[0])) / 255;
+			p.global.multiply_color.g = p.global.multiply_color.g * min(255, max(0, w->inactive_color[1])) / 255;
+			p.global.multiply_color.b = p.global.multiply_color.b * min(255, max(0, w->inactive_color[2])) / 255;
+		}
+		if (w->key_z < 0) parts_render_message_key(&p);
+		parts_render_state(&p, state);
+		struct parts_text label = w->label.text;
+		int mode = w->text_origin >= 1 && w->text_origin <= 9 ? w->text_origin - 1 : 0;
+		label.common.origin_offset.x = state->common.origin_offset.x + w->text_area.x
+			+ (w->text_area.w - label.common.w) * (mode % 3) / 2;
+		label.common.origin_offset.y = state->common.origin_offset.y + w->text_area.y
+			+ (w->text_area.h - label.common.h) * (mode / 3) / 2;
+		parts_render_text(&p, &label, w);
+		if (w->key_z >= 0) parts_render_message_key(&p);
+		return;
+	}
+	struct parts_state checkbox_state;
+	struct parts_common *label_box = &state->common;
+	int label_width = state->common.w, label_height = state->common.h;
+	if (parts->component_type == 1 && parts->widget) {
+		struct parts_widget *w = parts->widget;
+		struct parts_state *normal = w->enabled ? &parts->states[parts->state] : &w->disabled;
+		label_box = &normal->common;
+		parts_widget_get_size(parts, &label_width, &label_height);
+		checkbox_state = *state;
+		checkbox_state.common.origin_offset = normal->common.origin_offset;
+		checkbox_state.common.origin_offset.y += (label_height - state->common.h) / 2;
+		state = &checkbox_state;
+	}
+	parts_render_state(parts, state);
+	if (parts->widget && parts->widget->text->size) {
+		struct parts_widget *w = parts->widget;
+		bool has_skin = w->cg_name->size || w->flat_name->size
+			|| (parts->component_type == 1 && (w->override_cg[w->checked]->size || w->override_flat[w->checked]->size));
+		if ((parts->component_type == 1 && !w->button_mode) || !has_skin) {
+			struct parts_text label = w->label.text;
+			int mode = w->text_origin >= 1 && w->text_origin <= 9 ? w->text_origin - 1 : 4;
+			label.common.origin_offset.x = label_box->origin_offset.x
+				+ (parts->component_type == 1 && !w->button_mode ? label_box->w
+					: (label_width - label.common.w) * (mode % 3) / 2);
+			label.common.origin_offset.y = label_box->origin_offset.y
+				+ (label_height - label.common.h) * (mode / 3) / 2;
+			parts_render_text(parts, &label, NULL);
+		}
+	}
+}
+
+void parts_render_family(struct parts *parts)
+{
+	parts_render(parts);
+
+	struct parts *child;
+	PARTS_FOREACH_CHILD(child, parts) {
+		parts_render_family(child);
+	}
+}
+
+void parts_engine_render(possibly_unused struct sprite *_)
+{
+	struct parts *parts;
+	PARTS_LIST_FOREACH(parts) {
+		parts_render(parts);
+	}
+}
+
+void parts_sprite_render(struct sprite *sp)
+{
+	parts_render((struct parts*)sp);
+}
+
+static bool pe_dirty = false;
+
+void parts_render_update(void)
+{
+	if (pe_dirty) {
+		struct parts *p;
+		PARTS_LIST_FOREACH(p) {
+			scene_sprite_dirty(&p->sp);
+		}
+		pe_dirty = false;
+	}
+}
+
+void parts_engine_dirty(void)
+{
+	pe_dirty = true;
+}
+
+void parts_engine_clean(void)
+{
+	pe_dirty = false;
+}
+
+void parts_dirty(possibly_unused struct parts *parts)
+{
+	pe_dirty = true;
+}
+
+void parts_render_init(void)
+{
+	gfx_load_shader(&parts_shader.shader, "shaders/parts.v.glsl", "shaders/parts.f.glsl");
+	parts_shader.blend_rate = glGetUniformLocation(parts_shader.shader.program, "blend_rate");
+	parts_shader.bot_left = glGetUniformLocation(parts_shader.shader.program, "bot_left");
+	parts_shader.top_right = glGetUniformLocation(parts_shader.shader.program, "top_right");
+	parts_shader.add_color = glGetUniformLocation(parts_shader.shader.program, "add_color");
+	parts_shader.multiply_color = glGetUniformLocation(parts_shader.shader.program, "multiply_color");
+	parts_shader.draw_filter = glGetUniformLocation(parts_shader.shader.program, "draw_filter");
+	parts_shader.use_clipper = glGetUniformLocation(parts_shader.shader.program, "use_clipper");
+	parts_shader.clipper_tex = glGetUniformLocation(parts_shader.shader.program, "clipper_tex");
+	parts_shader.inv_clipper_transform = glGetUniformLocation(parts_shader.shader.program, "inv_clipper_transform");
+}

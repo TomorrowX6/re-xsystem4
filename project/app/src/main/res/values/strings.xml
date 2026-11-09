@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">re:xsystem4</string>
+    <string name="action_refresh">刷新</string>
+    <string name="action_install_from_directory">导入游戏目录</string>
+    <string name="action_install_from_zip">从ZIP导入</string>
+    <string name="action_github">GitHub</string>
+    <string name="action_licenses">开源许可证</string>
+    <string name="choose_a_file">选择游戏 ZIP 文件</string>
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+    <string name="error">出错了</string>
+    <string name="install_dialog_title">正在导入游戏…</string>
+    <string name="install_progress">%s</string>
+    <string name="import_copy_progress">已复制 %1$d MB\n%2$s</string>
+    <string name="import_no_space">存储空间不足。请清理空间后重新导入，完整游戏通常需要至少 4 GB 可用空间。</string>
+    <string name="directory_no_game">请选择包含 AliceStart.ini / System40.ini 和 .ain 文件的游戏目录。</string>
+    <string name="directory_import_error">导入失败。请检查目录是否可读取、游戏文件是否完整，以及手机可用空间。</string>
+    <string name="toast_no_GameName">%s 缺少 GameName 字段。</string>
+    <string name="toast_no_ini">%s 中没有 AliceStart.ini 或 System40.ini。</string>
+    <string name="uninstall_dialog_message">移除“%s”的已导入资源？游戏存档会保留。</string>
+    <string name="uninstall_dialog_title">移除游戏资源</string>
+    <string name="zip_extraction_error">ZIP 导入失败，请检查文件和存储空间。</string>
+    <string name="zip_no_ini">ZIP 中没有找到游戏启动配置文件。</string>
+    <string name="loading_game">载入中…</string>
+</resources>
