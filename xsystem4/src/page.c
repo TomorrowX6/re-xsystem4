@@ -339,6 +339,15 @@ struct page *alloc_array(int rank, union vm_value *dimensions, enum ain_data_typ
 
 	data_type = unref_array_type(data_type);
 	enum ain_data_type type = array_type(data_type);
+	if (ain && ain->version >= 11 && rank == 1) {
+		struct ain_type elem = {
+			.data = type,
+			.struc = struct_type,
+			.rank = 0,
+			.array_type = NULL,
+		};
+		return v12_array_new(&elem, max(0, dimensions->i), init_structs);
+	}
 	struct page *page = alloc_page(ARRAY_PAGE, data_type, max(0, dimensions->i));
 	page->array.struct_type = struct_type;
 	page->array.rank = rank;
@@ -363,7 +372,26 @@ struct page *realloc_array(struct page *src, int rank, union vm_value *dimension
 {
 	if (rank < 1)
 		VM_ERROR("Tried to allocate 0-rank array");
-	if (!src && !dimensions->i)
+	if (src && src->type == ARRAY_PAGE && src->a_type == AIN_ARRAY && rank == 1) {
+		int width = src->array.element_type.data == AIN_IFACE ? 2 : 1;
+		int old_count = src->nr_vars / width;
+		int new_count = max(0, dimensions->i);
+		struct page *page = alloc_page(ARRAY_PAGE, AIN_ARRAY, new_count * width);
+		page->array = src->array;
+		int keep = min(new_count, old_count) * width;
+		memcpy(page->values, src->values, keep * sizeof(*page->values));
+		for (int i = keep; i < src->nr_vars; i++)
+			variable_fini(src->values[i], variable_type(src, i, NULL, NULL), true);
+		free_page(src);
+		for (int i = keep / width; i < new_count; i++) {
+			if (page->array.element_type.data == AIN_STRUCT && init_structs)
+				create_struct(page->array.struct_type, &page->values[i * width]);
+			else
+				page->values[i * width] = variable_initval_typed(&page->array.element_type);
+		}
+		return page;
+	}
+	if (!src && (!ain || ain->version < 11 || rank > 1) && !dimensions->i)
 		return NULL;
 	if (!src)
 		return alloc_array(rank, dimensions, data_type, struct_type, init_structs);

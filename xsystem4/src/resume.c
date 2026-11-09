@@ -99,6 +99,17 @@ static struct ain_type make_v12_element_type(enum ain_data_type leaf_data, int s
 	return *intern_v12_type(leaf_data, struct_type, depth);
 }
 
+static enum ain_data_type normalize_v12_array_leaf_type(enum ain_data_type type)
+{
+	switch (type) {
+	case AIN_ARRAY_TYPE:
+	case AIN_REF_ARRAY_TYPE:
+		return array_type(type);
+	default:
+		return type;
+	}
+}
+
 static const char *array_leaf_type_name(enum ain_data_type leaf_data, int struct_type)
 {
 	switch (leaf_data) {
@@ -385,6 +396,14 @@ static cJSON *resume_page_to_json(struct page *page)
 			enum ain_data_type leaf_data;
 			int struct_type, depth;
 			unwrap_v12_array_type(&page->array.element_type, &leaf_data, &struct_type, &depth);
+			leaf_data = normalize_v12_array_leaf_type(leaf_data);
+			cJSON_AddNumberToObject(json, "element-type", leaf_data);
+			cJSON_AddNumberToObject(json, "element-struct", struct_type);
+			cJSON_AddNumberToObject(json, "element-depth", depth);
+		} else if (ain->version >= 11) {
+			enum ain_data_type leaf_data = normalize_v12_array_leaf_type(page->a_type);
+			int struct_type = page->array.struct_type;
+			int depth = page->array.rank > 0 ? page->array.rank - 1 : 0;
 			cJSON_AddNumberToObject(json, "element-type", leaf_data);
 			cJSON_AddNumberToObject(json, "element-struct", struct_type);
 			cJSON_AddNumberToObject(json, "element-depth", depth);
@@ -422,8 +441,19 @@ static cJSON *heap_item_to_json(int i, possibly_unused void *_)
 	return item;
 }
 
+static void gc_heap_delegates(void)
+{
+	for (size_t i = 0; i < heap_size; i++) {
+		if (heap[i].ref > 0 && heap[i].type == VM_PAGE &&
+		    heap[i].page && heap[i].page->type == DELEGATE_PAGE) {
+			delegate_numof(heap[i].page);
+		}
+	}
+}
+
 static cJSON *heap_to_json(void)
 {
+	gc_heap_delegates();
 	return cJSON_CreateArray_cb(heap_size, heap_item_to_json, NULL);
 }
 
@@ -535,6 +565,15 @@ static struct rsave_heap_array *array_page_to_rsave(struct page *page, int slot)
 		enum ain_data_type leaf_data;
 		int struct_type, depth;
 		unwrap_v12_array_type(&page->array.element_type, &leaf_data, &struct_type, &depth);
+		leaf_data = normalize_v12_array_leaf_type(leaf_data);
+		o->rank_minus_1 = depth;
+		o->data_type = leaf_data;
+		o->struct_type.name = strdup(array_leaf_type_name(leaf_data, struct_type));
+		o->root_rank = depth + 1;
+	} else if (ain->version >= 11) {
+		enum ain_data_type leaf_data = normalize_v12_array_leaf_type(page->a_type);
+		int struct_type = page->array.struct_type;
+		int depth = page->array.rank > 0 ? page->array.rank - 1 : 0;
 		o->rank_minus_1 = depth;
 		o->data_type = leaf_data;
 		o->struct_type.name = strdup(array_leaf_type_name(leaf_data, struct_type));
@@ -632,6 +671,7 @@ static void *heap_item_to_rsave(int i)
 
 static void save_heap_to_rsave(struct rsave *rs)
 {
+	gc_heap_delegates();
 	rs->nr_heap_objs = heap_size;
 	rs->heap = xcalloc(heap_size, sizeof(void*));
 	for (size_t i = 0; i < heap_size; i++) {
@@ -818,13 +858,20 @@ static void load_json_page(int slot, cJSON *json)
 		cJSON *_rank        = type_check(cJSON_Number, cJSON_GetObjectItem(json, "rank"));
 		page->array.struct_type = _struct_type->valueint;
 		page->array.rank = _rank->valueint;
-		if (page->a_type == AIN_ARRAY) {
-			cJSON *elem_type = type_check(cJSON_Number, cJSON_GetObjectItem(json, "element-type"));
+		if (ain->version >= 11) {
+			cJSON *elem_type = cJSON_GetObjectItem(json, "element-type");
 			cJSON *elem_struct = cJSON_GetObjectItem(json, "element-struct");
 			cJSON *elem_depth = cJSON_GetObjectItem(json, "element-depth");
+			enum ain_data_type dt = elem_type
+				? normalize_v12_array_leaf_type(type_check(cJSON_Number, elem_type)->valueint)
+				: normalize_v12_array_leaf_type(page->a_type);
 			int st = elem_struct ? type_check(cJSON_Number, elem_struct)->valueint : page->array.struct_type;
-			int depth = elem_depth ? type_check(cJSON_Number, elem_depth)->valueint : 0;
-			page->array.element_type = make_v12_element_type(elem_type->valueint, st, depth);
+			int depth = elem_depth
+				? type_check(cJSON_Number, elem_depth)->valueint
+				: (page->a_type == AIN_ARRAY ? 0 : (page->array.rank > 0 ? page->array.rank - 1 : 0));
+			page->a_type = AIN_ARRAY;
+			page->array.rank = 1;
+			page->array.element_type = make_v12_element_type(dt, st, depth);
 		}
 	} else if (page_type == DELEGATE_PAGE) {
 		cJSON *cursor = cJSON_GetObjectItem(json, "cursor");
@@ -1007,15 +1054,18 @@ static void load_rsave_array(int slot, struct rsave_heap_array *a, int32_t versi
 		heap[slot].page = NULL;
 		return;
 	}
-	int struct_type = resolve_array_leaf_symbol(a->data_type, &a->struct_type);
+	enum ain_data_type data_type = a->data_type;
+	if (ain->version >= 11)
+		data_type = normalize_v12_array_leaf_type(data_type);
+	int struct_type = resolve_array_leaf_symbol(data_type, &a->struct_type);
 	struct page *page;
 	if (ain->version >= 11) {
 		page = alloc_page(ARRAY_PAGE, AIN_ARRAY, a->nr_slots);
 		page->array.struct_type = struct_type;
 		page->array.rank = 1;
-		page->array.element_type = make_v12_element_type(a->data_type, struct_type, a->rank_minus_1);
+		page->array.element_type = make_v12_element_type(data_type, struct_type, a->rank_minus_1);
 	} else {
-		page = alloc_page(ARRAY_PAGE, a->data_type, a->nr_slots);
+		page = alloc_page(ARRAY_PAGE, data_type, a->nr_slots);
 		page->array.struct_type = struct_type;
 		page->array.rank = a->rank_minus_1 + 1;
 	}
@@ -1060,6 +1110,41 @@ static void load_rsave_struct(int slot, struct rsave_heap_struct *s, int32_t ver
 	heap_set_page(slot, page);
 }
 
+static bool delegate_target_matches_function(struct rsave *save, int obj, int fun)
+{
+	if (obj < 0 || obj >= save->nr_heap_objs || !save->heap[obj])
+		return false;
+	if (*(enum rsave_heap_tag *)save->heap[obj] != RSAVE_STRUCT)
+		return false;
+	if (fun < 0 || fun >= ain->nr_functions || !ain->functions[fun].name)
+		return false;
+	struct rsave_heap_struct *s = save->heap[obj];
+	const char *fname = ain->functions[fun].name;
+	const char *at = NULL;
+	for (const char *p = fname; *p; p++) {
+		if (SJIS_2BYTE(*p) && p[1]) {
+			p++;
+			continue;
+		}
+		if (*p == '@') {
+			at = p;
+			break;
+		}
+	}
+	if (!at || at == fname)
+		return true;
+	size_t struct_len = (size_t)(at - fname);
+	if (s->struct_type.name) {
+		return strlen(s->struct_type.name) == struct_len &&
+		       !strncmp(s->struct_type.name, fname, struct_len);
+	}
+	if (s->struct_type.id >= 0 && s->struct_type.id < ain->nr_structures) {
+		const char *sname = ain->structures[s->struct_type.id].name;
+		return strlen(sname) == struct_len && !strncmp(sname, fname, struct_len);
+	}
+	return true;
+}
+
 static void load_rsave_delegate(int slot, struct rsave_heap_delegate *d, struct rsave *save)
 {
 	if (save->version == 14) {
@@ -1074,7 +1159,7 @@ static void load_rsave_delegate(int slot, struct rsave_heap_delegate *d, struct 
 					 display_sjis0(d->entries[i].function.name ? d->entries[i].function.name : ""));
 			int seq = 0;
 			if (obj >= 0) {
-				if (obj < save->nr_heap_objs && *(enum rsave_heap_tag *)save->heap[obj] != RSAVE_NULL)
+				if (delegate_target_matches_function(save, obj, fun))
 					seq = obj + 1;
 				else
 					seq = -1;
@@ -1127,9 +1212,11 @@ static void load_json_call_stack(cJSON *json)
 	cJSON *item;
 	cJSON_ArrayForEach(item, json) {
 		type_check(cJSON_Object, item);
+		int32_t return_address = type_check(cJSON_Number, cJSON_GetObjectItem(item, "return-address"))->valueint;
 		call_stack[call_stack_ptr++] = (struct function_call) {
 			.fno            = type_check(cJSON_Number, cJSON_GetObjectItem(item, "function"))->valueint,
-			.return_address = type_check(cJSON_Number, cJSON_GetObjectItem(item, "return-address"))->valueint,
+			.call_address   = return_address,
+			.return_address = return_address,
 			.page_slot      = type_check(cJSON_Number, cJSON_GetObjectItem(item, "local-page"))->valueint,
 			.struct_page    = type_check(cJSON_Number, cJSON_GetObjectItem(item, "struct-page"))->valueint,
 		};
@@ -1160,6 +1247,7 @@ static void load_rsave_call_stack(struct rsave *save)
 				VM_ERROR("Failed to load VM image: CRC mismatch for function '%s'", display_sjis0(rr->caller_func));
 			call_stack[call_stack_ptr++] = (struct function_call) {
 				.fno            = fno,
+				.call_address   = return_address,
 				.return_address = return_address,
 				.page_slot      = save->call_frames[i].local_ptr,
 				.struct_page    = save->call_frames[i].struct_ptr,
