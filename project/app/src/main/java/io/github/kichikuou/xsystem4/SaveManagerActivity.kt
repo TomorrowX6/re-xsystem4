@@ -209,6 +209,12 @@ class SaveManagerActivity : Activity() {
     private fun refreshFileList() {
         val saveDir = currentTarget.saveDir
         saveDir.mkdirs()
+        File(saveDir, "crash.log").delete()
+        File(saveDir, "crash_history.log").delete()
+        currentTarget.externalGameDir?.let { gameDir ->
+            File(gameDir, "crash.log").delete()
+            File(gameDir, "crash_history.log").delete()
+        }
 
         val list = mutableListOf<SaveFileEntry>()
         collectSaveFiles(saveDir, saveDir, list)
@@ -332,8 +338,7 @@ class SaveManagerActivity : Activity() {
         val options = arrayOf(
             "从 ZIP 压缩包导入存档 (.zip)",
             "从外部文件夹导入存档",
-            "导入单个或多个存档文件 (.asd / .sav 等)",
-            "从外部游戏目录 SaveData 子目录导入"
+            "导入单个或多个存档文件 (.asd / .sav 等)"
         )
         AlertDialog.Builder(this)
             .setTitle("从外部导入存档")
@@ -342,7 +347,6 @@ class SaveManagerActivity : Activity() {
                     0 -> chooseImportZip()
                     1 -> chooseImportDirectory()
                     2 -> chooseImportFiles()
-                    3 -> importFromExternalGameSaveData()
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -357,8 +361,7 @@ class SaveManagerActivity : Activity() {
         }
         val options = arrayOf(
             "导出全部存档为 ZIP 压缩包 (.zip)",
-            "导出全部存档到外部文件夹",
-            "导出到外部游戏目录 SaveData 子目录"
+            "导出全部存档到外部文件夹"
         )
         AlertDialog.Builder(this)
             .setTitle("内部存档导出到外部")
@@ -366,7 +369,6 @@ class SaveManagerActivity : Activity() {
                 when (which) {
                     0 -> chooseExportZip()
                     1 -> chooseExportDirectory()
-                    2 -> exportToExternalGameSaveData()
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -685,44 +687,6 @@ class SaveManagerActivity : Activity() {
         }
     }
 
-    private fun importFromExternalGameSaveData() {
-        val extRoot = currentTarget.externalGameDir
-            ?: getExternalFilesDir(null)?.let { File(it, currentTarget.dirName) }
-        val extSaveDir = extRoot?.let { File(it, "SaveData") }
-        if (extSaveDir == null || !extSaveDir.exists() || !extSaveDir.isDirectory) {
-            showMessageDialog(
-                "未找到外部 SaveData 目录",
-                "未在外部游戏目录中找到：\n${extSaveDir?.absolutePath ?: "Android/data/.../SaveData"}\n\n请先将存档放入该路径，或使用“从 ZIP 压缩包导入”/“从外部文件夹导入”。"
-            )
-            return
-        }
-        val targetDir = currentTarget.saveDir
-        showProgress("正在从外部 SaveData 同步导入…")
-        activeJob = scope.launch {
-            try {
-                val count = withContext(Dispatchers.IO) {
-                    var copied = 0
-                    extSaveDir.walkTopDown().forEach { src ->
-                        if (src.isFile && !src.name.startsWith(".")) {
-                            val rel = src.relativeTo(extSaveDir).path
-                            val dst = File(targetDir, rel)
-                            dst.parentFile?.mkdirs()
-                            src.copyTo(dst, overwrite = true)
-                            copied++
-                        }
-                    }
-                    copied
-                }
-                dismissProgress()
-                refreshFileList()
-                showMessageDialog("导入完成", "已从\n${extSaveDir.absolutePath}\n导入 $count 个存档文件。")
-            } catch (e: Exception) {
-                dismissProgress()
-                showMessageDialog("导入失败", "导入失败：${e.localizedMessage ?: "未知错误"}")
-            }
-        }
-    }
-
     private fun runExportZip(uri: Uri) {
         val entriesToExport = currentEntries.toList()
         showProgress("正在导出存档为 ZIP…")
@@ -824,48 +788,12 @@ class SaveManagerActivity : Activity() {
         return DocumentsContract.getDocumentId(createdUri)
     }
 
-    private fun exportToExternalGameSaveData() {
-        val baseExt = currentTarget.externalGameDir
-            ?: getExternalFilesDir(null)?.let { File(it, currentTarget.dirName) }
-        if (baseExt == null) {
-            Toast.makeText(this, "无法访问外部应用目录", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val destSaveDir = File(baseExt, "SaveData")
-        val entriesToExport = currentEntries.toList()
-        showProgress("正在导出到外部游戏目录…")
-        activeJob = scope.launch {
-            try {
-                val count = withContext(Dispatchers.IO) {
-                    destSaveDir.mkdirs()
-                    var exported = 0
-                    for (entry in entriesToExport) {
-                        if (!entry.file.exists()) continue
-                        val dst = File(destSaveDir, entry.relativePath)
-                        dst.parentFile?.mkdirs()
-                        entry.file.copyTo(dst, overwrite = true)
-                        exported++
-                    }
-                    exported
-                }
-                dismissProgress()
-                showMessageDialog(
-                    "导出成功",
-                    "已将 $count 个存档文件导出至外部路径：\n${destSaveDir.absolutePath}"
-                )
-            } catch (e: Exception) {
-                dismissProgress()
-                showMessageDialog("导出失败", "导出失败：${e.localizedMessage ?: "未知错误"}")
-            }
-        }
-    }
-
     private fun showSingleFileManageDialog(entry: SaveFileEntry) {
         val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
             .format(Date(entry.lastModified))
         val options = arrayOf(
             "导出此存档文件到外部",
-            "备份此存档 (在内部目录创建副本)",
+            "备份此存档",
             "重命名此存档文件",
             "删除此存档文件"
         )

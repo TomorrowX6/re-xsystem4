@@ -682,6 +682,18 @@ static void write_crash_report(const char *kind, const char *msg, int sig,
 	}
 
 #ifndef _WIN32
+#ifdef __ANDROID__
+	{
+		const char *ext_crash = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash.log";
+		const char *ext_hist  = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash_history.log";
+		if (write_file_raw(ext_crash, crash_report_buf, off, false)) {
+			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
+				snprintf(out_primary_path, out_primary_size, "%s", ext_crash);
+		}
+		write_file_raw(ext_hist, crash_report_buf, off, true);
+	}
+	__android_log_write(ANDROID_LOG_FATAL, "XSystem4Crash", crash_report_buf);
+#else
 	char path_buf[PATH_MAX];
 	const char *env_crash_log = getenv("XSYSTEM4_CRASH_LOG");
 	if (env_crash_log && *env_crash_log) {
@@ -708,22 +720,6 @@ static void write_crash_report(const char *kind, const char *msg, int sig,
 		snprintf(path_buf, sizeof(path_buf), "%s/crash_history.log", config.save_dir);
 		write_file_raw(path_buf, crash_report_buf, off, true);
 	}
-#ifdef __ANDROID__
-	{
-		const char *ext_crash = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash.log";
-		const char *ext_hist  = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash_history.log";
-		if (write_file_raw(ext_crash, crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "%s", ext_crash);
-		}
-		write_file_raw(ext_hist, crash_report_buf, off, true);
-		write_file_raw("/storage/emulated/0/Download/rance10_crash.log", crash_report_buf, off, false);
-		if (write_file_raw("/data/user/0/io.github.rance10.nativeport/files/crash.log", crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "/data/user/0/io.github.rance10.nativeport/files/crash.log");
-		}
-	}
-	__android_log_write(ANDROID_LOG_FATAL, "XSystem4Crash", crash_report_buf);
 #endif
 	ssize_t unused_r = write(STDERR_FILENO, crash_report_buf, off);
 	(void)unused_r;

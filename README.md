@@ -79,8 +79,8 @@ To run a game, prepare the complete original PC game files (containing `AliceSta
 
 ### Save Manager (External Import / Internal Export / Save Management)
 The main launcher includes a **Save Manager (`存档管理器`)** button between **Import from ZIP (`从ZIP导入`)** and **GitHub**:
-- **Import Saves from External Storage**: Import saves from an external `.zip` archive, an external folder, individual save files (`GlobalSave.asd`, `Collection.asd`, `SaveData*.asd`, etc.), or sync from `Android/data/io.github.rance10.nativeport/files/<GameDir>/SaveData`.
-- **Export Internal Saves**: Package all internal saves into an external `.zip` archive, export directly to any external folder, or sync to the external game directory's `SaveData/` folder.
+- **Import Saves from External Storage**: Import saves from an external `.zip` archive, an external folder, or individual save files (`GlobalSave.asd`, `Collection.asd`, `SaveData*.asd`, etc.) directly into the internal save directory.
+- **Export Internal Saves**: Package all internal saves into an external `.zip` archive or export directly to any external folder.
 - **Manage Save Files**: Switch between game save directories, inspect file types, sizes, and modification timestamps, and export, back up (`.bak`), rename, or delete individual save files.
 
 ---

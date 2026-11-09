@@ -57,6 +57,10 @@ data class Item(val name: String, val path: File, val homedir: File, val savedir
             }
             val savedir = File(context.filesDir, "saves/${dir.name}")
             savedir.mkdirs()
+            File(dir, "crash.log").delete()
+            File(dir, "crash_history.log").delete()
+            File(savedir, "crash.log").delete()
+            File(savedir, "crash_history.log").delete()
             return Item(ini.gameName, dir, homedir, savedir, icon, null)
         }
 
