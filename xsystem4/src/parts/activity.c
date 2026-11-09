@@ -552,6 +552,7 @@ static void load_part(struct activity *a, struct ex_tree *tree, int parent, bool
 		PE_SetLayoutBoxLayoutType(no, number(info, "レイアウト类型", 0));
 		PE_SetLayoutBoxAlign(no, number(info, "配置", 1));
 		PE_SetLayoutBoxReturnF(no, number(info, "翻折許可", 0), number(info, "翻折尺寸", 200));
+		PE_SetLayoutBoxReturnSizeForRate(no, number(info, "翻折尺寸を率として認識する", 0));
 		PE_set_layoutbox_padding(no, item(info, "パディング", 0, 0), item(info, "パディング", 1, 0), item(info, "パディング", 2, 0), item(info, "パディング", 3, 0));
 	} else if (!strcmp(kind, "低レベルパーツ")) {
 		load_state(p, node(info, "一般状态"), 1);

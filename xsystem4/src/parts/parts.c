@@ -284,7 +284,6 @@ static void parts_state_free(struct parts_state *state)
 	parts_state_discard_texture_backups(state);
 	switch (state->type) {
 	case PARTS_UNINITIALIZED:
-	case PARTS_RECT_DETECTION:
 	case PARTS_LAYOUT_BOX:
 		break;
 	case PARTS_CG:
@@ -309,6 +308,12 @@ static void parts_state_free(struct parts_state *state)
 	case PARTS_VGAUGE:
 		gfx_delete_texture(&state->common.texture);
 		gfx_delete_texture(&state->gauge.cg);
+		if (state->gauge.cg_name)
+			free_string(state->gauge.cg_name);
+		break;
+	case PARTS_RECT_DETECTION:
+		if (state->rect.cg_name)
+			free_string(state->rect.cg_name);
 		break;
 	case PARTS_CONSTRUCTION_PROCESS:
 		gfx_delete_texture(&state->common.texture);
@@ -363,6 +368,8 @@ void parts_state_reset(struct parts_state *state, enum parts_type type)
 	switch (type) {
 	case PARTS_TEXT:
 		state->text.ts = default_text_style;
+		state->text.ruby_ts = default_text_style;
+		state->text.ruby_ts.size = 10.0f;
 		break;
 	case PARTS_NUMERAL:
 		state->num.length = ain->version >= 12 ? 0 : 1;
@@ -377,6 +384,7 @@ void parts_state_reset(struct parts_state *state, enum parts_type type)
 	case PARTS_HGAUGE:
 	case PARTS_VGAUGE:
 		state->gauge.cg_no = -1;
+		state->gauge.cg_name = string_ref(&EMPTY_STRING);
 		state->gauge.rate = 0.0f;
 		state->gauge.numerator = 0.0f;
 		state->gauge.denominator = 1.0f;
@@ -1810,6 +1818,9 @@ bool parts_gauge_set_cg(struct parts *parts, struct parts_gauge *g, struct strin
 	_parts_set_gauge_cg(parts, g, cg);
 	cg_free(cg);
 	g->cg_no = cg_no;
+	if (g->cg_name)
+		free_string(g->cg_name);
+	g->cg_name = string_dup(cg_name);
 	return true;
 }
 
@@ -2898,7 +2909,24 @@ void PE_GetRectangleDetectionPoint(int no, int *x0, int *y0, int *x1, int *y1,
 
 bool PE_SetPartsCGDetectionSize(int parts_no, struct string *cg_name, int state)
 {
-	UNIMPLEMENTED("(%d, %s, %d)", parts_no, display_sjis0(cg_name->text), state);
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *parts = parts_get(parts_no);
+	if (parts->states[state].type != PARTS_RECT_DETECTION)
+		parts_state_reset(&parts->states[state], PARTS_RECT_DETECTION);
+	struct parts_rect *rect = &parts->states[state].rect;
+	if (rect->cg_name)
+		free_string(rect->cg_name);
+	rect->cg_name = cg_name ? string_dup(cg_name) : string_ref(&EMPTY_STRING);
+	if (cg_name && cg_name->size > 0) {
+		int cg_no;
+		struct cg *cg = asset_cg_load_by_name(cg_name->text, &cg_no);
+		if (cg) {
+			parts_set_dims(parts, &rect->common, cg->metrics.w, cg->metrics.h);
+			cg_free(cg);
+			return true;
+		}
+	}
 	return false;
 }
 

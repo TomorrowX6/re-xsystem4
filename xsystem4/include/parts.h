@@ -434,6 +434,8 @@ void PE_SetLayoutBoxReturnF(int parts_no, bool return_flag, float return_size);
 bool PE_IsLayoutBoxReturn(int parts_no);
 int PE_GetLayoutBoxReturnSize(int parts_no);
 float PE_GetLayoutBoxReturnSizeF(int parts_no);
+void PE_SetLayoutBoxReturnSizeForRate(int parts_no, bool size_for_rate);
+bool PE_IsLayoutBoxReturnSizeForRate(int parts_no);
 void PE_SetLayoutBoxAlign(int parts_no, int align);
 int PE_GetLayoutBoxAlign(int parts_no);
 void PE_SetComponentMargin(int parts_no, int top, int bottom, int left, int right);

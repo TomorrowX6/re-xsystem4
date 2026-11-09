@@ -297,6 +297,201 @@ static bool PartsEngine_LoadActivityEXText(struct string *name, struct string *t
 	return true;
 }
 
+static bool PartsEngine_SaveActivityEXText(struct string **text, struct string *name)
+{
+	if (!text)
+		return false;
+	if (*text)
+		free_string(*text);
+	*text = PE_GetActivityEXText(name);
+	return true;
+}
+
+static bool PartsEngine_WriteActivityFile(struct string *name, struct string *file_name)
+{
+	(void)name;
+	(void)file_name;
+	return false;
+}
+
+static void PartsEngine_SetComponentMessageWindowEffectLink(int parts_no, bool link)
+{
+	parts_get(parts_no)->message_window_effect_link = link;
+}
+
+static bool PartsEngine_IsComponentMessageWindowEffectLink(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->message_window_effect_link : false;
+}
+
+static void PartsEngine_SetComponentEnableClipArea(int parts_no, bool enable)
+{
+	struct parts *p = parts_get(parts_no);
+	if (p->enable_clip_area != enable) {
+		p->enable_clip_area = enable;
+		parts_component_dirty(p);
+	}
+}
+
+static bool PartsEngine_IsComponentEnableClipArea(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->enable_clip_area : false;
+}
+
+static void PartsEngine_SetComponentClipArea(int parts_no, int x, int y, int w, int h)
+{
+	struct parts *p = parts_get(parts_no);
+	p->clip_area = (Rectangle){ x, y, w, h };
+	parts_component_dirty(p);
+}
+
+static int PartsEngine_GetComponentClipAreaPosX(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->clip_area.x : 0;
+}
+
+static int PartsEngine_GetComponentClipAreaPosY(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->clip_area.y : 0;
+}
+
+static int PartsEngine_GetComponentClipAreaPosWidth(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->clip_area.w : 0;
+}
+
+static int PartsEngine_GetComponentClipAreaPosHeight(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->clip_area.h : 0;
+}
+
+static void PartsEngine_SetComponentReverseTB(int parts_no, bool reverse)
+{
+	struct parts *p = parts_get(parts_no);
+	p->reverse_tb = reverse;
+}
+
+static void PartsEngine_SetComponentReverseLR(int parts_no, bool reverse)
+{
+	struct parts *p = parts_get(parts_no);
+	p->reverse_lr = reverse;
+}
+
+static bool PartsEngine_GetComponentReverseTB(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->reverse_tb : false;
+}
+
+static bool PartsEngine_GetComponentReverseLR(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->reverse_lr : false;
+}
+
+static void PartsEngine_SetComponentTextureFilterType(int parts_no, int type)
+{
+	parts_get(parts_no)->texture_filter_type = type;
+}
+
+static int PartsEngine_GetComponentTextureFilterType(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->texture_filter_type : 0;
+}
+
+static void PartsEngine_SetComponentTextureAddressType(int parts_no, int type)
+{
+	parts_get(parts_no)->texture_address_type = type;
+}
+
+static int PartsEngine_GetComponentTextureAddressType(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->texture_address_type : 0;
+}
+
+static void PartsEngine_SetComponentMipmap(int parts_no, bool mipmap)
+{
+	parts_get(parts_no)->mipmap = mipmap;
+}
+
+static bool PartsEngine_IsComponentMipmap(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->mipmap : false;
+}
+
+static void PartsEngine_Parts_SetUpdateLookAtPos(int parts_no, bool enable)
+{
+	parts_get(parts_no)->update_look_at_pos = enable;
+}
+
+static bool PartsEngine_Parts_IsUpdateLookAtPos(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->update_look_at_pos : false;
+}
+
+static void PartsEngine_Parts_SetAnchor(int parts_no, bool top, bool bottom, bool left, bool right)
+{
+	struct parts *p = parts_get(parts_no);
+	p->anchor_top = top;
+	p->anchor_bottom = bottom;
+	p->anchor_left = left;
+	p->anchor_right = right;
+}
+
+static bool PartsEngine_Parts_IsAnchorTop(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->anchor_top : false;
+}
+
+static bool PartsEngine_Parts_IsAnchorBottom(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->anchor_bottom : false;
+}
+
+static bool PartsEngine_Parts_IsAnchorLeft(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->anchor_left : false;
+}
+
+static bool PartsEngine_Parts_IsAnchorRight(int parts_no)
+{
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->anchor_right : false;
+}
+
+static void PartsEngine_SetMotionData(int parts_no, struct string *motion_name, int time, int fps)
+{
+	(void)parts_no;
+	(void)motion_name;
+	(void)time;
+	(void)fps;
+}
+
+static int PartsEngine_GetMotionBeginFrame(struct string *motion_name)
+{
+	(void)motion_name;
+	return 0;
+}
+
+static int PartsEngine_GetMotionEndFrame(struct string *motion_name)
+{
+	(void)motion_name;
+	return 0;
+}
+
 static struct string *PartsEngine_GetTextBoxText_v12(int parts_no)
 {
 	return PE_GetTextBoxText(parts_no);
@@ -395,12 +590,24 @@ static void PartsEngine_Parts_SetFlatBeginSeekFrame(int parts_no, int seek, int 
 	parts_get_flat(parts_get(parts_no), state)->begin_seek_frame = seek;
 }
 
+static void PartsEngine_WidgetSetSize(int parts_no, int w, int h)
+{
+	struct parts *p = parts_get(parts_no);
+	parts_set_dims(p, &p->states[0].common, w, h);
+	parts_component_dirty(p);
+}
+
 static void PartsEngine_WidgetStub_ii(int parts_no, int a, int b)
 {
 	(void)parts_no; (void)a; (void)b;
 }
 
 static void PartsEngine_WidgetStub_i(int parts_no, int a)
+{
+	(void)parts_no; (void)a;
+}
+
+static void PartsEngine_WidgetStub_f(int parts_no, float a)
 {
 	(void)parts_no; (void)a;
 }
@@ -434,6 +641,12 @@ static int PartsEngine_WidgetGetZero(int parts_no)
 {
 	(void)parts_no;
 	return 0;
+}
+
+static float PartsEngine_WidgetGetFloatZero(int parts_no)
+{
+	(void)parts_no;
+	return 0.0f;
 }
 
 static int PartsEngine_WidgetGetMinusOne(int parts_no)
@@ -473,6 +686,440 @@ static void PartsEngine_WidgetGetFontProperty(int parts_no, int *type, int *size
 	(void)parts_no;
 	*type = 0; *size = 16; *r = 255; *g = 255; *b = 255;
 	*bold = 0.0f; *er = 0; *eg = 0; *eb = 0; *edge = 0.0f;
+}
+
+static void PartsEngine_GetFormGroupViewSnap(int parts_no, int table_idx,
+		bool *top, bool *bottom, bool *left, bool *right)
+{
+	(void)parts_no; (void)table_idx;
+	if (top) *top = false;
+	if (bottom) *bottom = false;
+	if (left) *left = false;
+	if (right) *right = false;
+}
+
+static int PartsEngine_NumofFormGroupVList(int parts_no, int table_idx)
+{
+	(void)parts_no; (void)table_idx;
+	return 0;
+}
+
+static int PartsEngine_NumofFormGroupForm(int parts_no, int table_idx, int vlist_idx)
+{
+	(void)parts_no; (void)table_idx; (void)vlist_idx;
+	return 0;
+}
+
+static int PartsEngine_GetFormGroupFormNumber(int parts_no, int table_idx, int vlist_idx, int form_idx)
+{
+	(void)parts_no; (void)table_idx; (void)vlist_idx; (void)form_idx;
+	return 0;
+}
+
+static void PartsEngine_SetFormGroupViewSpan(int parts_no, int table_idx,
+		bool top, bool bottom, bool left, bool right)
+{
+	(void)parts_no; (void)table_idx;
+	(void)top; (void)bottom; (void)left; (void)right;
+}
+
+static void PartsEngine_AddFormGroupFormNumber(int parts_no, int table_idx, int vlist_idx, int add_form)
+{
+	(void)parts_no; (void)table_idx; (void)vlist_idx; (void)add_form;
+}
+
+static int PartsEngine_Parts_GetPartsCGDeform(int parts_no, int state)
+{
+	(void)state;
+	struct parts *p = parts_try_get(parts_no);
+	return p ? p->sprite_deform : 0;
+}
+
+static void PartsEngine_GetStateSurfaceArea(int parts_no, enum parts_type expected,
+		int *x, int *y, int *w, int *h, int state)
+{
+	*x = *y = *w = *h = 0;
+	if (!parts_state_valid(--state))
+		return;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != expected)
+		return;
+	Rectangle r = p->states[state].common.surface_area;
+	*x = r.x;
+	*y = r.y;
+	*w = r.w;
+	*h = r.h;
+}
+
+static void PartsEngine_GetLoopCGSurfaceArea(int parts_no, int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_ANIMATION, x, y, w, h, state);
+}
+
+static struct string *PartsEngine_GetLoopCGCGName(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return string_ref(&EMPTY_STRING);
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_ANIMATION || !p->states[state].anim.cg_name)
+		return string_ref(&EMPTY_STRING);
+	return string_dup(p->states[state].anim.cg_name);
+}
+
+static int PartsEngine_GetLoopCGStartNo(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_ANIMATION)
+		return 0;
+	return p->states[state].anim.start_no;
+}
+
+static int PartsEngine_GetLoopCGNumofCG(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_ANIMATION)
+		return 0;
+	return p->states[state].anim.nr_frames;
+}
+
+static int PartsEngine_Parts_GetLoopCGTimeParCG(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_ANIMATION)
+		return 0;
+	return p->states[state].anim.frame_time;
+}
+
+static bool PartsEngine_Parts_DeletePartsTopTextLine(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT || p->states[state].text.nr_lines == 0)
+		return false;
+	struct parts_text *t = &p->states[state].text;
+	for (int i = 0; i < t->lines[0].nr_chars; i++)
+		gfx_delete_texture(&t->lines[0].chars[i].t);
+	free(t->lines[0].chars);
+	t->nr_lines--;
+	memmove(&t->lines[0], &t->lines[1], t->nr_lines * sizeof(struct parts_text_line));
+	parts_text_update_dims(p, t);
+	return true;
+}
+
+static void PartsEngine_Parts_SetPartsTextHighlight(int parts_no, int start, int length,
+		int r, int g, int b, int state)
+{
+	(void)parts_no; (void)start; (void)length; (void)r; (void)g; (void)b; (void)state;
+}
+
+static void PartsEngine_Parts_AddPartsTextHighlight(int parts_no, int start, int length,
+		int r, int g, int b, int state)
+{
+	(void)parts_no; (void)start; (void)length; (void)r; (void)g; (void)b; (void)state;
+}
+
+static void PartsEngine_Parts_ClearPartsTextHighlight(int parts_no, int state)
+{
+	(void)parts_no; (void)state;
+}
+
+static void PartsEngine_Parts_SetPartsTextCountReturn(int parts_no, bool count, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->count_return = count;
+}
+
+static bool PartsEngine_Parts_GetPartsTextCountReturn(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return false;
+	return p->states[state].text.count_return;
+}
+
+static void PartsEngine_Parts_SetTextShowTime(int parts_no, int time, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->show_time = time;
+}
+
+static int PartsEngine_Parts_GetTextShowTime(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return 0;
+	return p->states[state].text.show_time;
+}
+
+static void PartsEngine_Parts_SetTextPos(int parts_no, int pos, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->text_pos = pos;
+}
+
+static int PartsEngine_Parts_GetTextPos(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return 0;
+	return p->states[state].text.text_pos;
+}
+
+static void PartsEngine_Parts_SetTextEnableTag(int parts_no, bool enable, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->enable_tag = enable;
+}
+
+static bool PartsEngine_Parts_IsTextEnableTag(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return false;
+	return p->states[state].text.enable_tag;
+}
+
+static void PartsEngine_Parts_FixText(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->fixed = true;
+}
+
+static bool PartsEngine_Parts_IsFixedText(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return true;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return true;
+	return p->states[state].text.fixed;
+}
+
+static void PartsEngine_Parts_SetRubyFont(int parts_no, int type, int size,
+		int r, int g, int b, float bold_weight, int er, int eg, int eb,
+		float edge_weight, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	struct parts_text *t = parts_get_text(parts_get(parts_no), state);
+	t->ruby_ts.face = type;
+	t->ruby_ts.size = size;
+	t->ruby_ts.color = (SDL_Color){ r, g, b, 255 };
+	t->ruby_ts.bold_width = bold_weight;
+	t->ruby_ts.edge_color = (SDL_Color){ er, eg, eb, 255 };
+	text_style_set_edge_width(&t->ruby_ts, edge_weight);
+}
+
+static void PartsEngine_Parts_GetRubyFont(int parts_no, int *type, int *size,
+		int *r, int *g, int *b, float *bold_weight, int *er, int *eg, int *eb,
+		float *edge_weight, int state)
+{
+	*type = 0; *size = 10; *r = *g = *b = 255; *bold_weight = 0.0f;
+	*er = *eg = *eb = 0; *edge_weight = 0.0f;
+	if (!parts_state_valid(--state))
+		return;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return;
+	struct text_style *ts = &p->states[state].text.ruby_ts;
+	*type = ts->face;
+	*size = ts->size;
+	*r = ts->color.r;
+	*g = ts->color.g;
+	*b = ts->color.b;
+	*bold_weight = ts->bold_width;
+	*er = ts->edge_color.r;
+	*eg = ts->edge_color.g;
+	*eb = ts->edge_color.b;
+	*edge_weight = ts->edge_left;
+}
+
+static void PartsEngine_Parts_SetRubyCharSpace(int parts_no, int space, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_text(parts_get(parts_no), state)->ruby_char_space = space;
+}
+
+static int PartsEngine_Parts_GetRubyCharSpace(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return 0;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_TEXT)
+		return 0;
+	return p->states[state].text.ruby_char_space;
+}
+
+static struct string *PartsEngine_Parts_GetHGaugeCG(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return string_ref(&EMPTY_STRING);
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_HGAUGE || !p->states[state].gauge.cg_name)
+		return string_ref(&EMPTY_STRING);
+	return string_dup(p->states[state].gauge.cg_name);
+}
+
+static void PartsEngine_Parts_SetHGaugeReverse(int parts_no, bool enable, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_hgauge(parts_get(parts_no), state)->reverse = enable;
+}
+
+static bool PartsEngine_Parts_IsHGaugeReverse(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_HGAUGE)
+		return false;
+	return p->states[state].gauge.reverse;
+}
+
+static void PartsEngine_GetHGaugeSurfaceArea(int parts_no, int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_HGAUGE, x, y, w, h, state);
+}
+
+static struct string *PartsEngine_Parts_GetVGaugeCG(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return string_ref(&EMPTY_STRING);
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_VGAUGE || !p->states[state].gauge.cg_name)
+		return string_ref(&EMPTY_STRING);
+	return string_dup(p->states[state].gauge.cg_name);
+}
+
+static void PartsEngine_Parts_SetVGaugeReverse(int parts_no, bool enable, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+	parts_get_vgauge(parts_get(parts_no), state)->reverse = enable;
+}
+
+static bool PartsEngine_Parts_IsVGaugeReverse(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_VGAUGE)
+		return false;
+	return p->states[state].gauge.reverse;
+}
+
+static void PartsEngine_GetVGaugeSurfaceArea(int parts_no, int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_VGAUGE, x, y, w, h, state);
+}
+
+static bool PartsEngine_IsNumerarlFullPitch(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_NUMERAL)
+		return false;
+	return p->states[state].num.full_pitch;
+}
+
+static bool PartsEngine_Parts_SetPartsRectangleDetectionSurfaceArea(int parts_no,
+		int x, int y, int w, int h, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+	struct parts *p = parts_get(parts_no);
+	if (p->states[state].type != PARTS_RECT_DETECTION)
+		parts_state_reset(&p->states[state], PARTS_RECT_DETECTION);
+	parts_set_surface_area(p, &p->states[state].common, x, y, w, h);
+	return true;
+}
+
+static void PartsEngine_GetRectangleDetectionSurfaceArea(int parts_no,
+		int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_RECT_DETECTION, x, y, w, h, state);
+}
+
+static struct string *PartsEngine_Parts_GetPartsCGDetectionCGName(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return string_ref(&EMPTY_STRING);
+	struct parts *p = parts_try_get(parts_no);
+	if (!p || p->states[state].type != PARTS_RECT_DETECTION || !p->states[state].rect.cg_name)
+		return string_ref(&EMPTY_STRING);
+	return string_dup(p->states[state].rect.cg_name);
+}
+
+static bool PartsEngine_Parts_SetPartsCGDetectionSurfaceArea(int parts_no,
+		int x, int y, int w, int h, int state)
+{
+	return PartsEngine_Parts_SetPartsRectangleDetectionSurfaceArea(parts_no, x, y, w, h, state);
+}
+
+static void PartsEngine_GetCGDetectionSurfaceArea(int parts_no,
+		int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_RECT_DETECTION, x, y, w, h, state);
+}
+
+static void PartsEngine_GetConstructionSurfaceArea(int parts_no,
+		int *x, int *y, int *w, int *h, int state)
+{
+	PartsEngine_GetStateSurfaceArea(parts_no, PARTS_CONSTRUCTION_PROCESS, x, y, w, h, state);
+}
+
+static bool PartsEngine_SaveParts(int parts_no, struct page **save_data_buffer)
+{
+	(void)parts_no; (void)save_data_buffer;
+	return false;
+}
+
+static bool PartsEngine_LoadParts(int parts_no, struct page **save_data_buffer)
+{
+	(void)parts_no; (void)save_data_buffer;
+	return false;
+}
+
+static void PartsEngine_Debug_GetSpriteRect(int parts_no,
+		int *top, int *bottom, int *left, int *right, int state)
+{
+	if (top) *top = 0;
+	if (bottom) *bottom = 0;
+	if (left) *left = 0;
+	if (right) *right = 0;
+	if (!parts_state_valid(--state))
+		return;
+	struct parts *p = parts_try_get(parts_no);
+	if (!p)
+		return;
+	Rectangle r = p->states[state].common.hitbox;
+	if (left) *left = r.x;
+	if (top) *top = r.y;
+	if (right) *right = r.x + r.w;
+	if (bottom) *bottom = r.y + r.h;
 }
 
 static struct parts_movie *try_get_parts_movie(int parts_no, int state)
@@ -1281,8 +1928,10 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetActivityPartsName, PE_GetActivityPartsName),
 	    HLL_EXPORT(GetActivityEXID, PE_GetActivityEXID),
 	    HLL_EXPORT(LoadActivityEXText, PartsEngine_LoadActivityEXText),
+	    HLL_EXPORT(SaveActivityEXText, PartsEngine_SaveActivityEXText),
 	    HLL_EXPORT(SetActivityEXText, PE_SetActivityEXText),
 	    HLL_EXPORT(GetActivityEXText, PE_GetActivityEXText),
+	    HLL_EXPORT(WriteActivityFile, PartsEngine_WriteActivityFile),
 	    HLL_EXPORT(SetActivityBG, PE_SetActivityBG),
 	    HLL_EXPORT(GetActivityBG, PE_GetActivityBG),
 	    HLL_EXPORT(AddActivityCloseParts, PE_AddActivityCloseParts),
@@ -1532,6 +2181,8 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(IsComponentShow, PE_GetPartsShow),
 	    HLL_EXPORT(SetComponentMessageWindowShowLink, PE_SetPartsMessageWindowShowLink),
 	    HLL_EXPORT(IsComponentMessageWindowShowLink, PE_GetPartsMessageWindowShowLink),
+	    HLL_EXPORT(SetComponentMessageWindowEffectLink, PartsEngine_SetComponentMessageWindowEffectLink),
+	    HLL_EXPORT(IsComponentMessageWindowEffectLink, PartsEngine_IsComponentMessageWindowEffectLink),
 	    HLL_EXPORT(SetComponentAlpha, PE_SetAlpha),
 	    HLL_EXPORT(GetComponentAlpha, PE_GetPartsAlpha),
 	    HLL_EXPORT(SetComponentAddColor, PE_SetAddColor),
@@ -1554,6 +2205,17 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetComponentRotateX, PartsEngine_GetComponentRotateX),
 	    HLL_EXPORT(GetComponentRotateY, PartsEngine_GetComponentRotateY),
 	    HLL_EXPORT(GetComponentRotateZ, PE_GetPartsRotateZ),
+	    HLL_EXPORT(SetComponentEnableClipArea, PartsEngine_SetComponentEnableClipArea),
+	    HLL_EXPORT(IsComponentEnableClipArea, PartsEngine_IsComponentEnableClipArea),
+	    HLL_EXPORT(SetComponentClipArea, PartsEngine_SetComponentClipArea),
+	    HLL_EXPORT(GetComponentClipAreaPosX, PartsEngine_GetComponentClipAreaPosX),
+	    HLL_EXPORT(GetComponentClipAreaPosY, PartsEngine_GetComponentClipAreaPosY),
+	    HLL_EXPORT(GetComponentClipAreaPosWidth, PartsEngine_GetComponentClipAreaPosWidth),
+	    HLL_EXPORT(GetComponentClipAreaPosHeight, PartsEngine_GetComponentClipAreaPosHeight),
+	    HLL_EXPORT(SetComponentReverseTB, PartsEngine_SetComponentReverseTB),
+	    HLL_EXPORT(SetComponentReverseLR, PartsEngine_SetComponentReverseLR),
+	    HLL_EXPORT(GetComponentReverseTB, PartsEngine_GetComponentReverseTB),
+	    HLL_EXPORT(GetComponentReverseLR, PartsEngine_GetComponentReverseLR),
 	    HLL_EXPORT(SetComponentMargin, PE_SetComponentMargin),
 	    HLL_EXPORT(GetComponentMarginTop, PE_GetComponentMarginTop),
 	    HLL_EXPORT(GetComponentMarginBottom, PE_GetComponentMarginBottom),
@@ -1561,10 +2223,22 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetComponentMarginRight, PE_GetComponentMarginRight),
 	    HLL_EXPORT(SetComponentAlphaClipper, PE_SetPartsAlphaClipperPartsNumber),
 	    HLL_EXPORT(GetComponentAlphaClipper, PartsEngine_GetComponentAlphaClipper),
-	    HLL_TODO_EXPORT(SetComponentTextureFilterType, PartsEngine_SetComponentTextureFilterType),
-	    HLL_TODO_EXPORT(GetComponentTextureFilterType, PartsEngine_GetComponentTextureFilterType),
-	    HLL_TODO_EXPORT(SetComponentMipmap, PartsEngine_SetComponentMipmap),
-	    HLL_TODO_EXPORT(IsComponentMipmap, PartsEngine_IsComponentMipmap),
+	    HLL_EXPORT(SetComponentTextureFilterType, PartsEngine_SetComponentTextureFilterType),
+	    HLL_EXPORT(GetComponentTextureFilterType, PartsEngine_GetComponentTextureFilterType),
+	    HLL_EXPORT(SetComponentTextureAddressType, PartsEngine_SetComponentTextureAddressType),
+	    HLL_EXPORT(GetComponentTextureAddressType, PartsEngine_GetComponentTextureAddressType),
+	    HLL_EXPORT(SetComponentMipmap, PartsEngine_SetComponentMipmap),
+	    HLL_EXPORT(IsComponentMipmap, PartsEngine_IsComponentMipmap),
+	    HLL_EXPORT(Parts_SetUpdateLookAtPos, PartsEngine_Parts_SetUpdateLookAtPos),
+	    HLL_EXPORT(Parts_IsUpdateLookAtPos, PartsEngine_Parts_IsUpdateLookAtPos),
+	    HLL_EXPORT(Parts_SetAnchor, PartsEngine_Parts_SetAnchor),
+	    HLL_EXPORT(Parts_IsAnchorTop, PartsEngine_Parts_IsAnchorTop),
+	    HLL_EXPORT(Parts_IsAnchorBottom, PartsEngine_Parts_IsAnchorBottom),
+	    HLL_EXPORT(Parts_IsAnchorLeft, PartsEngine_Parts_IsAnchorLeft),
+	    HLL_EXPORT(Parts_IsAnchorRight, PartsEngine_Parts_IsAnchorRight),
+	    HLL_EXPORT(SetMotionData, PartsEngine_SetMotionData),
+	    HLL_EXPORT(GetMotionBeginFrame, PartsEngine_GetMotionBeginFrame),
+	    HLL_EXPORT(GetMotionEndFrame, PartsEngine_GetMotionEndFrame),
 	    HLL_EXPORT(SetComponentSpeedupRateByMessageSkip, PE_SetSpeedupRateByMessageSkip),
 	    HLL_TODO_EXPORT(GetComponentSpeedupRateByMessageSkip, PartsEngine_GetComponentSpeedupRateByMessageSkip),
 	    HLL_EXPORT(SetEnableSpeedUp, PE_SetEnableSpeedUp),
@@ -1743,7 +2417,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetHScrollbarMoveSizeByButton, PE_GetHScrollbarMoveSizeByButton),
 	    HLL_EXPORT(SetHScrollbarCGName, PE_SetHScrollbarCGName),
 	    HLL_EXPORT(GetHScrollbarCGName, PE_GetHScrollbarCGName),
-	    HLL_EXPORT(SetTextBoxSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(SetTextBoxSize, PartsEngine_WidgetSetSize),
 	    HLL_EXPORT(SetTextBoxFontProperty, PartsEngine_WidgetSetFontProperty),
 	    HLL_EXPORT(GetTextBoxFontProperty, PartsEngine_WidgetGetFontProperty),
 	    HLL_EXPORT(SetTextBoxReadOnly, PartsEngine_WidgetStub_b),
@@ -1781,7 +2455,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(IsOpenTextBoxIME, PartsEngine_WidgetGetFalse),
 	    HLL_TODO_EXPORT(OpenTextBoxIME, PartsEngine_OpenTextBoxIME),
 	    HLL_TODO_EXPORT(CloseTextBoxIME, PartsEngine_CloseTextBoxIME),
-	    HLL_EXPORT(SetListBoxSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(SetListBoxSize, PartsEngine_WidgetSetSize),
 	    HLL_EXPORT(SetListBoxLineHeight, PartsEngine_WidgetStub_i),
 	    HLL_EXPORT(GetListBoxLineHeight, PartsEngine_WidgetGetZero),
 	    HLL_EXPORT(SetListBoxMargin, PartsEngine_WidgetStub_ii),
@@ -1806,7 +2480,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetListBoxSelectIndex, PartsEngine_WidgetGetMinusOne),
 	    HLL_EXPORT(SetListBoxCharSpace, PartsEngine_WidgetStub_i),
 	    HLL_EXPORT(GetListBoxCharSpace, PartsEngine_WidgetGetZero),
-	    HLL_EXPORT(SetComboBoxSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(SetComboBoxSize, PartsEngine_WidgetSetSize),
 	    HLL_EXPORT(SetComboBoxTextMargin, PartsEngine_WidgetStub_ii),
 	    HLL_EXPORT(GetComboBoxTextWidthMargin, PartsEngine_WidgetGetZero),
 	    HLL_EXPORT(GetComboBoxTextHeightMargin, PartsEngine_WidgetGetZero),
@@ -1841,7 +2515,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(SetComboBoxListBoxCharSpace, PartsEngine_WidgetStub_i),
 	    HLL_EXPORT(GetComboBoxListBoxCharSpace, PartsEngine_WidgetGetZero),
 	    HLL_EXPORT(IsComboBoxOpenListBox, PartsEngine_WidgetGetFalse),
-	    HLL_EXPORT(SetMultiTextBoxSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(SetMultiTextBoxSize, PartsEngine_WidgetSetSize),
 	    HLL_EXPORT(SetMultiTextBoxFontProperty, PartsEngine_WidgetSetFontProperty),
 	    HLL_EXPORT(GetMultiTextBoxFontProperty, PartsEngine_WidgetGetFontProperty),
 	    HLL_EXPORT(SetMultiTextBoxReadOnly, PartsEngine_WidgetStub_b),
@@ -1881,11 +2555,93 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(GetMultiTextBoxPaddingBottom, PartsEngine_WidgetGetZero),
 	    HLL_EXPORT(GetMultiTextBoxPaddingLeft, PartsEngine_WidgetGetZero),
 	    HLL_EXPORT(GetMultiTextBoxPaddingRight, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxSize, PartsEngine_WidgetSetSize),
+	    HLL_EXPORT(SetSpinBoxFontProperty, PartsEngine_WidgetSetFontProperty),
+	    HLL_EXPORT(GetSpinBoxFontProperty, PartsEngine_WidgetGetFontProperty),
+	    HLL_EXPORT(SetSpinBoxReadOnly, PartsEngine_WidgetStub_b),
+	    HLL_EXPORT(IsSpinBoxReadOnly, PartsEngine_WidgetGetFalse),
+	    HLL_EXPORT(SetSpinBoxDefaultValue, PartsEngine_WidgetStub_f),
+	    HLL_EXPORT(GetSpinBoxDefaultValue, PartsEngine_WidgetGetFloatZero),
+	    HLL_EXPORT(SetSpinBoxMaxValue, PartsEngine_WidgetStub_f),
+	    HLL_EXPORT(GetSpinBoxMaxValue, PartsEngine_WidgetGetFloatZero),
+	    HLL_EXPORT(SetSpinBoxMinValue, PartsEngine_WidgetStub_f),
+	    HLL_EXPORT(GetSpinBoxMinValue, PartsEngine_WidgetGetFloatZero),
+	    HLL_EXPORT(SetSpinBoxIncrementalValue, PartsEngine_WidgetStub_f),
+	    HLL_EXPORT(GetSpinBoxIncrementalValue, PartsEngine_WidgetGetFloatZero),
+	    HLL_EXPORT(SetSpinBoxDecimalPlace, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(GetSpinBoxDecimalPlace, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxBGColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetSpinBoxBGR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxBGG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxBGB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxReadOnlyBGColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetSpinBoxReadOnlyBGR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxReadOnlyBGG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxReadOnlyBGB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxFrameColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetSpinBoxFrameR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxFrameG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxFrameB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxSelectColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetSpinBoxSelectR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxSelectG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetSpinBoxSelectB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetSpinBoxCGName, PartsEngine_WidgetStub_s),
+	    HLL_EXPORT(GetSpinBoxCGName, PartsEngine_WidgetGetEmptyString),
+	    HLL_EXPORT(SetSpinBoxCharSpace, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(GetSpinBoxCharSpace, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(FormClose, PartsEngine_SelectTextBoxAll),
+	    HLL_EXPORT(SetFormSize, PartsEngine_WidgetSetSize),
+	    HLL_EXPORT(SetFormMinSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(GetFormMinWidth, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormMinHeight, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormMaxSize, PartsEngine_WidgetStub_ii),
+	    HLL_EXPORT(GetFormMaxWidth, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormMaxHeight, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormResizable, PartsEngine_WidgetStub_b),
+	    HLL_EXPORT(IsFormResizable, PartsEngine_WidgetGetFalse),
+	    HLL_EXPORT(SetFormCaptionPlusHeight, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(GetFormCaptionPlusHeight, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormIcon, PartsEngine_WidgetStub_s),
+	    HLL_EXPORT(GetFormIcon, PartsEngine_WidgetGetEmptyString),
+	    HLL_EXPORT(SetFormTitle, PartsEngine_WidgetStub_s),
+	    HLL_EXPORT(GetFormTitle, PartsEngine_WidgetGetEmptyString),
+	    HLL_EXPORT(SetFormCaptionColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetFormCaptionR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormCaptionG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormCaptionB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormClientColor, PartsEngine_WidgetStub_iii),
+	    HLL_EXPORT(GetFormClientR, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormClientG, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormClientB, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormFold, PartsEngine_WidgetStub_b),
+	    HLL_EXPORT(IsFormFold, PartsEngine_WidgetGetFalse),
+	    HLL_EXPORT(SetFormEnableCloseButton, PartsEngine_WidgetStub_b),
+	    HLL_EXPORT(IsFormEnableCloseButton, PartsEngine_WidgetGetFalse),
+	    HLL_EXPORT(SetFormVScrollPos, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(GetFormVScrollPos, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormVScrollTotalSize, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormVScrollViewSize, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(SetFormHScrollPos, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(GetFormHScrollPos, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormHScrollTotalSize, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormHScrollViewSize, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(NumofFormGroupTable, PartsEngine_WidgetGetZero),
+	    HLL_EXPORT(GetFormGroupViewSnap, PartsEngine_GetFormGroupViewSnap),
+	    HLL_EXPORT(NumofFormGroupVList, PartsEngine_NumofFormGroupVList),
+	    HLL_EXPORT(NumofFormGroupForm, PartsEngine_NumofFormGroupForm),
+	    HLL_EXPORT(GetFormGroupFormNumber, PartsEngine_GetFormGroupFormNumber),
+	    HLL_EXPORT(AddFormGroupTable, PartsEngine_SelectTextBoxAll),
+	    HLL_EXPORT(SetFormGroupViewSpan, PartsEngine_SetFormGroupViewSpan),
+	    HLL_EXPORT(AddFormGroupVList, PartsEngine_WidgetStub_i),
+	    HLL_EXPORT(AddFormGroupFormNumber, PartsEngine_AddFormGroupFormNumber),
 	    HLL_EXPORT(SetLayoutBoxLayoutType, PE_SetLayoutBoxLayoutType),
 	    HLL_EXPORT(GetLayoutBoxLayoutType, PE_GetLayoutBoxLayoutType),
 	    HLL_EXPORT(SetLayoutBoxReturn, PE_SetLayoutBoxReturn),
 	    HLL_EXPORT(IsLayoutBoxReturn, PE_IsLayoutBoxReturn),
 	    HLL_EXPORT(GetLayoutBoxReturnSize, PE_GetLayoutBoxReturnSize),
+	    HLL_EXPORT(SetLayoutBoxReturnSizeForRate, PE_SetLayoutBoxReturnSizeForRate),
+	    HLL_EXPORT(IsLayoutBoxReturnSizeForRate, PE_IsLayoutBoxReturnSizeForRate),
 	    HLL_EXPORT(SetLayoutBoxAlign, PE_SetLayoutBoxAlign),
 	    HLL_EXPORT(GetLayoutBoxAlign, PE_GetLayoutBoxAlign),
 	    HLL_EXPORT(SetLayoutBoxPadding, PE_set_layoutbox_padding),
@@ -1899,10 +2655,16 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(IsExistWorkerThread, PartsEngine_IsExistWorkerThread),
 	    HLL_EXPORT(Parts_BuildPartsConstructionProcessThread, PE_BuildPartsConstructionProcess),
 	    HLL_EXPORT(Parts_GetPartsCGName, PE_GetPartsCGName),
+	    HLL_EXPORT(Parts_GetPartsCGDeform, PartsEngine_Parts_GetPartsCGDeform),
 	    HLL_EXPORT(Parts_SetPartsCGSurfaceArea, PE_SetPartsCGSurfaceArea),
 	    HLL_EXPORT(GetPartsCGSurfaceArea, PE_GetPartsCGSurfaceArea),
 	    HLL_EXPORT(Parts_SetLoopCG, PE_SetLoopCG),
 	    HLL_EXPORT(Parts_SetLoopCGSurfaceArea, PE_SetLoopCGSurfaceArea),
+	    HLL_EXPORT(GetLoopCGSurfaceArea, PartsEngine_GetLoopCGSurfaceArea),
+	    HLL_EXPORT(GetLoopCGCGName, PartsEngine_GetLoopCGCGName),
+	    HLL_EXPORT(GetLoopCGStartNo, PartsEngine_GetLoopCGStartNo),
+	    HLL_EXPORT(GetLoopCGNumofCG, PartsEngine_GetLoopCGNumofCG),
+	    HLL_EXPORT(Parts_GetLoopCGTimeParCG, PartsEngine_Parts_GetLoopCGTimeParCG),
 	    HLL_EXPORT(Parts_SetText, PE_SetText),
 	    HLL_EXPORT(GetTextPartsText, PE_GetTextPartsText),
 	    HLL_EXPORT(GetPartsTextFontProperty, PE_GetPartsTextFontProperty),
@@ -1910,13 +2672,21 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_GetTextCharSpace, PE_GetTextCharSpace),
 	    HLL_EXPORT(Parts_GetTextLineSpace, PE_GetTextLineSpace),
 	    HLL_EXPORT(Parts_AddPartsText, PE_AddPartsText),
-	    HLL_TODO_EXPORT(Parts_DeletePartsTopTextLine, PartsEngine_Parts_DeletePartsTopTextLine),
+	    HLL_EXPORT(Parts_DeletePartsTopTextLine, PartsEngine_Parts_DeletePartsTopTextLine),
 	    HLL_EXPORT(Parts_SetPartsTextSurfaceArea, PE_SetPartsTextSurfaceArea),
-	    HLL_TODO_EXPORT(Parts_SetPartsTextHighlight, PartsEngine_Parts_SetPartsTextHighlight),
-	    HLL_TODO_EXPORT(Parts_AddPartsTextHighlight, PartsEngine_Parts_AddPartsTextHighlight),
-	    HLL_TODO_EXPORT(Parts_ClearPartsTextHighlight, PartsEngine_Parts_ClearPartsTextHighlight),
-	    HLL_TODO_EXPORT(Parts_SetPartsTextCountReturn, PartsEngine_Parts_SetPartsTextCountReturn),
-	    HLL_TODO_EXPORT(Parts_GetPartsTextCountReturn, PartsEngine_Parts_GetPartsTextCountReturn),
+	    HLL_EXPORT(Parts_SetPartsTextHighlight, PartsEngine_Parts_SetPartsTextHighlight),
+	    HLL_EXPORT(Parts_AddPartsTextHighlight, PartsEngine_Parts_AddPartsTextHighlight),
+	    HLL_EXPORT(Parts_ClearPartsTextHighlight, PartsEngine_Parts_ClearPartsTextHighlight),
+	    HLL_EXPORT(Parts_SetPartsTextCountReturn, PartsEngine_Parts_SetPartsTextCountReturn),
+	    HLL_EXPORT(Parts_GetPartsTextCountReturn, PartsEngine_Parts_GetPartsTextCountReturn),
+	    HLL_EXPORT(Parts_SetTextShowTime, PartsEngine_Parts_SetTextShowTime),
+	    HLL_EXPORT(Parts_GetTextShowTime, PartsEngine_Parts_GetTextShowTime),
+	    HLL_EXPORT(Parts_SetTextPos, PartsEngine_Parts_SetTextPos),
+	    HLL_EXPORT(Parts_GetTextPos, PartsEngine_Parts_GetTextPos),
+	    HLL_EXPORT(Parts_SetTextEnableTag, PartsEngine_Parts_SetTextEnableTag),
+	    HLL_EXPORT(Parts_IsTextEnableTag, PartsEngine_Parts_IsTextEnableTag),
+	    HLL_EXPORT(Parts_FixText, PartsEngine_Parts_FixText),
+	    HLL_EXPORT(Parts_IsFixedText, PartsEngine_Parts_IsFixedText),
 	    HLL_EXPORT(Parts_SetFont, PE_SetFont),
 	    HLL_EXPORT(Parts_SetPartsFontType, PE_SetPartsFontType),
 	    HLL_EXPORT(Parts_SetPartsFontSize, PE_SetPartsFontSize),
@@ -1926,22 +2696,35 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_SetPartsFontEdgeWeight, PE_SetPartsFontEdgeWeight),
 	    HLL_EXPORT(Parts_SetTextCharSpace, PE_SetTextCharSpace),
 	    HLL_EXPORT(Parts_SetTextLineSpace, PE_SetTextLineSpace),
+	    HLL_EXPORT(Parts_SetRubyFont, PartsEngine_Parts_SetRubyFont),
+	    HLL_EXPORT(Parts_GetRubyFont, PartsEngine_Parts_GetRubyFont),
+	    HLL_EXPORT(Parts_SetRubyCharSpace, PartsEngine_Parts_SetRubyCharSpace),
+	    HLL_EXPORT(Parts_GetRubyCharSpace, PartsEngine_Parts_GetRubyCharSpace),
 	    HLL_EXPORT(Parts_SetHGaugeCG, PE_SetHGaugeCG),
+	    HLL_EXPORT(Parts_GetHGaugeCG, PartsEngine_Parts_GetHGaugeCG),
 	    HLL_EXPORT(Parts_SetHGaugeRate, PE_SetHGaugeRate),
 	    HLL_EXPORT(Parts_GetHGaugeNumerator, PE_GetHGaugeNumerator),
 	    HLL_EXPORT(Parts_GetHGaugeDenominator, PE_GetHGaugeDenominator),
+	    HLL_EXPORT(Parts_SetHGaugeReverse, PartsEngine_Parts_SetHGaugeReverse),
+	    HLL_EXPORT(Parts_IsHGaugeReverse, PartsEngine_Parts_IsHGaugeReverse),
 	    HLL_EXPORT(Parts_SetVGaugeCG, PE_SetVGaugeCG),
+	    HLL_EXPORT(Parts_GetVGaugeCG, PartsEngine_Parts_GetVGaugeCG),
 	    HLL_EXPORT(Parts_SetVGaugeRate, PE_SetVGaugeRate),
 	    HLL_EXPORT(Parts_GetVGaugeNumerator, PE_GetVGaugeNumerator),
 	    HLL_EXPORT(Parts_GetVGaugeDenominator, PE_GetVGaugeDenominator),
+	    HLL_EXPORT(Parts_SetVGaugeReverse, PartsEngine_Parts_SetVGaugeReverse),
+	    HLL_EXPORT(Parts_IsVGaugeReverse, PartsEngine_Parts_IsVGaugeReverse),
 	    HLL_EXPORT(Parts_SetHGaugeSurfaceArea, PE_SetHGaugeSurfaceArea),
+	    HLL_EXPORT(GetHGaugeSurfaceArea, PartsEngine_GetHGaugeSurfaceArea),
 	    HLL_EXPORT(Parts_SetVGaugeSurfaceArea, PE_SetVGaugeSurfaceArea),
+	    HLL_EXPORT(GetVGaugeSurfaceArea, PartsEngine_GetVGaugeSurfaceArea),
 	    HLL_EXPORT(Parts_SetNumeralCG, PE_SetNumeralCG),
 	    HLL_EXPORT(Parts_GetNumeralCGName, PE_GetNumeralCGName),
 	    HLL_EXPORT(Parts_GetNumeralCGType, PE_GetNumeralCGType),
 	    HLL_EXPORT(Parts_GetNumeralNumber, PE_GetNumeralNumber),
 	    HLL_EXPORT(Parts_IsNumeralShowComma, PE_IsNumeralShowComma),
 	    HLL_EXPORT(Parts_GetNumeralSpace, PE_GetNumeralSpace),
+	    HLL_EXPORT(IsNumerarlFullPitch, PartsEngine_IsNumerarlFullPitch),
 	    HLL_EXPORT(Parts_SetNumeralLinkedCGNumberWidthWidthList, PE_SetNumeralLinkedCGNumberWidthWidthList),
 	    HLL_EXPORT(Parts_SetNumeralFont, PE_SetNumeralFont),
 	    HLL_EXPORT(Parts_SetNumeralNumber, PE_SetNumeralNumber),
@@ -1950,9 +2733,12 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_SetNumeralLength, PE_SetNumeralLength),
 	    HLL_EXPORT(Parts_SetNumeralSurfaceArea, PE_SetNumeralSurfaceArea),
 	    HLL_EXPORT(Parts_SetPartsRectangleDetectionSize, PE_SetPartsRectangleDetectionSize),
-	    HLL_TODO_EXPORT(Parts_SetPartsRectangleDetectionSurfaceArea, PartsEngine_Parts_SetPartsRectangleDetectionSurfaceArea),
+	    HLL_EXPORT(Parts_SetPartsRectangleDetectionSurfaceArea, PartsEngine_Parts_SetPartsRectangleDetectionSurfaceArea),
+	    HLL_EXPORT(GetRectangleDetectionSurfaceArea, PartsEngine_GetRectangleDetectionSurfaceArea),
 	    HLL_EXPORT(Parts_SetPartsCGDetectionSize, PE_SetPartsCGDetectionSize),
-	    HLL_TODO_EXPORT(Parts_SetPartsCGDetectionSurfaceArea, PartsEngine_Parts_SetPartsCGDetectionSurfaceArea),
+	    HLL_EXPORT(Parts_GetPartsCGDetectionCGName, PartsEngine_Parts_GetPartsCGDetectionCGName),
+	    HLL_EXPORT(Parts_SetPartsCGDetectionSurfaceArea, PartsEngine_Parts_SetPartsCGDetectionSurfaceArea),
+	    HLL_EXPORT(GetCGDetectionSurfaceArea, PartsEngine_GetCGDetectionSurfaceArea),
 	    HLL_EXPORT(Parts_SetPartsFlat, PE_SetPartsFlat),
 	    HLL_EXPORT(Parts_SetPartsFlatThread, PE_SetPartsFlat),
 	    HLL_EXPORT(Parts_GetPartsFlatName, PE_GetPartsFlatName),
@@ -2020,6 +2806,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_AddDrawTextToPartsConstructionProcess, PE_AddDrawTextToPartsConstructionProcess),
 	    HLL_EXPORT(Parts_AddCopyTextToPartsConstructionProcess, PE_AddCopyTextToPartsConstructionProcess),
 	    HLL_EXPORT(Parts_SetPartsConstructionSurfaceArea, PE_SetPartsConstructionSurfaceArea),
+	    HLL_EXPORT(GetConstructionSurfaceArea, PartsEngine_GetConstructionSurfaceArea),
 	    HLL_EXPORT(Parts_CreateParts3DLayerPluginID, PE_CreateParts3DLayerPluginID),
 	    HLL_EXPORT(Parts_GetParts3DLayerPluginID, PE_GetParts3DLayerPluginID),
 	    HLL_EXPORT(Parts_ReleaseParts3DLayerPluginID, PE_ReleaseParts3DLayerPluginID),
@@ -2051,8 +2838,9 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(SetComponentShowEditor, PartsEngine_SetComponentShowEditor),
 	    HLL_EXPORT(IsComponentShowEditor, PartsEngine_IsComponentShowEditor),
 	    HLL_EXPORT(Parts_IsCursorIn, PE_IsCursorIn),
-	    HLL_TODO_EXPORT(SaveParts, PartsEngine_SaveParts),
-	    HLL_TODO_EXPORT(LoadParts, PartsEngine_LoadParts)
+	    HLL_EXPORT(SaveParts, PartsEngine_SaveParts),
+	    HLL_EXPORT(LoadParts, PartsEngine_LoadParts),
+	    HLL_EXPORT(Debug_GetSpriteRect, PartsEngine_Debug_GetSpriteRect)
 	    );
 
 static struct ain_hll_function *get_fun(int libno, const char *name)

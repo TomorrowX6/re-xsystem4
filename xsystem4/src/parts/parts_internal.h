@@ -137,6 +137,13 @@ struct parts_text {
 	int line_space;
 	struct { float x; int y; } cursor;
 	struct text_style ts;
+	struct text_style ruby_ts;
+	int ruby_char_space;
+	int show_time;
+	int text_pos;
+	bool enable_tag;
+	bool fixed;
+	bool count_return;
 };
 
 struct parts_animation {
@@ -185,6 +192,8 @@ struct parts_gauge {
 	struct parts_common common;
 	Texture cg;
 	int cg_no;
+	struct string *cg_name;
+	bool reverse;
 	float rate;
 	float numerator;
 	float denominator;
@@ -413,6 +422,7 @@ struct parts_layout_box {
 	struct parts_common common;
 	enum parts_layout_type layout_type;
 	bool wrap;
+	bool wrap_size_is_rate;
 	float wrap_size;
 	int align;
 	int padding_top;
@@ -431,6 +441,7 @@ struct parts_rect {
 	struct parts_common common;
 	bool custom;
 	Point points[4];
+	struct string *cg_name;
 };
 
 struct parts_state {
@@ -565,8 +576,21 @@ struct parts {
 	int hover_time;
 	int draw_filter;
 	bool message_window;
+	bool message_window_effect_link;
 	bool enable_speed_up;
 	int alpha_clipper_parts_no;
+	bool enable_clip_area;
+	Rectangle clip_area;
+	bool reverse_tb;
+	bool reverse_lr;
+	int texture_filter_type;
+	int texture_address_type;
+	bool mipmap;
+	bool update_look_at_pos;
+	bool anchor_top;
+	bool anchor_bottom;
+	bool anchor_left;
+	bool anchor_right;
 	int margin_top;
 	int margin_bottom;
 	int margin_left;

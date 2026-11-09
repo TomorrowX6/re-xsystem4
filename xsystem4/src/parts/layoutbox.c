@@ -23,6 +23,7 @@
 #include "parts.h"
 #include "parts_internal.h"
 #include "vm.h"
+#include "xsystem4.h"
 
 void PE_SetComponentMargin(int parts_no, int top, int bottom, int left, int right)
 {
@@ -104,6 +105,34 @@ float PE_GetLayoutBoxReturnSizeF(int parts_no)
 	if (!parts || parts->states[0].type != PARTS_LAYOUT_BOX)
 		return 0;
 	return parts->states[0].layout_box.wrap_size;
+}
+
+void PE_SetLayoutBoxReturnSizeForRate(int parts_no, bool size_for_rate)
+{
+	struct parts *parts = parts_get(parts_no);
+	struct parts_layout_box *lb = parts_get_layout_box(parts);
+	if (lb->wrap_size_is_rate != size_for_rate) {
+		lb->wrap_size_is_rate = size_for_rate;
+		parts_component_dirty(parts);
+	}
+}
+
+bool PE_IsLayoutBoxReturnSizeForRate(int parts_no)
+{
+	struct parts *parts = parts_try_get(parts_no);
+	if (!parts || parts->states[0].type != PARTS_LAYOUT_BOX)
+		return false;
+	return parts->states[0].layout_box.wrap_size_is_rate;
+}
+
+static float layout_wrap_limit(struct parts_layout_box *lb, bool horizontal)
+{
+	if (!lb->wrap_size_is_rate)
+		return lb->wrap_size;
+	int view = horizontal
+		? (config.view_width > 0 ? config.view_width : 1280)
+		: (config.view_height > 0 ? config.view_height : 720);
+	return lb->wrap_size * view;
 }
 
 void PE_SetLayoutBoxAlign(int parts_no, int align)
@@ -243,6 +272,7 @@ static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struc
 		int *out_w, int *out_h)
 {
 	int row_w = 0, max_row_w = 0, max_row_h = 0, total_h = 0;
+	float wrap_limit = layout_wrap_limit(lb, true);
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
 		if (ain->version >= 12 && !child->local.show) continue;
@@ -250,7 +280,7 @@ static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struc
 		parts_get_layout_size(child, &child_w, &child_h);
 		int cw = child->margin_left + child_w + child->margin_right;
 		int ch = child->margin_top + child_h + child->margin_bottom;
-		if (lb->wrap && row_w + cw > lb->wrap_size && row_w > 0) {
+		if (lb->wrap && row_w + cw > wrap_limit && row_w > 0) {
 			if (row_w > max_row_w)
 				max_row_w = row_w;
 			total_h += max_row_h;
@@ -273,6 +303,7 @@ static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct 
 		int *out_w, int *out_h)
 {
 	int col_h = 0, max_col_h = 0, max_col_w = 0, total_w = 0;
+	float wrap_limit = layout_wrap_limit(lb, false);
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
 		if (ain->version >= 12 && !child->local.show) continue;
@@ -280,7 +311,7 @@ static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct 
 		parts_get_layout_size(child, &child_w, &child_h);
 		int cw = child->margin_left + child_w + child->margin_right;
 		int ch = child->margin_top + child_h + child->margin_bottom;
-		if (lb->wrap && col_h + ch > lb->wrap_size && col_h > 0) {
+		if (lb->wrap && col_h + ch > wrap_limit && col_h > 0) {
 			if (col_h > max_col_h)
 				max_col_h = col_h;
 			total_w += max_col_w;
@@ -339,6 +370,7 @@ void parts_do_layout(struct parts *parts)
 	int cur_x = start_x;
 	int cur_y = start_y;
 	int max_cross = 0;
+	float wrap_limit = layout_wrap_limit(lb, lb->layout_type == PARTS_LAYOUT_HORIZONTAL);
 
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
@@ -355,14 +387,14 @@ void parts_do_layout(struct parts *parts)
 		}
 
 		if (lb->layout_type == PARTS_LAYOUT_HORIZONTAL) {
-			if (lb->wrap && abs((cur_x + cw * x_dir) - start_x) > lb->wrap_size
+			if (lb->wrap && abs((cur_x + cw * x_dir) - start_x) > wrap_limit
 					&& max_cross > 0) {
 				cur_y += max_cross * y_dir;
 				max_cross = 0;
 				cur_x = start_x;
 			}
 		} else {
-			if (lb->wrap && abs((cur_y + ch * y_dir) - start_y) > lb->wrap_size
+			if (lb->wrap && abs((cur_y + ch * y_dir) - start_y) > wrap_limit
 					&& max_cross > 0) {
 				cur_x += max_cross * x_dir;
 				max_cross = 0;
