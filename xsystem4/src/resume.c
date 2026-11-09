@@ -41,10 +41,10 @@ struct interned_ain_type {
 	int struct_type;
 	int depth;
 	struct ain_type type;
+	struct interned_ain_type *next;
 };
 
-static struct interned_ain_type interned_types[64];
-static int nr_interned_types = 0;
+static struct interned_ain_type *interned_types = NULL;
 
 static void unwrap_v12_array_type(const struct ain_type *type, enum ain_data_type *leaf_data, int *struct_type, int *depth)
 {
@@ -61,36 +61,98 @@ static void unwrap_v12_array_type(const struct ain_type *type, enum ain_data_typ
 
 static const struct ain_type *intern_v12_type(enum ain_data_type leaf_data, int struct_type, int depth)
 {
-	for (int i = 0; i < nr_interned_types; i++) {
-		if (interned_types[i].leaf_data == leaf_data &&
-		    interned_types[i].struct_type == struct_type &&
-		    interned_types[i].depth == depth) {
-			return &interned_types[i].type;
+	for (struct interned_ain_type *it = interned_types; it; it = it->next) {
+		if (it->leaf_data == leaf_data &&
+		    it->struct_type == struct_type &&
+		    it->depth == depth) {
+			return &it->type;
 		}
 	}
 	const struct ain_type *inner = depth > 0
 		? intern_v12_type(leaf_data, struct_type, depth - 1)
 		: NULL;
-	if (nr_interned_types >= (int)(sizeof(interned_types) / sizeof(interned_types[0])))
-		VM_ERROR("Too many nested array element types");
-	int idx = nr_interned_types++;
-	interned_types[idx] = (struct interned_ain_type) {
-		.leaf_data = leaf_data,
-		.struct_type = struct_type,
-		.depth = depth,
-		.type = {
-			.data = depth > 0 ? AIN_ARRAY : leaf_data,
-			.struc = depth > 0 ? -1 : struct_type,
-			.rank = depth > 0 ? 1 : 0,
-			.array_type = (struct ain_type *)inner,
-		},
+	struct interned_ain_type *node = xcalloc(1, sizeof(struct interned_ain_type));
+	node->leaf_data = leaf_data;
+	node->struct_type = struct_type;
+	node->depth = depth;
+	node->type = (struct ain_type) {
+		.data = depth > 0 ? AIN_ARRAY : leaf_data,
+		.struc = depth > 0 ? -1 : struct_type,
+		.rank = depth > 0 ? 1 : 0,
+		.array_type = (struct ain_type *)inner,
 	};
-	return &interned_types[idx].type;
+	node->next = interned_types;
+	interned_types = node;
+	return &node->type;
 }
 
 static struct ain_type make_v12_element_type(enum ain_data_type leaf_data, int struct_type, int depth)
 {
+	if (depth <= 0) {
+		return (struct ain_type) {
+			.data = leaf_data,
+			.struc = struct_type,
+			.rank = 0,
+			.array_type = NULL,
+		};
+	}
 	return *intern_v12_type(leaf_data, struct_type, depth);
+}
+
+static const char *array_leaf_type_name(enum ain_data_type leaf_data, int struct_type)
+{
+	switch (leaf_data) {
+	case AIN_STRUCT:
+	case AIN_REF_STRUCT:
+	case AIN_IFACE:
+		return (struct_type >= 0 && struct_type < ain->nr_structures)
+			? ain->structures[struct_type].name : "";
+	case AIN_ENUM:
+	case AIN_ENUM2:
+	case AIN_REF_ENUM:
+		return (struct_type >= 0 && struct_type < ain->nr_enums)
+			? ain->enums[struct_type].name : "";
+	case AIN_DELEGATE:
+	case AIN_REF_DELEGATE:
+		return (struct_type >= 0 && struct_type < ain->nr_delegates)
+			? ain->delegates[struct_type].name : "";
+	case AIN_FUNC_TYPE:
+	case AIN_REF_FUNC_TYPE:
+		return (struct_type >= 0 && struct_type < ain->nr_function_types)
+			? ain->function_types[struct_type].name : "";
+	default:
+		return (struct_type >= 0 && struct_type < ain->nr_structures)
+			? ain->structures[struct_type].name : "";
+	}
+}
+
+static int resolve_array_leaf_symbol(enum ain_data_type leaf_data, struct rsave_symbol *sym)
+{
+	if (!sym->name)
+		return sym->id;
+	if (!sym->name[0])
+		return -1;
+	int id = -1;
+	switch (leaf_data) {
+	case AIN_ENUM:
+	case AIN_ENUM2:
+	case AIN_REF_ENUM:
+		id = ain_get_enum(ain, sym->name);
+		break;
+	case AIN_DELEGATE:
+	case AIN_REF_DELEGATE:
+		id = ain_get_delegate(ain, sym->name);
+		break;
+	case AIN_FUNC_TYPE:
+	case AIN_REF_FUNC_TYPE:
+		id = ain_get_functype(ain, sym->name);
+		break;
+	default:
+		break;
+	}
+	if (id >= 0)
+		return id;
+	return ain_get_struct(ain, sym->name);
 }
 
 static void append_str(struct string **out, const char *s)
@@ -185,6 +247,8 @@ static char *format_rsave_function_name(int fno)
 static bool function_matches_criteria(int fno, const char *full_name, bool has_parens, int crc, bool check_crc, int nr_slots)
 {
 	if (fno < 0 || fno >= ain->nr_functions)
+		return false;
+	if (fno > 0 && ain->functions[fno].address == 0)
 		return false;
 	if (check_crc && ain->functions[fno].crc != crc)
 		return false;
@@ -473,10 +537,7 @@ static struct rsave_heap_array *array_page_to_rsave(struct page *page, int slot)
 		unwrap_v12_array_type(&page->array.element_type, &leaf_data, &struct_type, &depth);
 		o->rank_minus_1 = depth;
 		o->data_type = leaf_data;
-		if (struct_type >= 0 && struct_type < ain->nr_structures)
-			o->struct_type.name = strdup(ain->structures[struct_type].name);
-		else
-			o->struct_type.name = strdup("");
+		o->struct_type.name = strdup(array_leaf_type_name(leaf_data, struct_type));
 		o->root_rank = depth + 1;
 	} else {
 		o->rank_minus_1 = page->array.rank - 1;
@@ -946,7 +1007,7 @@ static void load_rsave_array(int slot, struct rsave_heap_array *a, int32_t versi
 		heap[slot].page = NULL;
 		return;
 	}
-	int struct_type = resolve_struct_symbol(&a->struct_type);
+	int struct_type = resolve_array_leaf_symbol(a->data_type, &a->struct_type);
 	struct page *page;
 	if (ain->version >= 11) {
 		page = alloc_page(ARRAY_PAGE, AIN_ARRAY, a->nr_slots);
