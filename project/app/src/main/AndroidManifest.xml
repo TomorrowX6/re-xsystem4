@@ -102,6 +102,12 @@
             -->
         </activity>
 
+        <activity android:name="io.github.kichikuou.xsystem4.SaveManagerActivity"
+            android:label="@string/action_save_manager"
+            android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"
+            android:exported="false">
+        </activity>
+
         <activity android:name="io.github.kichikuou.xsystem4.LicensesMenuActivity"
             android:label="@string/action_licenses"
             android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"

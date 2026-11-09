@@ -3,6 +3,7 @@
     <string name="action_refresh">刷新</string>
     <string name="action_install_from_directory">导入游戏目录</string>
     <string name="action_install_from_zip">从ZIP导入</string>
+    <string name="action_save_manager">存档管理器</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">开源许可证</string>
     <string name="choose_a_file">选择游戏 ZIP 文件</string>
@@ -22,4 +23,10 @@
     <string name="zip_extraction_error">ZIP 导入失败，请检查文件和存储空间。</string>
     <string name="zip_no_ini">ZIP 中没有找到游戏启动配置文件。</string>
     <string name="loading_game">载入中…</string>
+    <string name="save_manager_switch_dir">切换目录</string>
+    <string name="save_manager_import">外部导入存档</string>
+    <string name="save_manager_export">内部导出存档</string>
+    <string name="save_manager_refresh">刷新列表</string>
+    <string name="save_manager_clear">清空存档</string>
+    <string name="save_manager_empty">当前存档目录为空。\n可点击上方“外部导入存档”从 ZIP、外部文件夹或单文件导入存档。</string>
 </resources>

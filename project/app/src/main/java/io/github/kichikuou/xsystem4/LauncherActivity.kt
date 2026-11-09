@@ -76,6 +76,7 @@ class LauncherActivity : Activity(), GameListObserver {
         listView.adapter = adapter
         findViewById<View>(R.id.import_directory).setOnClickListener { chooseDirectory() }
         findViewById<View>(R.id.import_zip).setOnClickListener { chooseZip() }
+        findViewById<View>(R.id.save_manager).setOnClickListener { openSaveManager() }
         findViewById<View>(R.id.open_github).setOnClickListener { openGitHub() }
         listView.setOnItemClickListener { _, _, pos, _ ->
             onListItemClick(listView.adapter.getItem(pos) as Item)
@@ -117,6 +118,10 @@ class LauncherActivity : Activity(), GameListObserver {
                 chooseDirectory()
                 true
             }
+            R.id.save_manager -> {
+                openSaveManager()
+                true
+            }
             R.id.licenses -> {
                 val intent = Intent(this, LicensesMenuActivity::class.java)
                 startActivity(intent)
@@ -156,6 +161,14 @@ class LauncherActivity : Activity(), GameListObserver {
         val i = Intent(Intent.ACTION_GET_CONTENT)
         i.type = "application/zip"
         startActivityForResult(Intent.createChooser(i, getString(R.string.choose_a_file)), INSTALL_REQUEST)
+    }
+
+    private fun openSaveManager(dirName: String? = null) {
+        val intent = Intent(this, SaveManagerActivity::class.java)
+        if (dirName != null) {
+            intent.putExtra(SaveManagerActivity.EXTRA_DIR_NAME, dirName)
+        }
+        startActivity(intent)
     }
 
     private fun openGitHub() {
