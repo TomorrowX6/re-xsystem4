@@ -111,9 +111,9 @@
     <string name="save_clear_confirm_msg">Delete all %1$d save files under \"%2$s\"? Please export a backup first; this cannot be undone.</string>
     <string name="save_cleared_toast">Cleared all saves in current directory</string>
 
-    <string name="action_install_game">Install Game</string>
-    <string name="game_opt_zip">Install Game from ZIP (.zip)</string>
-    <string name="game_opt_dir">Install Game from Folder</string>
+    <string name="action_install_game">Install Base Game</string>
+    <string name="game_opt_zip">Install Base Game from ZIP (.zip)</string>
+    <string name="game_opt_dir">Install Base Game from Folder</string>
     <string name="action_install_mod">Install MOD</string>
     <string name="mod_no_game_installed">Please import the base game before installing a MOD.</string>
     <string name="mod_select_game_title">Select Game for MOD</string>
