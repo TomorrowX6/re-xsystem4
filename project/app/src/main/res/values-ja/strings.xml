@@ -1,0 +1,111 @@
+<resources>
+    <string name="action_refresh">更新</string>
+    <string name="action_install_from_directory">フォルダからインポート</string>
+    <string name="action_install_from_zip">ZIPからインポート</string>
+    <string name="action_save_manager">セーブ管理</string>
+    <string name="action_github">GitHub</string>
+    <string name="action_licenses">オープンソースライセンス</string>
+    <string name="choose_a_file">ゲームのZIPファイルを選択</string>
+    <string name="ok">OK</string>
+    <string name="cancel">キャンセル</string>
+    <string name="error">エラー</string>
+    <string name="install_dialog_title">ゲームをインポート中…</string>
+    <string name="install_progress">%s</string>
+    <string name="import_copy_progress">%1$d MB コピー済み\n%2$s</string>
+    <string name="import_no_space">ストレージの空き容量が不足しています。空き容量を確保してから再度お試しください（通常4GB以上必要です）。</string>
+    <string name="directory_no_game">AliceStart.ini / System40.ini と .ain ファイルを含むゲームフォルダを選択してください。</string>
+    <string name="directory_import_error">インポートに失敗しました。フォルダの読み取り権限、ゲームファイル、空き容量を確認してください。</string>
+    <string name="toast_no_GameName">%s に GameName の記述がありません。</string>
+    <string name="toast_no_ini">%s に AliceStart.ini または System40.ini がありません。</string>
+    <string name="uninstall_dialog_message">「%s」のゲームデータを削除しますか？（セーブデータは保持されます）</string>
+    <string name="uninstall_dialog_title">ゲームデータの削除</string>
+    <string name="zip_extraction_error">ZIPの展開に失敗しました。ファイルと空き容量を確認してください。</string>
+    <string name="zip_no_ini">ZIP内にゲーム設定ファイルが見つかりません。</string>
+    <string name="loading_game">読み込み中…</string>
+
+    <string name="save_manager_switch_dir">切替</string>
+    <string name="save_manager_import">外部からインポート</string>
+    <string name="save_manager_export">外部へエクスポート</string>
+    <string name="save_manager_refresh">一覧更新</string>
+    <string name="save_manager_clear">全削除</string>
+    <string name="save_manager_empty">現在のセーブディレクトリは空です。\n上の「外部からインポート」からZIP・フォルダ・個別ファイルをインポートできます。</string>
+    <string name="save_manager_refreshed">セーブ一覧を更新しました</string>
+    <string name="save_manager_default_dir_label">Rance10 (デフォルト)</string>
+    <string name="save_manager_current_dir">現在のディレクトリ：%1$s</string>
+    <string name="save_manager_dir_summary">計 %1$d ファイル (%2$s) · 内部パス：saves/%3$s</string>
+
+    <string name="save_tag_global">全体システムセーブ</string>
+    <string name="save_tag_collection">CG/回想コレクション</string>
+    <string name="save_tag_msgskip">既読テキスト記録</string>
+    <string name="save_tag_afcg">エクストラモード</string>
+    <string name="save_tag_enquete">アンケート記録</string>
+    <string name="save_tag_common">共通システムデータ</string>
+    <string name="save_tag_progress">進行セーブデータ</string>
+    <string name="save_tag_thumbnail">セーブサムネイル</string>
+    <string name="save_tag_log">クラッシュログ</string>
+    <string name="save_tag_other">セーブデータ</string>
+
+    <string name="save_dir_item_count">%1$s  (%2$d ファイル)</string>
+    <string name="save_dir_new_option">+ 新規セーブディレクトリ作成…</string>
+    <string name="save_dir_select_title">セーブディレクトリの選択・作成</string>
+    <string name="save_dir_create_title">新規セーブディレクトリ</string>
+    <string name="save_dir_create_hint">例：Rance10</string>
+    <string name="save_dir_invalid_name">無効なディレクトリ名です</string>
+
+    <string name="save_import_title">外部からセーブをインポート</string>
+    <string name="save_import_opt_zip">ZIPアーカイブからインポート (.zip)</string>
+    <string name="save_import_opt_dir">外部フォルダからインポート</string>
+    <string name="save_import_opt_files">個別セーブファイルをインポート (.asd / .sav 等)</string>
+
+    <string name="save_export_empty_toast">エクスポートできるセーブファイルがありません</string>
+    <string name="save_export_title">内部セーブを外部へエクスポート</string>
+    <string name="save_export_opt_zip">全セーブをZIPアーカイブとして出力 (.zip)</string>
+    <string name="save_export_opt_dir">全セーブを外部フォルダへ出力</string>
+
+    <string name="save_chooser_import_zip">セーブZIPファイルを選択</string>
+    <string name="save_chooser_import_files">インポートするセーブファイルを選択</string>
+
+    <string name="save_progress_import_zip">ZIPからセーブをインポート中…</string>
+    <string name="save_progress_import_dir">外部フォルダからインポート中…</string>
+    <string name="save_progress_import_files">選択したファイルをインポート中…</string>
+    <string name="save_progress_export_zip">セーブをZIPへエクスポート中…</string>
+    <string name="save_progress_export_dir">外部フォルダへエクスポート中…</string>
+    <string name="save_progress_export_file">ファイルをエクスポート中…</string>
+
+    <string name="save_import_done_title">インポート完了</string>
+    <string name="save_import_failed_title">インポート失敗</string>
+    <string name="save_import_zip_done_msg">ZIPから %1$d 個のセーブファイルを %2$s にインポートしました。</string>
+    <string name="save_import_dir_done_msg">外部フォルダから %1$d 個のセーブファイルをインポートしました。</string>
+    <string name="save_import_files_done_msg">%1$d 個のセーブファイルをインポートしました。</string>
+
+    <string name="save_export_done_title">エクスポート完了</string>
+    <string name="save_export_failed_title">エクスポート失敗</string>
+    <string name="save_export_zip_done_msg">%1$d 個のセーブファイルをZIPアーカイブに出力しました。</string>
+    <string name="save_export_dir_done_msg">%1$d 個のセーブファイルを選択したフォルダに出力しました。</string>
+
+    <string name="save_file_dialog_title">%1$s (%2$s)\n更新日時: %3$s</string>
+    <string name="save_file_opt_export">このファイルを外部へエクスポート</string>
+    <string name="save_file_opt_backup">このセーブをバックアップ</string>
+    <string name="save_file_opt_rename">ファイル名を変更</string>
+    <string name="save_file_opt_delete">このファイルを削除</string>
+    <string name="save_file_exported_toast">%1$s をエクスポートしました</string>
+
+    <string name="save_backup_title">セーブのバックアップ</string>
+    <string name="save_invalid_filename">無効なファイル名です</string>
+    <string name="save_backup_created_toast">バックアップを作成しました：%1$s</string>
+
+    <string name="save_rename_title">ファイル名の変更</string>
+    <string name="save_rename_exists_toast">同名のファイルが既に存在します</string>
+    <string name="save_renamed_toast">%1$s に変更しました</string>
+    <string name="save_rename_failed_toast">名前の変更に失敗しました</string>
+
+    <string name="save_delete_title">セーブファイルの削除</string>
+    <string name="save_delete_confirm_msg">「%1$s」を削除しますか？この操作は元に戻せません。</string>
+    <string name="save_deleted_toast">%1$s を削除しました</string>
+    <string name="save_delete_failed_toast">削除に失敗しました</string>
+
+    <string name="save_clear_already_empty">セーブディレクトリは既に空です</string>
+    <string name="save_clear_confirm_title">全セーブデータの削除確認</string>
+    <string name="save_clear_confirm_msg">「%2$s」内の全 %1$d 個のセーブファイルを削除しますか？事前にバックアップを推奨します。この操作は元に戻せません。</string>
+    <string name="save_cleared_toast">現在のディレクトリのセーブを全て削除しました</string>
+</resources>

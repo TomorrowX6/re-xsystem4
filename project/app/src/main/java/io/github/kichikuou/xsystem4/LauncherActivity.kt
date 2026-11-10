@@ -210,7 +210,7 @@ class LauncherActivity : Activity(), GameListObserver {
             AlertDialog.Builder(this)
                 .setTitle(R.string.error)
                 .setMessage(item.error)
-                .setPositiveButton("OK", null)
+                .setPositiveButton(R.string.ok, null)
                 .show()
             return
         }

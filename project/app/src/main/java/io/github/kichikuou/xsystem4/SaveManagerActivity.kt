@@ -133,7 +133,7 @@ class SaveManagerActivity : Activity() {
         findViewById<View>(R.id.btn_export_saves).setOnClickListener { showExportDialog() }
         findViewById<View>(R.id.btn_refresh_saves).setOnClickListener {
             refreshFileList()
-            Toast.makeText(this, "已刷新存档列表", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.save_manager_refreshed, Toast.LENGTH_SHORT).show()
         }
         findViewById<View>(R.id.btn_clear_saves).setOnClickListener { showClearSavesDialog() }
 
@@ -195,7 +195,7 @@ class SaveManagerActivity : Activity() {
             defaultDir.mkdirs()
             val extDir = getExternalFilesDir(null)?.let { File(it, "Rance10") }
             found["Rance10"] = SaveTarget(
-                displayName = "Rance10 (默认存档目录)",
+                displayName = getString(R.string.save_manager_default_dir_label),
                 dirName = "Rance10",
                 saveDir = defaultDir,
                 externalGameDir = extDir
@@ -232,9 +232,10 @@ class SaveManagerActivity : Activity() {
         adapter.update(list)
 
         val totalBytes = list.sumOf { it.sizeBytes }
-        findViewById<TextView>(R.id.save_target_title).text = "当前目录：${currentTarget.displayName}"
+        findViewById<TextView>(R.id.save_target_title).text =
+            getString(R.string.save_manager_current_dir, currentTarget.displayName)
         findViewById<TextView>(R.id.save_target_summary).text =
-            "共 ${list.size} 个文件 (${formatFileSize(totalBytes)}) · 内部路径：saves/${currentTarget.dirName}"
+            getString(R.string.save_manager_dir_summary, list.size, formatFileSize(totalBytes), currentTarget.dirName)
 
         val emptyView = findViewById<View>(R.id.save_empty_view)
         val listView = findViewById<View>(R.id.save_file_list)
@@ -271,16 +272,16 @@ class SaveManagerActivity : Activity() {
     private fun classifySaveFile(name: String): String {
         val lower = name.lowercase(Locale.ROOT)
         return when {
-            lower == "globalsave.asd" -> "全局系统存档"
-            lower == "collection.asd" -> "CG/回想收集存档"
-            lower == "msgskip.asd" -> "已读文本跳过记录"
-            lower == "afcgmode.asd" -> "附加模式存档"
-            lower == "gameenquete.asd" -> "问卷状态存档"
-            lower == "commonsystemdata.sav" -> "通用系统数据"
-            lower.endsWith(".asd") || lower.endsWith(".sav") || lower.endsWith(".rsm") -> "游戏进度存档"
-            lower.endsWith(".qnt") || lower.endsWith(".png") -> "存档缩略图"
-            lower.endsWith(".log") -> "崩溃日志"
-            else -> "存档数据"
+            lower == "globalsave.asd" -> getString(R.string.save_tag_global)
+            lower == "collection.asd" -> getString(R.string.save_tag_collection)
+            lower == "msgskip.asd" -> getString(R.string.save_tag_msgskip)
+            lower == "afcgmode.asd" -> getString(R.string.save_tag_afcg)
+            lower == "gameenquete.asd" -> getString(R.string.save_tag_enquete)
+            lower == "commonsystemdata.sav" -> getString(R.string.save_tag_common)
+            lower.endsWith(".asd") || lower.endsWith(".sav") || lower.endsWith(".rsm") -> getString(R.string.save_tag_progress)
+            lower.endsWith(".qnt") || lower.endsWith(".png") -> getString(R.string.save_tag_thumbnail)
+            lower.endsWith(".log") -> getString(R.string.save_tag_log)
+            else -> getString(R.string.save_tag_other)
         }
     }
 
@@ -288,14 +289,14 @@ class SaveManagerActivity : Activity() {
         discoverSaveTargets(currentTarget.dirName)
         val labels = targets.map { target ->
             val count = target.saveDir.walkTopDown()
-                .filter { it.isFile && !it.name.startsWith(".") }
+                .filter { it.isFile && !it.name.startsWith(".") && !it.name.startsWith("crash") }
                 .count()
-            "${target.displayName}  ($count 个文件)"
+            getString(R.string.save_dir_item_count, target.displayName, count)
         }.toMutableList()
-        labels.add("+ 新建存档目录…")
+        labels.add(getString(R.string.save_dir_new_option))
 
         AlertDialog.Builder(this)
-            .setTitle("选择或新建存档目录")
+            .setTitle(R.string.save_dir_select_title)
             .setItems(labels.toTypedArray()) { _, which ->
                 if (which == targets.size) {
                     showCreateTargetDialog()
@@ -311,17 +312,17 @@ class SaveManagerActivity : Activity() {
     private fun showCreateTargetDialog() {
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT
-            hint = "例如：Rance10"
+            hint = getString(R.string.save_dir_create_hint)
             setText("Rance10")
         }
         AlertDialog.Builder(this)
-            .setTitle("新建存档目录")
+            .setTitle(R.string.save_dir_create_title)
             .setView(input)
             .setPositiveButton(R.string.ok) { _, _ ->
                 val rawName = input.text.toString().trim()
                 val safeName = rawName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                 if (safeName.isEmpty() || safeName.startsWith(".")) {
-                    Toast.makeText(this, "目录名称无效", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.save_dir_invalid_name, Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
                 val newDir = File(File(filesDir, "saves"), safeName)
@@ -336,12 +337,12 @@ class SaveManagerActivity : Activity() {
     private fun showImportDialog() {
         if (activeJob?.isActive == true) return
         val options = arrayOf(
-            "从 ZIP 压缩包导入存档 (.zip)",
-            "从外部文件夹导入存档",
-            "导入单个或多个存档文件 (.asd / .sav 等)"
+            getString(R.string.save_import_opt_zip),
+            getString(R.string.save_import_opt_dir),
+            getString(R.string.save_import_opt_files)
         )
         AlertDialog.Builder(this)
-            .setTitle("从外部导入存档")
+            .setTitle(R.string.save_import_title)
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> chooseImportZip()
@@ -356,15 +357,15 @@ class SaveManagerActivity : Activity() {
     private fun showExportDialog() {
         if (activeJob?.isActive == true) return
         if (currentEntries.isEmpty()) {
-            Toast.makeText(this, "当前目录没有可导出的存档文件", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.save_export_empty_toast, Toast.LENGTH_SHORT).show()
             return
         }
         val options = arrayOf(
-            "导出全部存档为 ZIP 压缩包 (.zip)",
-            "导出全部存档到外部文件夹"
+            getString(R.string.save_export_opt_zip),
+            getString(R.string.save_export_opt_dir)
         )
         AlertDialog.Builder(this)
-            .setTitle("内部存档导出到外部")
+            .setTitle(R.string.save_export_title)
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> chooseExportZip()
@@ -381,7 +382,7 @@ class SaveManagerActivity : Activity() {
             type = "*/*"
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
         }
-        startActivityForResult(Intent.createChooser(intent, "选择存档 ZIP 压缩包"), REQ_IMPORT_ZIP)
+        startActivityForResult(Intent.createChooser(intent, getString(R.string.save_chooser_import_zip)), REQ_IMPORT_ZIP)
     }
 
     private fun chooseImportDirectory() {
@@ -397,7 +398,7 @@ class SaveManagerActivity : Activity() {
             type = "*/*"
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         }
-        startActivityForResult(Intent.createChooser(intent, "选择要导入的存档文件"), REQ_IMPORT_FILES)
+        startActivityForResult(Intent.createChooser(intent, getString(R.string.save_chooser_import_files)), REQ_IMPORT_FILES)
     }
 
     private fun chooseExportZip() {
@@ -464,7 +465,7 @@ class SaveManagerActivity : Activity() {
 
     private fun runImportZip(uri: Uri) {
         val targetDir = currentTarget.saveDir
-        showProgress("正在从 ZIP 导入存档…")
+        showProgress(getString(R.string.save_progress_import_zip))
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
@@ -476,7 +477,7 @@ class SaveManagerActivity : Activity() {
                     try {
                         contentResolver.openInputStream(uri)?.use { rawInput ->
                             extractZipToTemp(rawInput, tempDir, tempCanonical)
-                        } ?: throw IOException("无法读取所选 ZIP 文件")
+                        } ?: throw IOException("Failed to open ZIP stream")
 
                         val normalizedRoot = findNormalizedSaveRoot(tempDir)
                         var copied = 0
@@ -496,11 +497,17 @@ class SaveManagerActivity : Activity() {
                 }
                 dismissProgress()
                 refreshFileList()
-                showMessageDialog("导入完成", "已成功从 ZIP 导入 $count 个存档文件到 ${currentTarget.dirName}。")
+                showMessageDialog(
+                    getString(R.string.save_import_done_title),
+                    getString(R.string.save_import_zip_done_msg, count, currentTarget.dirName)
+                )
             } catch (e: Exception) {
                 Log.e("SaveManager", "Failed to import saves from ZIP", e)
                 dismissProgress()
-                showMessageDialog("导入失败", "从 ZIP 导入存档失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_import_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
@@ -531,14 +538,12 @@ class SaveManagerActivity : Activity() {
     }
 
     private fun findNormalizedSaveRoot(tempDir: File): File {
-        // 1. Check if there is an explicit "SaveData" folder anywhere near top level
         val saveDataDir = tempDir.walkTopDown().maxDepth(3).firstOrNull {
             it.isDirectory && it.name.equals("SaveData", ignoreCase = true)
         }
         if (saveDataDir != null) {
             return saveDataDir
         }
-        // 2. Otherwise unwrap single-child wrapper directories
         var cur = tempDir
         while (true) {
             val children = cur.listFiles()?.filter { !it.name.startsWith(".") } ?: break
@@ -555,7 +560,7 @@ class SaveManagerActivity : Activity() {
 
     private fun runImportDirectory(treeUri: Uri) {
         val targetDir = currentTarget.saveDir
-        showProgress("正在从外部文件夹导入存档…")
+        showProgress(getString(R.string.save_progress_import_dir))
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
@@ -576,11 +581,17 @@ class SaveManagerActivity : Activity() {
                 }
                 dismissProgress()
                 refreshFileList()
-                showMessageDialog("导入完成", "已成功从外部文件夹导入 $count 个存档文件。")
+                showMessageDialog(
+                    getString(R.string.save_import_done_title),
+                    getString(R.string.save_import_dir_done_msg, count)
+                )
             } catch (e: Exception) {
                 Log.e("SaveManager", "Failed to import saves from directory", e)
                 dismissProgress()
-                showMessageDialog("导入失败", "从外部文件夹导入失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_import_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
@@ -633,7 +644,7 @@ class SaveManagerActivity : Activity() {
 
     private fun runImportFiles(uris: List<Uri>) {
         val targetDir = currentTarget.saveDir
-        showProgress("正在导入所选存档文件…")
+        showProgress(getString(R.string.save_progress_import_files))
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
@@ -678,23 +689,29 @@ class SaveManagerActivity : Activity() {
                 }
                 dismissProgress()
                 refreshFileList()
-                showMessageDialog("导入完成", "已成功导入 $count 个存档文件。")
+                showMessageDialog(
+                    getString(R.string.save_import_done_title),
+                    getString(R.string.save_import_files_done_msg, count)
+                )
             } catch (e: Exception) {
                 Log.e("SaveManager", "Failed to import save files", e)
                 dismissProgress()
-                showMessageDialog("导入失败", "导入存档文件失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_import_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
 
     private fun runExportZip(uri: Uri) {
         val entriesToExport = currentEntries.toList()
-        showProgress("正在导出存档为 ZIP…")
+        showProgress(getString(R.string.save_progress_export_zip))
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
                     val outStream = contentResolver.openOutputStream(uri)
-                        ?: throw IOException("无法创建目标 ZIP 文件")
+                        ?: throw IOException("Failed to create target ZIP file")
                     var exported = 0
                     ZipOutputStream(outStream.buffered()).use { zos ->
                         for (entry in entriesToExport) {
@@ -712,18 +729,24 @@ class SaveManagerActivity : Activity() {
                     exported
                 }
                 dismissProgress()
-                showMessageDialog("导出成功", "已成功将 $count 个存档文件导出到 ZIP 压缩包。")
+                showMessageDialog(
+                    getString(R.string.save_export_done_title),
+                    getString(R.string.save_export_zip_done_msg, count)
+                )
             } catch (e: Exception) {
                 Log.e("SaveManager", "Failed to export saves to ZIP", e)
                 dismissProgress()
-                showMessageDialog("导出失败", "导出 ZIP 失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_export_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
 
     private fun runExportDirectory(treeUri: Uri) {
         val entriesToExport = currentEntries.toList()
-        showProgress("正在导出存档到外部文件夹…")
+        showProgress(getString(R.string.save_progress_export_dir))
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
@@ -753,22 +776,28 @@ class SaveManagerActivity : Activity() {
                             parentUri,
                             "application/octet-stream",
                             fileName
-                        ) ?: throw IOException("无法在目标文件夹创建文件: $fileName")
+                        ) ?: throw IOException("Failed to create file: $fileName")
                         contentResolver.openOutputStream(newDocUri)?.use { out ->
                             entry.file.inputStream().buffered().use { input ->
                                 input.copyTo(out)
                             }
-                        } ?: throw IOException("无法写入文件: $fileName")
+                        } ?: throw IOException("Failed to write file: $fileName")
                         exported++
                     }
                     exported
                 }
                 dismissProgress()
-                showMessageDialog("导出成功", "已成功将 $count 个存档文件导出到所选外部文件夹。")
+                showMessageDialog(
+                    getString(R.string.save_export_done_title),
+                    getString(R.string.save_export_dir_done_msg, count)
+                )
             } catch (e: Exception) {
                 Log.e("SaveManager", "Failed to export saves to directory", e)
                 dismissProgress()
-                showMessageDialog("导出失败", "导出到外部文件夹失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_export_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
@@ -784,7 +813,7 @@ class SaveManagerActivity : Activity() {
             parentUri,
             DocumentsContract.Document.MIME_TYPE_DIR,
             dirName
-        ) ?: throw IOException("无法创建目录: $dirName")
+        ) ?: throw IOException("Failed to create directory: $dirName")
         return DocumentsContract.getDocumentId(createdUri)
     }
 
@@ -792,13 +821,13 @@ class SaveManagerActivity : Activity() {
         val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
             .format(Date(entry.lastModified))
         val options = arrayOf(
-            "导出此存档文件到外部",
-            "备份此存档",
-            "重命名此存档文件",
-            "删除此存档文件"
+            getString(R.string.save_file_opt_export),
+            getString(R.string.save_file_opt_backup),
+            getString(R.string.save_file_opt_rename),
+            getString(R.string.save_file_opt_delete)
         )
         AlertDialog.Builder(this)
-            .setTitle("${entry.relativePath} (${formatFileSize(entry.sizeBytes)})\n修改时间: $dateStr")
+            .setTitle(getString(R.string.save_file_dialog_title, entry.relativePath, formatFileSize(entry.sizeBytes), dateStr))
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
@@ -820,7 +849,7 @@ class SaveManagerActivity : Activity() {
     }
 
     private fun runExportSingleFile(srcFile: File, destUri: Uri) {
-        showProgress("正在导出文件…")
+        showProgress(getString(R.string.save_progress_export_file))
         activeJob = scope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -828,13 +857,20 @@ class SaveManagerActivity : Activity() {
                         srcFile.inputStream().buffered().use { input ->
                             input.copyTo(out)
                         }
-                    } ?: throw IOException("无法写入目标文件")
+                    } ?: throw IOException("Failed to write target file")
                 }
                 dismissProgress()
-                Toast.makeText(this@SaveManagerActivity, "已成功导出 ${srcFile.name}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@SaveManagerActivity,
+                    getString(R.string.save_file_exported_toast, srcFile.name),
+                    Toast.LENGTH_SHORT
+                ).show()
             } catch (e: Exception) {
                 dismissProgress()
-                showMessageDialog("导出失败", "导出 ${srcFile.name} 失败：${e.localizedMessage ?: "未知错误"}")
+                showMessageDialog(
+                    getString(R.string.save_export_failed_title),
+                    e.localizedMessage ?: getString(R.string.error)
+                )
             }
         }
     }
@@ -845,21 +881,28 @@ class SaveManagerActivity : Activity() {
             setText("${entry.file.name}.bak")
         }
         AlertDialog.Builder(this)
-            .setTitle("备份存档副本")
+            .setTitle(R.string.save_backup_title)
             .setView(input)
             .setPositiveButton(R.string.ok) { _, _ ->
                 val newName = input.text.toString().trim()
                 if (newName.isEmpty() || newName.contains('/') || newName.contains('\\')) {
-                    Toast.makeText(this, "文件名无效", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.save_invalid_filename, Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
                 try {
                     val dst = File(entry.file.parentFile, newName)
                     entry.file.copyTo(dst, overwrite = true)
                     refreshFileList()
-                    Toast.makeText(this, "已创建备份：$newName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        getString(R.string.save_backup_created_toast, newName),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } catch (e: Exception) {
-                    showMessageDialog("备份失败", e.localizedMessage ?: "无法复制文件")
+                    showMessageDialog(
+                        getString(R.string.error),
+                        e.localizedMessage ?: getString(R.string.error)
+                    )
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -872,7 +915,7 @@ class SaveManagerActivity : Activity() {
             setText(entry.file.name)
         }
         AlertDialog.Builder(this)
-            .setTitle("重命名存档文件")
+            .setTitle(R.string.save_rename_title)
             .setView(input)
             .setPositiveButton(R.string.ok) { _, _ ->
                 val newName = input.text.toString().trim()
@@ -881,14 +924,18 @@ class SaveManagerActivity : Activity() {
                 }
                 val dst = File(entry.file.parentFile, newName)
                 if (dst.exists()) {
-                    Toast.makeText(this, "同名文件已存在", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.save_rename_exists_toast, Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
                 if (entry.file.renameTo(dst)) {
                     refreshFileList()
-                    Toast.makeText(this, "已重命名为 $newName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        getString(R.string.save_renamed_toast, newName),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } else {
-                    Toast.makeText(this, "重命名失败", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.save_rename_failed_toast, Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -897,14 +944,18 @@ class SaveManagerActivity : Activity() {
 
     private fun showDeleteSingleFileDialog(entry: SaveFileEntry) {
         AlertDialog.Builder(this)
-            .setTitle("删除存档文件")
-            .setMessage("确定要删除“${entry.relativePath}”吗？此操作不可撤销。")
+            .setTitle(R.string.save_delete_title)
+            .setMessage(getString(R.string.save_delete_confirm_msg, entry.relativePath))
             .setPositiveButton(R.string.ok) { _, _ ->
                 if (entry.file.delete()) {
                     refreshFileList()
-                    Toast.makeText(this, "已删除 ${entry.relativePath}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        getString(R.string.save_deleted_toast, entry.relativePath),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } else {
-                    Toast.makeText(this, "删除失败", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.save_delete_failed_toast, Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -913,43 +964,22 @@ class SaveManagerActivity : Activity() {
 
     private fun showClearSavesDialog() {
         if (currentEntries.isEmpty()) {
-            Toast.makeText(this, "当前存档目录已为空", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.save_clear_already_empty, Toast.LENGTH_SHORT).show()
             return
         }
-        val logEntries = currentEntries.filter { it.file.name.endsWith(".log", true) }
-        if (logEntries.isNotEmpty()) {
-            val options = arrayOf(
-                "仅清理崩溃日志 (${logEntries.size} 个 .log 文件)",
-                "清空当前目录全部存档 (${currentEntries.size} 个文件)"
-            )
-            AlertDialog.Builder(this)
-                .setTitle("清理/清空存档")
-                .setItems(options) { _, which ->
-                    if (which == 0) {
-                        logEntries.forEach { it.file.delete() }
-                        refreshFileList()
-                        Toast.makeText(this, "已清理崩溃日志", Toast.LENGTH_SHORT).show()
-                    } else {
-                        confirmDeleteAllSaves()
-                    }
-                }
-                .setNegativeButton(R.string.cancel, null)
-                .show()
-        } else {
-            confirmDeleteAllSaves()
-        }
+        confirmDeleteAllSaves()
     }
 
     private fun confirmDeleteAllSaves() {
         AlertDialog.Builder(this)
-            .setTitle("确认清空全部存档")
-            .setMessage("确定要清空“${currentTarget.displayName}”下的全部 ${currentEntries.size} 个存档文件吗？建议先导出备份，此操作不可恢复。")
+            .setTitle(R.string.save_clear_confirm_title)
+            .setMessage(getString(R.string.save_clear_confirm_msg, currentEntries.size, currentTarget.displayName))
             .setPositiveButton(R.string.ok) { _, _ ->
                 currentTarget.saveDir.listFiles()?.forEach { child ->
                     child.deleteRecursively()
                 }
                 refreshFileList()
-                Toast.makeText(this, "已清空当前目录存档", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, R.string.save_cleared_toast, Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(R.string.cancel, null)
             .show()

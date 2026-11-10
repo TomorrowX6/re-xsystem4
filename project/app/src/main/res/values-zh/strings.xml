@@ -1,0 +1,111 @@
+<resources>
+    <string name="action_refresh">刷新</string>
+    <string name="action_install_from_directory">导入游戏目录</string>
+    <string name="action_install_from_zip">从ZIP导入</string>
+    <string name="action_save_manager">存档管理器</string>
+    <string name="action_github">GitHub</string>
+    <string name="action_licenses">开源许可证</string>
+    <string name="choose_a_file">选择游戏 ZIP 文件</string>
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+    <string name="error">出错了</string>
+    <string name="install_dialog_title">正在导入游戏…</string>
+    <string name="install_progress">%s</string>
+    <string name="import_copy_progress">已复制 %1$d MB\n%2$s</string>
+    <string name="import_no_space">存储空间不足。请清理空间后重新导入，完整游戏通常需要至少 4 GB 可用空间。</string>
+    <string name="directory_no_game">请选择包含 AliceStart.ini / System40.ini 和 .ain 文件的游戏目录。</string>
+    <string name="directory_import_error">导入失败。请检查目录是否可读取、游戏文件是否完整，以及手机可用空间。</string>
+    <string name="toast_no_GameName">%s 缺少 GameName 字段。</string>
+    <string name="toast_no_ini">%s 中没有 AliceStart.ini 或 System40.ini。</string>
+    <string name="uninstall_dialog_message">移除“%s”的已导入资源？游戏存档会保留。</string>
+    <string name="uninstall_dialog_title">移除游戏资源</string>
+    <string name="zip_extraction_error">ZIP 导入失败，请检查文件和存储空间。</string>
+    <string name="zip_no_ini">ZIP 中没有找到游戏启动配置文件。</string>
+    <string name="loading_game">载入中…</string>
+
+    <string name="save_manager_switch_dir">切换目录</string>
+    <string name="save_manager_import">外部导入存档</string>
+    <string name="save_manager_export">内部导出存档</string>
+    <string name="save_manager_refresh">刷新列表</string>
+    <string name="save_manager_clear">清空存档</string>
+    <string name="save_manager_empty">当前存档目录为空。\n可点击上方“外部导入存档”从 ZIP、外部文件夹或单文件导入存档。</string>
+    <string name="save_manager_refreshed">已刷新存档列表</string>
+    <string name="save_manager_default_dir_label">Rance10 (默认存档目录)</string>
+    <string name="save_manager_current_dir">当前目录：%1$s</string>
+    <string name="save_manager_dir_summary">共 %1$d 个文件 (%2$s) · 内部路径：saves/%3$s</string>
+
+    <string name="save_tag_global">全局系统存档</string>
+    <string name="save_tag_collection">CG/回想收集存档</string>
+    <string name="save_tag_msgskip">已读文本跳过记录</string>
+    <string name="save_tag_afcg">附加模式存档</string>
+    <string name="save_tag_enquete">问卷状态存档</string>
+    <string name="save_tag_common">通用系统数据</string>
+    <string name="save_tag_progress">游戏进度存档</string>
+    <string name="save_tag_thumbnail">存档缩略图</string>
+    <string name="save_tag_log">崩溃日志</string>
+    <string name="save_tag_other">存档数据</string>
+
+    <string name="save_dir_item_count">%1$s  (%2$d 个文件)</string>
+    <string name="save_dir_new_option">+ 新建存档目录…</string>
+    <string name="save_dir_select_title">选择或新建存档目录</string>
+    <string name="save_dir_create_title">新建存档目录</string>
+    <string name="save_dir_create_hint">例如：Rance10</string>
+    <string name="save_dir_invalid_name">目录名称无效</string>
+
+    <string name="save_import_title">从外部导入存档</string>
+    <string name="save_import_opt_zip">从 ZIP 压缩包导入存档 (.zip)</string>
+    <string name="save_import_opt_dir">从外部文件夹导入存档</string>
+    <string name="save_import_opt_files">导入单个或多个存档文件 (.asd / .sav 等)</string>
+
+    <string name="save_export_empty_toast">当前目录没有可导出的存档文件</string>
+    <string name="save_export_title">内部存档导出到外部</string>
+    <string name="save_export_opt_zip">导出全部存档为 ZIP 压缩包 (.zip)</string>
+    <string name="save_export_opt_dir">导出全部存档到外部文件夹</string>
+
+    <string name="save_chooser_import_zip">选择存档 ZIP 压缩包</string>
+    <string name="save_chooser_import_files">选择要导入的存档文件</string>
+
+    <string name="save_progress_import_zip">正在从 ZIP 导入存档…</string>
+    <string name="save_progress_import_dir">正在从外部文件夹导入存档…</string>
+    <string name="save_progress_import_files">正在导入所选存档文件…</string>
+    <string name="save_progress_export_zip">正在导出存档为 ZIP…</string>
+    <string name="save_progress_export_dir">正在导出存档到外部文件夹…</string>
+    <string name="save_progress_export_file">正在导出文件…</string>
+
+    <string name="save_import_done_title">导入完成</string>
+    <string name="save_import_failed_title">导入失败</string>
+    <string name="save_import_zip_done_msg">已成功从 ZIP 导入 %1$d 个存档文件到 %2$s。</string>
+    <string name="save_import_dir_done_msg">已成功从外部文件夹导入 %1$d 个存档文件。</string>
+    <string name="save_import_files_done_msg">已成功导入 %1$d 个存档文件。</string>
+
+    <string name="save_export_done_title">导出成功</string>
+    <string name="save_export_failed_title">导出失败</string>
+    <string name="save_export_zip_done_msg">已成功将 %1$d 个存档文件导出到 ZIP 压缩包。</string>
+    <string name="save_export_dir_done_msg">已成功将 %1$d 个存档文件导出到所选外部文件夹。</string>
+
+    <string name="save_file_dialog_title">%1$s (%2$s)\n修改时间: %3$s</string>
+    <string name="save_file_opt_export">导出此存档文件到外部</string>
+    <string name="save_file_opt_backup">备份此存档</string>
+    <string name="save_file_opt_rename">重命名此存档文件</string>
+    <string name="save_file_opt_delete">删除此存档文件</string>
+    <string name="save_file_exported_toast">已成功导出 %1$s</string>
+
+    <string name="save_backup_title">备份存档副本</string>
+    <string name="save_invalid_filename">文件名无效</string>
+    <string name="save_backup_created_toast">已创建备份：%1$s</string>
+
+    <string name="save_rename_title">重命名存档文件</string>
+    <string name="save_rename_exists_toast">同名文件已存在</string>
+    <string name="save_renamed_toast">已重命名为 %1$s</string>
+    <string name="save_rename_failed_toast">重命名失败</string>
+
+    <string name="save_delete_title">删除存档文件</string>
+    <string name="save_delete_confirm_msg">确定要删除“%1$s”吗？此操作不可撤销。</string>
+    <string name="save_deleted_toast">已删除 %1$s</string>
+    <string name="save_delete_failed_toast">删除失败</string>
+
+    <string name="save_clear_already_empty">当前存档目录已为空</string>
+    <string name="save_clear_confirm_title">确认清空全部存档</string>
+    <string name="save_clear_confirm_msg">确定要清空“%2$s”下的全部 %1$d 个存档文件吗？建议先导出备份，此操作不可恢复。</string>
+    <string name="save_cleared_toast">已清空当前目录存档</string>
+</resources>
