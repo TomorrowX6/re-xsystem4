@@ -78,6 +78,8 @@ void parts_msg_push(struct parts* parts, int type, const char *fmt, ...)
 	// Message system is introduced in Rance 9
 	if (!parts_multi_controller)
 		return;
+	if (ain->version >= 12 && parts && parts->delegate_index < 0)
+		return;
 
 	struct parts_message *msg = xmalloc(sizeof(*msg));
 	msg->parts_no = parts ? parts->no : 0;

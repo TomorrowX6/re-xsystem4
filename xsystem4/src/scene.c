@@ -46,20 +46,15 @@ void scene_register_sprite(struct sprite *sp)
 		sp->id = ++id_counter;
 
 	struct sprite *p;
-	TAILQ_FOREACH(p, &sprite_list, entry) {
-		if (p->z == sp->z) {
-			if (p->z2 > sp->z2) {
-				TAILQ_INSERT_BEFORE(p, sp, entry);
-				sp->in_scene = true;
-				return;
-			}
-		} else if (p->z > sp->z) {
-			TAILQ_INSERT_BEFORE(p, sp, entry);
+	TAILQ_FOREACH_REVERSE(p, &sprite_list, listhead, entry) {
+		if (p->z < sp->z || (p->z == sp->z && p->z2 <= sp->z2)) {
+			TAILQ_INSERT_AFTER(&sprite_list, p, sp, entry);
 			sp->in_scene = true;
+			scene_dirty();
 			return;
 		}
 	}
-	TAILQ_INSERT_TAIL(&sprite_list, sp, entry);
+	TAILQ_INSERT_HEAD(&sprite_list, sp, entry);
 	sp->in_scene = true;
 	scene_dirty();
 }

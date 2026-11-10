@@ -689,22 +689,76 @@ static bool build_draw_rect(struct parts_construction_process *cproc, struct par
 	return true;
 }
 
+#define PARTS_CPROC_CACHE_SIZE 32
+
+struct cproc_cg_cache_entry {
+	struct string *name;
+	Texture texture;
+};
+
+static struct cproc_cg_cache_entry cproc_cg_cache[PARTS_CPROC_CACHE_SIZE];
+static int nr_cproc_cg_cache = 0;
+
+void parts_cproc_cache_clear(void)
+{
+	for (int i = 0; i < nr_cproc_cg_cache; i++) {
+		gfx_delete_texture(&cproc_cg_cache[i].texture);
+		if (cproc_cg_cache[i].name)
+			free_string(cproc_cg_cache[i].name);
+	}
+	nr_cproc_cg_cache = 0;
+}
+
+static Texture *cproc_get_cached_texture(struct string *cg_name)
+{
+	if (!cg_name || !cg_name->size)
+		return NULL;
+	for (int i = 0; i < nr_cproc_cg_cache; i++) {
+		if (!strcmp(cproc_cg_cache[i].name->text, cg_name->text)) {
+			if (i > 0) {
+				struct cproc_cg_cache_entry hit = cproc_cg_cache[i];
+				memmove(&cproc_cg_cache[1], &cproc_cg_cache[0],
+						i * sizeof(struct cproc_cg_cache_entry));
+				cproc_cg_cache[0] = hit;
+			}
+			return &cproc_cg_cache[0].texture;
+		}
+	}
+
+	struct cg *cg = asset_cg_load_by_name(cg_name->text, NULL);
+	if (!cg)
+		return NULL;
+
+	if (nr_cproc_cg_cache == PARTS_CPROC_CACHE_SIZE) {
+		struct cproc_cg_cache_entry *evict = &cproc_cg_cache[PARTS_CPROC_CACHE_SIZE - 1];
+		gfx_delete_texture(&evict->texture);
+		if (evict->name)
+			free_string(evict->name);
+		nr_cproc_cg_cache--;
+	}
+	if (nr_cproc_cg_cache > 0) {
+		memmove(&cproc_cg_cache[1], &cproc_cg_cache[0],
+				nr_cproc_cg_cache * sizeof(struct cproc_cg_cache_entry));
+	}
+	memset(&cproc_cg_cache[0], 0, sizeof(cproc_cg_cache[0]));
+	cproc_cg_cache[0].name = string_dup(cg_name);
+	gfx_init_texture_with_cg(&cproc_cg_cache[0].texture, cg);
+	cg_free(cg);
+	nr_cproc_cg_cache++;
+	return &cproc_cg_cache[0].texture;
+}
+
 static bool build_draw_cut_cg(struct parts_construction_process *cproc, struct parts_cp_cut_cg *op)
 {
 	if (!cproc->common.texture.handle)
 		return false;
 
-	struct cg *cg = asset_cg_load_by_name(op->cg_name->text, NULL);
-	if (!cg)
+	Texture *src = cproc_get_cached_texture(op->cg_name);
+	if (!src)
 		return false;
 
-	Texture src;
-	gfx_init_texture_with_cg(&src, cg);
-	cg_free(cg);
-
 	gfx_copy_stretch_blend_amap(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			&src, op->sx, op->sy, op->sw, op->sh);
-	gfx_delete_texture(&src);
+			src, op->sx, op->sy, op->sw, op->sh);
 	return true;
 }
 
@@ -713,17 +767,12 @@ static bool build_copy_cut_cg(struct parts_construction_process *cproc, struct p
 	if (!cproc->common.texture.handle)
 		return false;
 
-	struct cg *cg = asset_cg_load_by_name(op->cg_name->text, NULL);
-	if (!cg)
+	Texture *src = cproc_get_cached_texture(op->cg_name);
+	if (!src)
 		return false;
 
-	Texture src;
-	gfx_init_texture_with_cg(&src, cg);
-	cg_free(cg);
-
 	gfx_copy_stretch_with_alpha_map(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			&src, op->sx, op->sy, op->sw, op->sh);
-	gfx_delete_texture(&src);
+			src, op->sx, op->sy, op->sw, op->sh);
 	return true;
 }
 
@@ -732,17 +781,12 @@ static bool build_only_alpha_cut_cg(struct parts_construction_process *cproc, st
 	if (!cproc->common.texture.handle)
 		return false;
 
-	struct cg *cg = asset_cg_load_by_name(op->cg_name->text, NULL);
-	if (!cg)
+	Texture *src = cproc_get_cached_texture(op->cg_name);
+	if (!src)
 		return false;
 
-	Texture src;
-	gfx_init_texture_with_cg(&src, cg);
-	cg_free(cg);
-
 	gfx_copy_stretch_amap(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			&src, op->sx, op->sy, op->sw, op->sh);
-	gfx_delete_texture(&src);
+			src, op->sx, op->sy, op->sw, op->sh);
 	return true;
 }
 
@@ -751,16 +795,11 @@ static bool build_blend_cg(struct parts_construction_process *cproc, struct part
 	if (!cproc->common.texture.handle)
 		return false;
 
-	struct cg *cg = asset_cg_load_by_name(op->name->text, NULL);
-	if (!cg)
+	Texture *src = cproc_get_cached_texture(op->name);
+	if (!src)
 		return false;
 
-	Texture src;
-	gfx_init_texture_with_cg(&src, cg);
-	cg_free(cg);
-
-	gfx_blend_amap(&cproc->common.texture, op->x, op->y, &src, 0, 0, src.w, src.h);
-	gfx_delete_texture(&src);
+	gfx_blend_amap(&cproc->common.texture, op->x, op->y, src, 0, 0, src->w, src->h);
 	return true;
 }
 

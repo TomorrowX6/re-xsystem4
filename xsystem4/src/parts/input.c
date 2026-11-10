@@ -16,6 +16,7 @@
 
 #include "system4.h"
 #include "system4/ain.h"
+#include <limits.h>
 #include <math.h>
 #include "system4/string.h"
 
@@ -128,7 +129,43 @@ static bool parts_hittest(struct parts *parts, int state, Point pos)
 	if (parts->states[state].type == PARTS_LAYOUT_BOX || parts->component_type == 15)
 		return false;
 	Rectangle hitbox = parts->states[state].common.hitbox;
+	if (hitbox.w <= 0 || hitbox.h <= 0) {
+		if (parts->states[state].type != PARTS_FLAT &&
+				!(parts->states[state].type == PARTS_RECT_DETECTION && parts->states[state].rect.custom))
+			return false;
+	}
 	if (ain->version >= 12) {
+		int clipper_no = parts_get_effective_alpha_clipper(parts);
+		if (clipper_no > 0) {
+			static uint64_t cached_clip_gen = 0;
+			static int cached_clip_no = 0;
+			static Point cached_clip_pos = { INT_MIN, INT_MIN };
+			static bool cached_clip_inside = true;
+			if (cached_clip_gen != parts_render_gen || cached_clip_no != clipper_no ||
+					cached_clip_pos.x != pos.x || cached_clip_pos.y != pos.y) {
+				cached_clip_gen = parts_render_gen;
+				cached_clip_no = clipper_no;
+				cached_clip_pos = pos;
+				cached_clip_inside = true;
+				struct parts *clipper = parts_try_get(clipper_no);
+				if (clipper) {
+					struct parts_common *c_common = &clipper->states[clipper->state].common;
+					mat4 clip_m;
+					parts_world_matrix(clipper, clip_m);
+					float cdet = clip_m[0][0] * clip_m[1][1] - clip_m[0][1] * clip_m[1][0];
+					if (!isfinite(cdet) || fabsf(cdet) < 1e-12f) {
+						cached_clip_inside = false;
+					} else {
+						float cdx = pos.x - clip_m[3][0], cdy = pos.y - clip_m[3][1];
+						float cx = (clip_m[1][1] * cdx - clip_m[1][0] * cdy) / cdet - c_common->origin_offset.x;
+						float cy = (clip_m[0][0] * cdy - clip_m[0][1] * cdx) / cdet - c_common->origin_offset.y;
+						cached_clip_inside = (cx >= 0 && cy >= 0 && cx < c_common->w && cy < c_common->h);
+					}
+				}
+			}
+			if (!cached_clip_inside)
+				return false;
+		}
 		mat4 matrix;
 		parts_world_matrix(parts, matrix);
 		float det = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
@@ -196,6 +233,22 @@ void parts_input_reset(void)
 	click_miss_sound_name = NULL;
 }
 
+static bool parts_needs_mouse_hittest(struct parts *parts)
+{
+	if (!parts->pass_cursor || parts->clickable || parts->draggable || parts->wheelable)
+		return true;
+	if (parts->delegate_index >= 0 || parts->widget || parts->scrollbar)
+		return true;
+	if (parts->linked_from >= 0 || parts->linked_to >= 0 || parts->is_hovered)
+		return true;
+	if (parts->states[PARTS_STATE_HOVERED].type != PARTS_UNINITIALIZED ||
+			parts->states[PARTS_STATE_CLICKED].type != PARTS_UNINITIALIZED)
+		return true;
+	if (parts->on_cursor_sound >= 0 || parts->sound_names[PARTS_STATE_HOVERED]->size > 0)
+		return true;
+	return false;
+}
+
 static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clicking,
 		int passed_time, int wheel_forward, int wheel_back, bool *hover_consumed, bool *click_consumed)
 {
@@ -222,9 +275,9 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 	}
 
 	// Always use DEFAULT state hitbox regardless of the current display state.
-	bool hit = parts_hittest(parts, PARTS_STATE_DEFAULT, cur_pos);
-	bool is_hovered = hit
-		&& !*hover_consumed;
+	bool is_hovered = !*hover_consumed
+		&& parts_needs_mouse_hittest(parts)
+		&& parts_hittest(parts, PARTS_STATE_DEFAULT, cur_pos);
 
 	bool was_hovered = parts->is_hovered;
 	parts->is_hovered = is_hovered;

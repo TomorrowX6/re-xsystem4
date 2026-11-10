@@ -197,11 +197,31 @@ int PE_get_layoutbox_padding_right(int parts_no)
 }
 
 static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struct parts *parts,
-		int *out_w, int *out_h);
+		bool cached, int *out_w, int *out_h);
 static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct parts *parts,
-		int *out_w, int *out_h);
+		bool cached, int *out_w, int *out_h);
 
-void parts_get_layout_size(struct parts *parts, int *w, int *h)
+static void parts_get_child_layout_size(struct parts *child, bool cached, int *w, int *h)
+{
+	if (!cached) {
+		parts_get_layout_size(child, w, h);
+		return;
+	}
+	struct parts_state *state = &child->states[child->state];
+	if (ain->version >= 12 && child->widget) {
+		parts_widget_get_size(child, w, h);
+		return;
+	}
+	if (state->type == PARTS_FLAT && state->flat.flat) {
+		*w = state->flat.flat->hdr.width;
+		*h = state->flat.flat->hdr.height;
+	} else {
+		*w = state->common.w;
+		*h = state->common.h;
+	}
+}
+
+static void parts_get_layout_size_impl(struct parts *parts, bool cached, int *w, int *h)
 {
 	struct parts_state *state = &parts->states[parts->state];
 	if (ain->version >= 12) {
@@ -212,23 +232,23 @@ void parts_get_layout_size(struct parts *parts, int *w, int *h)
 		if (parts->component_type == 15) {
 			// A user component takes its size from its first child (the activity root).
 			struct parts *child = TAILQ_FIRST(&parts->children);
-			if (child) parts_get_layout_size(child, w, h);
+			if (child) parts_get_child_layout_size(child, cached, w, h);
 			else *w = *h = 0;
 			return;
 		}
 		if (state->type == PARTS_LAYOUT_BOX) {
 			struct parts_layout_box *lb = &state->layout_box;
 			if (lb->layout_type == PARTS_LAYOUT_HORIZONTAL)
-				parts_layout_calc_size_horizontal(lb, parts, w, h);
+				parts_layout_calc_size_horizontal(lb, parts, cached, w, h);
 			else if (lb->layout_type == PARTS_LAYOUT_VERTICAL)
-				parts_layout_calc_size_vertical(lb, parts, w, h);
+				parts_layout_calc_size_vertical(lb, parts, cached, w, h);
 			else {
 				*w = *h = 0;
 				struct parts *child;
 				PARTS_FOREACH_CHILD(child, parts) {
 					if (!child->local.show) continue;
 					int cw, ch;
-					parts_get_layout_size(child, &cw, &ch);
+					parts_get_child_layout_size(child, cached, &cw, &ch);
 					struct parts_common *c = &child->states[child->state].common;
 					SDL_FPoint pos = parts_local_position(child);
 					*w = max(*w, pos.x + c->origin_offset.x + cw);
@@ -247,6 +267,11 @@ void parts_get_layout_size(struct parts *parts, int *w, int *h)
 		*w = state->common.w;
 		*h = state->common.h;
 	}
+}
+
+void parts_get_layout_size(struct parts *parts, int *w, int *h)
+{
+	parts_get_layout_size_impl(parts, false, w, h);
 }
 
 static int align_offset_x(int align, int total_w)
@@ -269,7 +294,7 @@ static int align_offset_y(int align, int total_h)
 
 // Calculates the total size of a horizontal layout box by summing child widths per row.
 static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struct parts *parts,
-		int *out_w, int *out_h)
+		bool cached, int *out_w, int *out_h)
 {
 	int row_w = 0, max_row_w = 0, max_row_h = 0, total_h = 0;
 	float wrap_limit = layout_wrap_limit(lb, true);
@@ -277,7 +302,7 @@ static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struc
 	PARTS_FOREACH_CHILD(child, parts) {
 		if (ain->version >= 12 && !child->local.show) continue;
 		int child_w, child_h;
-		parts_get_layout_size(child, &child_w, &child_h);
+		parts_get_child_layout_size(child, cached, &child_w, &child_h);
 		int cw = child->margin_left + child_w + child->margin_right;
 		int ch = child->margin_top + child_h + child->margin_bottom;
 		if (lb->wrap && row_w + cw > wrap_limit && row_w > 0) {
@@ -300,7 +325,7 @@ static void parts_layout_calc_size_horizontal(struct parts_layout_box *lb, struc
 
 // Calculates the total size of a vertical layout box by summing child heights per column.
 static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct parts *parts,
-		int *out_w, int *out_h)
+		bool cached, int *out_w, int *out_h)
 {
 	int col_h = 0, max_col_h = 0, max_col_w = 0, total_w = 0;
 	float wrap_limit = layout_wrap_limit(lb, false);
@@ -308,7 +333,7 @@ static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct 
 	PARTS_FOREACH_CHILD(child, parts) {
 		if (ain->version >= 12 && !child->local.show) continue;
 		int child_w, child_h;
-		parts_get_layout_size(child, &child_w, &child_h);
+		parts_get_child_layout_size(child, cached, &child_w, &child_h);
 		int cw = child->margin_left + child_w + child->margin_right;
 		int ch = child->margin_top + child_h + child->margin_bottom;
 		if (lb->wrap && col_h + ch > wrap_limit && col_h > 0) {
@@ -329,24 +354,26 @@ static void parts_layout_calc_size_vertical(struct parts_layout_box *lb, struct 
 	*out_h = max_col_h + lb->padding_top + lb->padding_bottom;
 }
 
-void parts_do_layout(struct parts *parts)
+static void parts_do_layout_impl(struct parts *parts, bool cached)
 {
 	if (parts->states[0].type != PARTS_LAYOUT_BOX)
 		return;
 	struct parts_layout_box *lb = &parts->states[0].layout_box;
+	int total_w = 0, total_h = 0;
 	if (ain->version >= 12) {
-		int w, h;
-		parts_get_layout_size(parts, &w, &h);
-		parts_set_dims(parts, &lb->common, w, h);
+		parts_get_layout_size_impl(parts, cached, &total_w, &total_h);
+		if (lb->common.w != total_w || lb->common.h != total_h)
+			parts_set_dims(parts, &lb->common, total_w, total_h);
 	}
 	if (lb->layout_type == PARTS_LAYOUT_FREE)
 		return;
 
-	int total_w, total_h;
-	if (lb->layout_type == PARTS_LAYOUT_HORIZONTAL)
-		parts_layout_calc_size_horizontal(lb, parts, &total_w, &total_h);
-	else
-		parts_layout_calc_size_vertical(lb, parts, &total_w, &total_h);
+	if (ain->version < 12) {
+		if (lb->layout_type == PARTS_LAYOUT_HORIZONTAL)
+			parts_layout_calc_size_horizontal(lb, parts, cached, &total_w, &total_h);
+		else
+			parts_layout_calc_size_vertical(lb, parts, cached, &total_w, &total_h);
+	}
 
 	int align = lb->align;
 	bool is_left   = (align == 1 || align == 4 || align == 7);
@@ -375,7 +402,7 @@ void parts_do_layout(struct parts *parts)
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
 		int child_w, child_h;
-		parts_get_layout_size(child, &child_w, &child_h);
+		parts_get_child_layout_size(child, cached, &child_w, &child_h);
 		int cw = child->margin_left + child_w + child->margin_right;
 		int ch = child->margin_top + child_h + child->margin_bottom;
 		if (ain->version >= 12 && !child->local.show) cw = ch = 0;
@@ -427,15 +454,22 @@ void parts_do_layout(struct parts *parts)
 	}
 }
 
+void parts_do_layout(struct parts *parts)
+{
+	parts_do_layout_impl(parts, false);
+}
+
 void parts_update_layout_tree(struct parts *parts)
 {
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) parts_update_layout_tree(child);
-	parts_do_layout(parts);
+	parts_do_layout_impl(parts, true);
 	if (parts->component_type == 15) {
 		int w, h;
-		parts_get_layout_size(parts, &w, &h);
-		for (int i = 0; i < PARTS_NR_STATES; i++)
-			parts_set_dims(parts, &parts->states[i].common, w, h);
+		parts_get_layout_size_impl(parts, true, &w, &h);
+		for (int i = 0; i < PARTS_NR_STATES; i++) {
+			if (parts->states[i].common.w != w || parts->states[i].common.h != h)
+				parts_set_dims(parts, &parts->states[i].common, w, h);
+		}
 	}
 }

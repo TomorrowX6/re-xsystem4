@@ -40,6 +40,7 @@
 static struct parts_context live_context = {
 	.list = TAILQ_HEAD_INITIALIZER(live_context.list),
 	.dirty = TAILQ_HEAD_INITIALIZER(live_context.dirty),
+	.next_free_no = 1000010000,
 };
 struct parts_context *parts_current = &live_context;
 #define dirty_list (parts_current->dirty)
@@ -137,15 +138,15 @@ static void parts_list_insert(struct parts *parts)
 	parts->sp.z = z;
 	parts->sp.z2 = z2;
 	struct parts *p;
-	PARTS_LIST_FOREACH(p) {
+	PARTS_LIST_FOREACH_REVERSE(p) {
 		int pz = parts_get_sprite_z(p);
 		int pz2 = parts_get_sprite_z2(p);
-		if (pz > z || (pz == z && pz2 > z2)) {
-			TAILQ_INSERT_BEFORE(p, parts, parts_list_entry);
+		if (pz < z || (pz == z && pz2 <= z2)) {
+			TAILQ_INSERT_AFTER(&parts_list, p, parts, parts_list_entry);
 			goto done;
 		}
 	}
-	TAILQ_INSERT_TAIL(&parts_list, parts, parts_list_entry);
+	TAILQ_INSERT_HEAD(&parts_list, parts, parts_list_entry);
 done:
 	parts_engine_dirty();
 	if (!parts_current->background)
@@ -595,22 +596,67 @@ SDL_FPoint parts_local_position(struct parts *parts)
 	return pos;
 }
 
-static void parts_update_global_pos(struct parts *parts, SDL_FPoint parent_pos)
+static void parts_apply_local_matrix(struct parts *parts, mat4 out)
+{
+	if (parts->parent && parts->parent->states[0].type == PARTS_LAYOUT_BOX &&
+			parts->parent->states[0].layout_box.layout_type == PARTS_LAYOUT_FREE) {
+		Point off = parts->parent->states[0].common.origin_offset;
+		if (off.x != 0 || off.y != 0)
+			glm_translate(out, (vec3){off.x, off.y, 0});
+	}
+	SDL_FPoint pos = parts_local_position(parts);
+	for (int axis = 0; axis < 2; axis++) {
+		int link_no = parts->scroll_links[axis];
+		if (link_no > 0) {
+			struct parts *link = parts_try_get(link_no);
+			if (link && link->scrollbar) {
+				if (axis) pos.y -= link->scrollbar->pos;
+				else pos.x -= link->scrollbar->pos;
+			}
+		}
+	}
+	if (pos.x != 0.0f || pos.y != 0.0f)
+		glm_translate(out, (vec3){pos.x, pos.y, 0});
+	if (parts->local.rotation.z != 0.0f)
+		glm_rotate_z(out, glm_rad(parts->local.rotation.z), out);
+	if (parts->local.rotation.x != 0.0f)
+		glm_rotate_x(out, glm_rad(-parts->local.rotation.x), out);
+	if (parts->local.rotation.y != 0.0f)
+		glm_rotate_y(out, glm_rad(parts->local.rotation.y), out);
+	if (parts->local.scale.x != 1.0f || parts->local.scale.y != 1.0f)
+		glm_scale(out, (vec3){parts->local.scale.x, parts->local.scale.y, 1});
+}
+
+static void parts_update_global_pos_mat(struct parts *parts, SDL_FPoint parent_pos, mat4 parent_matrix)
 {
 	parts->global.pos = (SDL_FPoint) {
 		parent_pos.x + parts->local.pos.x,
 		parent_pos.y + parts->local.pos.y
 	};
+	mat4 matrix;
 	if (ain->version >= 12) {
-		mat4 matrix;
-		parts_world_matrix(parts, matrix);
+		glm_mat4_copy(parent_matrix, matrix);
+		parts_apply_local_matrix(parts, matrix);
 		parts->global.pos = (SDL_FPoint){matrix[3][0], matrix[3][1]};
 	}
 
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
-		parts_update_global_pos(child, parts->global.pos);
+		parts_update_global_pos_mat(child, parts->global.pos, matrix);
 	}
+}
+
+static void parts_update_global_pos(struct parts *parts, SDL_FPoint parent_pos)
+{
+	mat4 parent_matrix = GLM_MAT4_IDENTITY_INIT;
+	if (ain->version >= 12) {
+		if (parts->parent) {
+			parts_world_matrix(parts->parent, parent_matrix);
+		} else if (root_pos.x != 0 || root_pos.y != 0) {
+			glm_translate(parent_matrix, (vec3){root_pos.x, root_pos.y, 0});
+		}
+	}
+	parts_update_global_pos_mat(parts, parent_pos, parent_matrix);
 }
 
 void parts_set_pos(struct parts *parts, Point pos)
@@ -1318,6 +1364,8 @@ void parts_release(int parts_no)
 	}
 	free(parts);
 	slot->value = NULL;
+	if (parts_no >= 1000010000 && parts_no < parts_current->next_free_no)
+		parts_current->next_free_no = parts_no;
 	parts_engine_dirty();
 }
 
@@ -1327,6 +1375,7 @@ void parts_release_all(void)
 		struct parts *parts = TAILQ_FIRST(&parts_list);
 		parts_release(parts->no);
 	}
+	parts_current->next_free_no = 1000010000;
 
 	for (int i = 0; i < parts_nr_numeral_fonts; i++) {
 		struct parts_numeral_font *font = &parts_numeral_fonts[i];
@@ -1362,7 +1411,8 @@ struct parts_context *parts_context_new_background(void)
 	struct parts_context *context = xcalloc(1, sizeof(*context));
 	TAILQ_INIT(&context->list);
 	TAILQ_INIT(&context->dirty);
-	context->table = ht_create(1024);
+	context->table = ht_create(16384);
+	context->next_free_no = 1000010000;
 	context->origin = root_pos;
 	context->background = true;
 	// BackScene is one layer below the live graph, regardless of component Z.
@@ -1402,7 +1452,8 @@ bool PE_Init(void)
 		return true;
 	// XXX: Oyako Rankan doesn't call ChipmunkSpriteEngine.Init
 	sact_init(16, CHIPMUNK_SPRITE_ENGINE);
-	parts_table = ht_create(1024);
+	parts_table = ht_create(16384);
+	parts_current->next_free_no = 1000010000;
 	parts_render_init();
 	parts_debug_init();
 	ctrl_stack_init();
@@ -1417,6 +1468,7 @@ void PE_Reset(void)
 	PE_ReleaseActivities();
 	PE_ReleaseAllParts();
 	parts_cg_cache_clear();
+	parts_cproc_cache_clear();
 	PE_ReleaseMessage();
 	ctrl_stack_init();
 	sact_ModuleFini();
@@ -1451,14 +1503,15 @@ static void parts_combine_params(struct parts_params *parent, struct parts_param
 	out->multiply_color.b = parent->multiply_color.b * (child->multiply_color.b / 255.0f);
 }
 
-static void parts_update_component(struct parts *parts)
+static void parts_update_component_mat(struct parts *parts, mat4 parent_matrix)
 {
 	if (parts->parent) {
 		parts_combine_params(&parts->parent->global, &parts->local, &parts->global);
 	}
+	mat4 matrix;
 	if (ain->version >= 12) {
-		mat4 matrix;
-		parts_world_matrix(parts, matrix);
+		glm_mat4_copy(parent_matrix, matrix);
+		parts_apply_local_matrix(parts, matrix);
 		parts->global.pos = (SDL_FPoint){matrix[3][0], matrix[3][1]};
 	}
 	if (parts_get_sprite_z(parts) != parts->sp.z
@@ -1475,8 +1528,21 @@ static void parts_update_component(struct parts *parts)
 
 	struct parts *child;
 	PARTS_FOREACH_CHILD(child, parts) {
-		parts_update_component(child);
+		parts_update_component_mat(child, matrix);
 	}
+}
+
+static void parts_update_component(struct parts *parts)
+{
+	mat4 parent_matrix = GLM_MAT4_IDENTITY_INIT;
+	if (ain->version >= 12) {
+		if (parts->parent) {
+			parts_world_matrix(parts->parent, parent_matrix);
+		} else if (root_pos.x != 0 || root_pos.y != 0) {
+			glm_translate(parent_matrix, (vec3){root_pos.x, root_pos.y, 0});
+		}
+	}
+	parts_update_component_mat(parts, parent_matrix);
 }
 
 void PE_UpdateComponent(possibly_unused int passed_time)
@@ -2260,30 +2326,12 @@ void parts_world_matrix(struct parts *parts, mat4 out)
 	// Multiplying full matrices also retains shear from nonuniform scaling.
 	if (parts->parent) {
 		parts_world_matrix(parts->parent, out);
-		if (parts->parent->states[0].type == PARTS_LAYOUT_BOX &&
-				parts->parent->states[0].layout_box.layout_type == PARTS_LAYOUT_FREE) {
-			Point off = parts->parent->states[0].common.origin_offset;
-			glm_translate(out, (vec3){off.x, off.y, 0});
-		}
 	} else {
 		glm_mat4_identity(out);
-		glm_translate(out, (vec3){root_pos.x, root_pos.y, 0});
+		if (root_pos.x != 0 || root_pos.y != 0)
+			glm_translate(out, (vec3){root_pos.x, root_pos.y, 0});
 	}
-	SDL_FPoint pos = parts_local_position(parts);
-	for (int axis = 0; axis < 2; axis++) {
-		struct parts *link = parts_try_get(parts->scroll_links[axis]);
-		if (link && link->scrollbar) {
-			if (axis) pos.y -= link->scrollbar->pos;
-			else pos.x -= link->scrollbar->pos;
-		}
-	}
-	glm_translate(out, (vec3){pos.x, pos.y, 0});
-	glm_rotate_z(out, glm_rad(parts->local.rotation.z), out);
-	if (parts->local.rotation.x != 0.0f)
-		glm_rotate_x(out, glm_rad(-parts->local.rotation.x), out);
-	if (parts->local.rotation.y != 0.0f)
-		glm_rotate_y(out, glm_rad(parts->local.rotation.y), out);
-	glm_scale(out, (vec3){parts->local.scale.x, parts->local.scale.y, 1});
+	parts_apply_local_matrix(parts, out);
 }
 
 void PE_GetComponentAbsoluteSquarePos(int no, float *x0, float *y0,
@@ -2933,8 +2981,11 @@ bool PE_SetPartsCGDetectionSize(int parts_no, struct string *cg_name, int state)
 int PE_GetFreeNumber(void)
 {
 	if (ain->version >= 12) {
-		int no = 1000010000;
+		if (parts_current->next_free_no < 1000010000)
+			parts_current->next_free_no = 1000010000;
+		int no = parts_current->next_free_no;
 		while (PE_IsExist(no)) no++;
+		parts_current->next_free_no = no;
 		return no;
 	}
 	// NOTE: per GUIEngine.dll (Rance 01)

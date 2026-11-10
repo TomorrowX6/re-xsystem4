@@ -46,6 +46,8 @@ static struct {
 	GLint inv_clipper_transform;
 } parts_shader;
 
+uint64_t parts_render_gen = 1;
+
 static void set_draw_filter_blend_func(int draw_filter)
 {
 	switch (draw_filter) {
@@ -63,8 +65,55 @@ static void set_draw_filter_blend_func(int draw_filter)
 	}
 }
 
+static void quad_screen_aabb(mat4 m, float *min_x, float *max_x, float *min_y, float *max_y)
+{
+	float x0 = m[3][0], y0 = m[3][1];
+	float dx0 = m[0][0], dy0 = m[0][1];
+	float dx1 = m[1][0], dy1 = m[1][1];
+	*min_x = x0 + (dx0 < 0.0f ? dx0 : 0.0f) + (dx1 < 0.0f ? dx1 : 0.0f);
+	*max_x = x0 + (dx0 > 0.0f ? dx0 : 0.0f) + (dx1 > 0.0f ? dx1 : 0.0f);
+	*min_y = y0 + (dy0 < 0.0f ? dy0 : 0.0f) + (dy1 < 0.0f ? dy1 : 0.0f);
+	*max_y = y0 + (dy0 > 0.0f ? dy0 : 0.0f) + (dy1 > 0.0f ? dy1 : 0.0f);
+}
+
 static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rectangle *rect, float blend_rate, vec3 add_color, vec3 multiply_color, int draw_filter, int alpha_clipper)
 {
+	if (blend_rate <= 0.0f)
+		return;
+
+	float q_min_x, q_max_x, q_min_y, q_max_y;
+	quad_screen_aabb(mw_transform, &q_min_x, &q_max_x, &q_min_y, &q_max_y);
+	if (q_max_x <= 0.0f || q_min_x >= (float)config.view_width ||
+			q_max_y <= 0.0f || q_min_y >= (float)config.view_height)
+		return;
+
+	struct parts *clipper = alpha_clipper > 0 ? parts_try_get(alpha_clipper) : NULL;
+	static uint64_t cached_clip_gen = 0;
+	static int cached_clip_no = 0;
+	static struct parts_context *cached_clip_ctx = NULL;
+	static mat4 cached_clip_inv;
+	static GLuint cached_clip_tex = 0;
+	static float clip_min_x, clip_max_x, clip_min_y, clip_max_y;
+
+	if (clipper) {
+		if (cached_clip_gen != parts_render_gen || cached_clip_no != alpha_clipper || cached_clip_ctx != parts_current) {
+			struct parts_common *c_common = &clipper->states[clipper->state].common;
+			mat4 clip_mw;
+			parts_world_matrix(clipper, clip_mw);
+			glm_translate(clip_mw, (vec3){ c_common->origin_offset.x, c_common->origin_offset.y, 0 });
+			glm_scale(clip_mw, (vec3){ c_common->w, c_common->h, 1.0 });
+			glm_mat4_inv(clip_mw, cached_clip_inv);
+			quad_screen_aabb(clip_mw, &clip_min_x, &clip_max_x, &clip_min_y, &clip_max_y);
+			cached_clip_tex = c_common->texture.handle;
+			cached_clip_gen = parts_render_gen;
+			cached_clip_no = alpha_clipper;
+			cached_clip_ctx = parts_current;
+		}
+		if (q_max_x <= clip_min_x || q_min_x >= clip_max_x ||
+				q_max_y <= clip_min_y || q_min_y >= clip_max_y)
+			return;
+	}
+
 	mat4 wv_transform = WV_TRANSFORM(config.view_width, config.view_height);
 	mat4 world_transform;
 	glm_mat4_copy(mw_transform, world_transform);
@@ -90,25 +139,14 @@ static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rec
 	glUniform3fv(parts_shader.multiply_color, 1, multiply_color);
 	glUniform1i(parts_shader.draw_filter, draw_filter);
 
-	struct parts *clipper = alpha_clipper ? parts_try_get(alpha_clipper) : NULL;
 	if (clipper) {
-		struct parts_common *c_common = &clipper->states[clipper->state].common;
-
-		// Calculate the inverse of the clipper's world matrix.
-		mat4 clip_mw;
-		parts_world_matrix(clipper, clip_mw);
-		glm_translate(clip_mw, (vec3){ c_common->origin_offset.x, c_common->origin_offset.y, 0 });
-		glm_scale(clip_mw, (vec3){ c_common->w, c_common->h, 1.0 });
-		mat4 clip_inv;
-		glm_mat4_inv(clip_mw, clip_inv);
-
 		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, c_common->texture.handle);
+		glBindTexture(GL_TEXTURE_2D, cached_clip_tex);
 		glActiveTexture(GL_TEXTURE0);
 
 		glUniform1i(parts_shader.use_clipper, 1);
 		glUniform1i(parts_shader.clipper_tex, 1);
-		glUniformMatrix4fv(parts_shader.inv_clipper_transform, 1, GL_FALSE, clip_inv[0]);
+		glUniformMatrix4fv(parts_shader.inv_clipper_transform, 1, GL_FALSE, cached_clip_inv[0]);
 	} else {
 		glUniform1i(parts_shader.use_clipper, 0);
 	}
@@ -158,7 +196,7 @@ static void parts_render_text(struct parts *parts, struct parts_text *t,
 			glm_scale(mw_transform, (vec3){ch->t.w, ch->t.h, 1});
 			if (alpha > 0 && r.w > 0 && r.h > 0 && ch->t.handle)
 				parts_render_texture(&ch->t, mw_transform, &r, alpha, add_color,
-						multiply_color, 0, parts->alpha_clipper_parts_no);
+						multiply_color, 0, parts_get_effective_alpha_clipper(parts));
 			x += ch->advance;
 		}
 		x = t->common.origin_offset.x;
@@ -208,7 +246,7 @@ static void parts_render_cg(struct parts *parts, struct parts_common *common)
 		parts->global.multiply_color.g / 255.0f,
 		parts->global.multiply_color.b / 255.0f,
 	};
-	parts_render_texture(&common->texture, mw_transform, &r, parts->global.alpha / 255.0, add_color, multiply_color, parts->draw_filter, parts->alpha_clipper_parts_no);
+	parts_render_texture(&common->texture, mw_transform, &r, parts->global.alpha / 255.0, add_color, multiply_color, parts->draw_filter, parts_get_effective_alpha_clipper(parts));
 
 	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 }
@@ -357,7 +395,7 @@ static void render_flat_emitter(struct parts *parts, struct parts_flat *f,
 		struct emitter_render_ud ud = {
 			.f = f,
 			.parent_alpha = eff.alpha,
-			.alpha_clipper = parts->alpha_clipper_parts_no,
+			.alpha_clipper = parts_get_effective_alpha_clipper(parts),
 			.draw_filter = eff.draw_filter,
 		};
 		glm_vec2_copy(align, ud.align);
@@ -443,7 +481,7 @@ static void render_flat_cg(struct parts *parts, Texture *tex,
 	}
 
 	parts_render_texture(tex, render_m, &rect, ctx->alpha, ctx->add_color, ctx->mul_color,
-			ctx->draw_filter, parts->alpha_clipper_parts_no);
+			ctx->draw_filter, parts_get_effective_alpha_clipper(parts));
 
 	if (ctx->draw_filter != PARTS_DRAW_FILTER_NORMAL)
 		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
@@ -621,7 +659,7 @@ static void parts_render_flash_shape(struct parts *parts, struct parts_flash *f,
 		(parts->global.multiply_color.g / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[1]),
 		(parts->global.multiply_color.b / 255.0f) * fixed16_to_float(obj->color_transform.mult_terms[2])
 	};
-	parts_render_texture(src, mw_transform, &r, blend_rate, add_color, multiply_color, 0, parts->alpha_clipper_parts_no);
+	parts_render_texture(src, mw_transform, &r, blend_rate, add_color, multiply_color, 0, parts_get_effective_alpha_clipper(parts));
 }
 
 static void parts_render_flash_sprite(struct parts *parts, struct parts_flash *f, struct parts_flash_object *obj, struct swf_tag_define_sprite *tag)
@@ -859,6 +897,7 @@ void parts_render_update(void)
 void parts_engine_dirty(void)
 {
 	pe_dirty = true;
+	parts_render_gen++;
 }
 
 void parts_engine_clean(void)
@@ -869,6 +908,7 @@ void parts_engine_clean(void)
 void parts_dirty(possibly_unused struct parts *parts)
 {
 	pe_dirty = true;
+	parts_render_gen++;
 }
 
 void parts_render_init(void)

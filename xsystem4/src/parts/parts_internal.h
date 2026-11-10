@@ -628,8 +628,19 @@ struct parts_context {
 	int font_count;
 	bool background;
 	struct sprite sprite;
+	int next_free_no;
 };
 extern struct parts_context *parts_current;
+extern uint64_t parts_render_gen;
+
+static inline int parts_get_effective_alpha_clipper(struct parts *parts)
+{
+	for (struct parts *p = parts; p; p = p->parent) {
+		if (p->alpha_clipper_parts_no > 0)
+			return p->alpha_clipper_parts_no;
+	}
+	return 0;
+}
 #define parts_list (parts_current->list)
 #define ctrl_stack (parts_current->controllers)
 #define parts_numeral_fonts (parts_current->fonts)
@@ -777,6 +788,7 @@ void parts_add_cp_op(struct parts_construction_process *cproc, struct parts_cp_o
 bool parts_build_construction_process(struct parts *parts,
 		struct parts_construction_process *cproc);
 bool parts_clear_construction_process(struct parts_construction_process *cproc);
+void parts_cproc_cache_clear(void);
 
 // flash.c
 void parts_flash_free(struct parts_flash *f);
