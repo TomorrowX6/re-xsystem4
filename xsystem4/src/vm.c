@@ -147,7 +147,19 @@ void global_set(int varno, union vm_value val, bool call_dtors)
 
 static int32_t struct_page_slot(void)
 {
-	return call_stack[call_stack_ptr-1].struct_page;
+	int fallback = -1;
+	for (int i = call_stack_ptr - 1; i >= 0; i--) {
+		int slot = call_stack[i].struct_page;
+		if (slot >= 0) {
+			if (heap_index_valid(slot) && heap[slot].type == VM_PAGE &&
+			    heap[slot].page && heap[slot].page->nr_vars > 0) {
+				return slot;
+			}
+			if (fallback < 0)
+				fallback = slot;
+		}
+	}
+	return fallback;
 }
 
 static struct page *struct_page(void)
@@ -192,29 +204,49 @@ static union vm_value *stack_peek_ptr(int n)
 // Pop a reference off the stack, returning the address of the referenced object.
 static union vm_value *stack_pop_var(void)
 {
+	static union vm_value dummy_var;
 	int32_t page_index = stack_pop().i;
 	int32_t heap_index = stack_pop().i;
-	if (unlikely(!heap_index_valid(heap_index)))
-		VM_ERROR("Out of bounds heap index: %d/%d", heap_index, page_index);
-	if (unlikely(heap[heap_index].type != VM_PAGE))
-		VM_ERROR("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+	if (unlikely(!heap_index_valid(heap_index))) {
+		WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
+	if (unlikely(heap[heap_index].type != VM_PAGE)) {
+		WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
 			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
-	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars))
-		VM_ERROR("Out of bounds page index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
+	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars)) {
+		WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
 	return &heap[heap_index].page->values[page_index];
 }
 
 union vm_value *stack_peek_var(void)
 {
+	static union vm_value dummy_var;
 	int32_t page_index = stack_peek(0).i;
 	int32_t heap_index = stack_peek(1).i;
-	if (unlikely(!heap_index_valid(heap_index)))
-		VM_ERROR("Out of bounds heap index: %d/%d", heap_index, page_index);
-	if (unlikely(heap[heap_index].type != VM_PAGE))
-		VM_ERROR("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+	if (unlikely(!heap_index_valid(heap_index))) {
+		WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
+	if (unlikely(heap[heap_index].type != VM_PAGE)) {
+		WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
 			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
-	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars))
-		VM_ERROR("Out of bounds page index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
+	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars)) {
+		WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
+		dummy_var.i = 0;
+		return &dummy_var;
+	}
 	return &heap[heap_index].page->values[page_index];
 }
 
@@ -1893,6 +1925,11 @@ static enum opcode execute_instruction(enum opcode opcode)
 		int array = stack_pop().i;
 		if (ain->version >= 11 && string_index_valid(array)) {
 			stack_push(vm_string_ref(heap_get_string(array)));
+			break;
+		}
+		if (unlikely(array <= 0 || !page_index_valid(array))) {
+			WARNING("A_REF on invalid page/string slot: %d", array);
+			stack_push(vm_string_ref(&EMPTY_STRING));
 			break;
 		}
 		stack_push(vm_copy_page(array));
