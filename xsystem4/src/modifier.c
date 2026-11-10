@@ -34,6 +34,7 @@
 #define LOCK_INFINITE_SKILL_USE (1 << 7)
 #define LOCK_INFINITE_ZIPPO     (1 << 8)
 #define LOCK_MAX_RESOURCES      (1 << 9)
+#define LOCK_TREASURE_100       (1 << 10)
 
 /* GBK / SJIS names for special Rance 10 globals */
 #define GBK_BATTLE_COUNT  "\xa1\xf4\xd5\xbd\xb6\xb7\xbb\xd8\xca\xfd"
@@ -1025,6 +1026,7 @@ static void vm_enforce_locks(int mask)
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
 	struct page *ps    = vm_get_field_page(party, "m_status", NULL);
+	struct page *cs    = vm_get_field_page(ps, "m_status", NULL);
 	struct page *bc    = vm_get_global_page("g_battleContext", NULL);
 	struct page *enemy = vm_get_global_page("g_enemy", NULL);
 
@@ -1093,6 +1095,14 @@ static void vm_enforce_locks(int mask)
 			vm_set_field_int(pcp, "m_honor", NULL, 999);
 		if (vm_get_field_int(pcp, "m_friendPoint", NULL, 0) < 999)
 			vm_set_field_int(pcp, "m_friendPoint", NULL, 999);
+	}
+	if (mask & LOCK_TREASURE_100) {
+		if (cs && vm_get_field_int(cs, "m_PerFindTreasure", NULL, 0) < 999)
+			vm_set_field_int(cs, "m_PerFindTreasure", NULL, 999);
+		if (pcp && vm_get_field_int(pcp, "<TreasureNotGetCount>", NULL, 0) < 99)
+			vm_set_field_int(pcp, "<TreasureNotGetCount>", NULL, 99);
+		if (vm_get_tt(42, 0) < 999)
+			vm_set_tt(42, 999);
 	}
 }
 

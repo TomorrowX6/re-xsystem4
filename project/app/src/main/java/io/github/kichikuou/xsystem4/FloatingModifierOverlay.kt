@@ -2,16 +2,15 @@ package io.github.kichikuou.xsystem4
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -23,7 +22,7 @@ import kotlin.math.abs
 class FloatingModifierOverlay(private val activity: Activity) {
 
     private var rootOverlay: FrameLayout? = null
-    private var floatingBtn: TextView? = null
+    private var floatingBtn: ImageView? = null
 
     private val isZh: Boolean
         get() = Locale.getDefault().language.startsWith("zh")
@@ -78,24 +77,25 @@ class FloatingModifierOverlay(private val activity: Activity) {
         rootOverlay = null
     }
 
-    private fun buildFloatingButton(): TextView {
-        val btn = TextView(activity).apply {
-            text = tr("修改", "改造", "MOD")
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            gravity = Gravity.CENTER
-            setPadding(dp(10), dp(5), dp(10), dp(5))
+    private fun buildFloatingButton(): ImageView {
+        val sizePx = dp(40)
+        val padPx = dp(6)
+        val btn = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_launcher)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(padPx, padPx, padPx, padPx)
             background = GradientDrawable().apply {
-                cornerRadius = dp(6).toFloat()
-                setColor(0x99000000.toInt())
+                cornerRadius = dp(20).toFloat()
+                setColor(0x88000000.toInt())
                 setStroke(dp(1), 0x55FFFFFF)
             }
-            alpha = 0.75f
+            alpha = 0.8f
+            contentDescription = tr("悬浮窗修改器", "改造", "Modifier")
         }
 
         val lp = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
+            sizePx,
+            sizePx,
             Gravity.TOP or Gravity.START
         ).apply {
             leftMargin = dp(12)
@@ -137,7 +137,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.alpha = 0.75f
+                    v.alpha = 0.8f
                     if (!dragging) {
                         showMainModifierDialog()
                     }
@@ -172,17 +172,17 @@ class FloatingModifierOverlay(private val activity: Activity) {
         val lockCount = Integer.bitCount(GameModifierBridge.getSavedLockMask(activity))
 
         val titleText = if (!inGame) {
-            tr("游戏修改器 (未进入存档)", "ゲーム改造 (未ロード)", "Game Modifier")
+            tr("悬浮窗修改器", "ゲーム改造", "Floating Modifier")
         } else if (inBattle) {
             val ap = j.optInt("battleAp", 0)
             val eHp = j.optInt("enemyHp", 0)
             val pHp = j.optInt("partyHp", 0)
-            tr("修改器 [战斗中 · AP:$ap · 敌HP:$eHp · 我HP:$pHp]", "改造 [戦闘中 · AP:$ap · 敵HP:$eHp]", "Modifier [Battle · AP:$ap]")
+            tr("悬浮窗修改器 [战斗 · AP:$ap · 敌HP:$eHp · 我HP:$pHp]", "改造 [戦闘 · AP:$ap · 敵HP:$eHp]", "Modifier [Battle · AP:$ap]")
         } else {
             val turn = j.optInt("turn", 0)
             val food = j.optInt("foodTicket", 0)
             val pHp = j.optInt("partyHp", 0)
-            tr("修改器 [回合:$turn · 食券:$food · HP:$pHp]", "改造 [T:$turn · 食券:$food · HP:$pHp]", "Modifier [Turn:$turn · HP:$pHp]")
+            tr("悬浮窗修改器 [回合:$turn · 食券:$food · HP:$pHp]", "改造 [T:$turn · 食券:$food · HP:$pHp]", "Modifier [Turn:$turn · HP:$pHp]")
         }
 
         val items = arrayOf(
@@ -193,7 +193,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("修改部队与属性加成…", "部隊HP・ステータス編集…", "Edit Party & Stats…"),
             tr("修改四国兵力与人口…", "四国兵力・人口編集…", "Edit World & Armies…"),
             tr("修改卡牌叠卡与角色星级…", "カード・キャラ★編集…", "Edit Cards & Chars…"),
-            tr("隐藏悬浮按钮", "ボタンを非表示", "Hide Floating Button")
+            tr("隐藏悬浮图标", "アイコンを非表示", "Hide Floating Icon")
         )
 
         AlertDialog.Builder(activity)
@@ -201,7 +201,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> showLocksDialog()
-                    1 -> showBattleQuickDialog(j)
+                    1 -> showBattleQuickDialog()
                     2 -> showOneClickBoostDialog()
                     3 -> showEditResourcesDialog(j)
                     4 -> showEditPartyDialog(j)
@@ -209,7 +209,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                     6 -> showEditCardsDialog()
                     7 -> {
                         floatingBtn?.visibility = View.GONE
-                        Toast.makeText(activity, tr("已隐藏悬浮按钮", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -228,7 +228,8 @@ class FloatingModifierOverlay(private val activity: Activity) {
             GameModifierBridge.LOCK_LEADER_BOOST_CRIT to tr("全员蓄力必暴连击", "全員ブースト・必殺", "All Leaders Boost & Crit"),
             GameModifierBridge.LOCK_INFINITE_SKILL_USE to tr("技能无限使用次数", "スキル回数無限", "Infinite Skill Uses"),
             GameModifierBridge.LOCK_INFINITE_ZIPPO to tr("无限悔棋打火机", "やり直しジッポ無限", "Infinite Retry Zippo"),
-            GameModifierBridge.LOCK_MAX_RESOURCES to tr("资源不低于999", "チケット・勲章999維持", "Keep Resources >= 999")
+            GameModifierBridge.LOCK_MAX_RESOURCES to tr("资源不低于999", "チケット・勲章999維持", "Keep Resources >= 999"),
+            GameModifierBridge.LOCK_TREASURE_100 to tr("宝箱100%掉落", "宝箱100%ドロップ", "100% Treasure Drop")
         )
         var mask = GameModifierBridge.getSavedLockMask(activity)
         val labels = lockDefs.map { it.second }.toTypedArray()
@@ -252,13 +253,14 @@ class FloatingModifierOverlay(private val activity: Activity) {
             .show()
     }
 
-    private fun showBattleQuickDialog(j: JSONObject) {
+    private fun showBattleQuickDialog() {
         val items = arrayOf(
             tr("敌方HP设为1 (秒杀)", "敵HPを1にする", "Set Enemy HP = 1"),
             tr("废除敌方攻击与防御", "敵の攻防を0にする", "Set Enemy ATK/DEF = 0"),
             tr("我方生命回满", "味方HP全回復", "Refill Party HP"),
             tr("AP设为99 + 连击999 + 回合1", "AP99＋999コンボ＋R1", "AP 99 + Combo 999 + Round 1"),
-            tr("全员蓄力必暴 + 重置技能次数", "全員ブースト＋スキル回数回復", "Boost Leaders & Reset Skills")
+            tr("全员蓄力必暴 + 重置技能次数", "全員ブースト＋スキル回数回復", "Boost Leaders & Reset Skills"),
+            tr("宝箱100%掉落", "宝箱100%ドロップ化", "100% Treasure Drop")
         )
         AlertDialog.Builder(activity)
             .setTitle(tr("战斗快捷指令", "戦闘クイック操作", "Battle Quick Actions"))
@@ -275,6 +277,16 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         JSONObject().put("cureAndBoostLeaders", true),
                         tr("全员已蓄力必暴并重置技能", "全員強化・スキル回復完了", "Leaders boosted")
                     )
+                    5 -> sendAction(
+                        JSONObject().apply {
+                            put("perFindTreasure", 999)
+                            put("treasureNotGetCount", 99)
+                            put("rareLuck", 999)
+                            put("itemStar", 99)
+                            put("partyIsFixStatus", 1)
+                        },
+                        tr("已开启宝箱100%掉落", "宝箱100%ドロップを適用", "100% Treasure Drop applied")
+                    )
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -284,6 +296,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
     private fun showOneClickBoostDialog() {
         val items = arrayOf(
             tr("一键满资源 (食券/勋章/友情999 + 经验 + 装备+99)", "全リソース・経験値・装備★最大", "Max Resources, EXP & Item Star"),
+            tr("一键宝箱100%掉落", "宝箱100%ドロップ化", "100% Treasure Drop"),
             tr("一键部队满血与全属性+999%", "部隊HP99万＋全ステータス+999%", "Max Party HP & +999% Multipliers"),
             tr("一键全卡牌99叠卡 + 全角色5星", "全カード99枚＋全キャラ★5", "All Cards x99 & All Chars 5★"),
             tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties")
@@ -310,6 +323,16 @@ class FloatingModifierOverlay(private val activity: Activity) {
                     )
                     1 -> sendAction(
                         JSONObject().apply {
+                            put("perFindTreasure", 999)
+                            put("treasureNotGetCount", 99)
+                            put("rareLuck", 999)
+                            put("itemStar", 99)
+                            put("partyIsFixStatus", 1)
+                        },
+                        tr("已生效：宝箱100%掉落", "宝箱100%ドロップを適用", "100% Treasure Drop applied")
+                    )
+                    2 -> sendAction(
+                        JSONObject().apply {
                             put("partyHp", 999999)
                             put("partyMaxHp", 999999)
                             put("partyAvailCount", 9)
@@ -319,7 +342,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         },
                         tr("已生效：部队满血与全属性+999%", "部隊強化を適用", "Party boosted")
                     )
-                    2 -> sendAction(
+                    3 -> sendAction(
                         JSONObject().apply {
                             put("setCardCount", 99)
                             put("cardAtkBonus", 999)
@@ -329,7 +352,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         },
                         tr("已生效：全卡牌99叠卡与全员5星", "全カード99枚・★5を適用", "Cards & chars maxed")
                     )
-                    3 -> sendAction(
+                    4 -> sendAction(
                         JSONObject().apply {
                             put("humanCount", 350000)
                             put("humanDead", 0)
@@ -393,7 +416,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             Triple("perCrit", tr("暴击率加成%", "クリティカル%", "Crit %"), j.optInt("perCrit", 0)),
             Triple("perMulti", tr("连击率加成%", "連撃率%", "Multi-Hit %"), j.optInt("perMulti", 0)),
             Triple("perExpUp", tr("经验加成%", "経験値%", "EXP %"), j.optInt("perExpUp", 0)),
-            Triple("perFindTreasure", tr("寻宝发现率%", "宝箱発見率%", "Treasure %"), j.optInt("perFindTreasure", 0))
+            Triple("perFindTreasure", tr("宝箱掉落率%", "宝箱発見率%", "Treasure Drop %"), j.optInt("perFindTreasure", 0))
         )
         showNumberInputDialog(tr("修改部队与属性加成", "部隊・ステータス", "Edit Party & Stats"), fields)
     }

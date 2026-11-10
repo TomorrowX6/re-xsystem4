@@ -15,6 +15,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
@@ -94,9 +95,17 @@ class GameModifierActivity : Activity() {
         actionBar?.setDisplayHomeAsUpEnabled(true)
         title = tr("游戏修改器", "ゲーム改造", "Game Modifier")
 
-        findViewById<Button>(R.id.btn_mod_full_unlock).text = tr("全解锁存档", "全CG・実績解放", "Full Unlock")
+        findViewById<TextView>(R.id.label_floating_modifier).text = tr("悬浮窗修改器", "フローティング改造", "Floating Modifier")
+        findViewById<Button>(R.id.btn_mod_full_unlock).text = tr("全解锁存档", "全解放セーブ", "Full Unlock")
         findViewById<Button>(R.id.btn_mod_global_save).text = tr("全局存档修改", "全体セーブ改造", "Global Save")
-        findViewById<Button>(R.id.btn_mod_floating_cfg).text = tr("悬浮窗与锁定", "ゲーム内ロック", "In-Game Locks")
+        findViewById<Button>(R.id.btn_mod_floating_cfg).text = tr("实时锁定设置", "リアルタイムロック", "Live Locks")
+
+        val floatingSwitch = findViewById<Switch>(R.id.switch_floating_modifier)
+        floatingSwitch.isChecked = GameModifierBridge.isFloatingEnabled(this)
+        floatingSwitch.setOnCheckedChangeListener { _, isChecked ->
+            GameModifierBridge.setFloatingEnabled(this, isChecked)
+            refreshSummaryText()
+        }
 
         adapter = ModSaveSlotAdapter(this, emptyList())
         val listView = findViewById<ListView>(R.id.mod_save_list)
@@ -175,6 +184,21 @@ class GameModifierActivity : Activity() {
         currentTarget = targets.firstOrNull { it.dirName == preferredDirName } ?: targets.first()
     }
 
+    private fun refreshSummaryText() {
+        val saveDir = currentTarget.saveDir
+        val hasGlobal = File(saveDir, "GlobalSave.asd").isFile || File(saveDir, "Collection.asd").isFile
+        val floatOn = GameModifierBridge.isFloatingEnabled(this)
+        val lockCount = Integer.bitCount(GameModifierBridge.getSavedLockMask(this))
+
+        findViewById<TextView>(R.id.mod_target_title).text =
+            getString(R.string.save_manager_current_dir, currentTarget.displayName)
+        findViewById<TextView>(R.id.mod_target_summary).text = tr(
+            "进度存档 ${currentEntries.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗修改器：${if (floatOn) "开启" else "关闭"} (锁定 $lockCount 项)",
+            "セーブ ${currentEntries.size} 個 · 全体：${if (hasGlobal) "あり" else "なし"} · ロック $lockCount 項目",
+            "${currentEntries.size} saves · Global: ${if (hasGlobal) "Yes" else "No"} · Locks: $lockCount"
+        )
+    }
+
     private fun refreshList() {
         val saveDir = currentTarget.saveDir
         saveDir.mkdirs()
@@ -200,26 +224,15 @@ class GameModifierActivity : Activity() {
         slots.sortBy { it.slotNum }
         currentEntries = slots
         adapter.update(slots)
-
-        val hasGlobal = File(saveDir, "GlobalSave.asd").isFile || File(saveDir, "Collection.asd").isFile
-        val floatOn = GameModifierBridge.isFloatingEnabled(this)
-        val lockCount = Integer.bitCount(GameModifierBridge.getSavedLockMask(this))
-
-        findViewById<TextView>(R.id.mod_target_title).text =
-            getString(R.string.save_manager_current_dir, currentTarget.displayName)
-        findViewById<TextView>(R.id.mod_target_summary).text = tr(
-            "进度存档 ${slots.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗：${if (floatOn) "开启" else "关闭"} (锁定 $lockCount 项)",
-            "セーブ ${slots.size} 個 · 全体：${if (hasGlobal) "あり" else "なし"} · ロック $lockCount 項目",
-            "${slots.size} saves · Global: ${if (hasGlobal) "Yes" else "No"} · Locks: $lockCount"
-        )
+        refreshSummaryText()
 
         val emptyView = findViewById<TextView>(R.id.mod_empty_view)
         val listView = findViewById<View>(R.id.mod_save_list)
         if (slots.isEmpty()) {
             emptyView.text = tr(
-                "当前目录暂无进度存档 (LocalSave*.asd)。\n可使用上方“全解锁存档”、“全局存档修改”或“悬浮窗与锁定”。",
-                "進行セーブ (LocalSave*.asd) がありません。\n上部のボタンから全解放やゲーム内ロックを設定できます。",
-                "No progress saves (LocalSave*.asd) in this directory.\nUse the buttons above for Full Unlock, Global Save, or In-Game Locks."
+                "当前目录暂无进度存档 (LocalSave*.asd)。\n可使用上方“全解锁存档”、“全局存档修改”或“实时锁定设置”。",
+                "進行セーブ (LocalSave*.asd) がありません。\n上部のボタンから全解放やロック設定を利用できます。",
+                "No progress saves (LocalSave*.asd) in this directory."
             )
             emptyView.visibility = View.VISIBLE
             listView.visibility = View.GONE
@@ -255,7 +268,7 @@ class GameModifierActivity : Activity() {
         val saveDir = currentTarget.saveDir
         val hasBak = GameModifierBridge.hasFullUnlockBackup(saveDir)
         val options = mutableListOf(
-            tr("写入全CG / 全回想 / 全实绩解锁存档", "全CG・回想・実績解放セーブを適用", "Install Full Unlock Save")
+            tr("写入全解锁存档", "全解放セーブを適用", "Install Full Unlock Save")
         )
         if (hasBak) {
             options.add(tr("恢复解锁前备份", "解放前のバックアップを復元", "Restore Pre-Unlock Backup"))
@@ -269,7 +282,7 @@ class GameModifierActivity : Activity() {
                     refreshList()
                     Toast.makeText(
                         this,
-                        tr("已写入 $count 个全解锁存档文件（仅覆盖全局与收集存档）", "$count 個の全解放ファイルを適用しました", "Installed $count unlock files"),
+                        tr("已写入全解锁存档 ($count 个文件)", "全解放セーブを適用しました", "Installed $count unlock files"),
                         Toast.LENGTH_SHORT
                     ).show()
                 } else if (which == 1 && hasBak) {
@@ -397,11 +410,10 @@ class GameModifierActivity : Activity() {
     }
 
     // =========================================================================
-    // 3. In-Game Floating Window & Locks Dialog
+    // 3. In-Game Live Locks Dialog
     // =========================================================================
     private fun showFloatingLocksDialog() {
         val lockDefs = listOf(
-            0 to tr("游戏内显示“修改”悬浮按钮", "ゲーム内に改造ボタンを表示", "Show In-Game Floating Button"),
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
             GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
@@ -411,37 +423,30 @@ class GameModifierActivity : Activity() {
             GameModifierBridge.LOCK_LEADER_BOOST_CRIT to tr("全员蓄力必暴连击", "全員ブースト・必殺", "All Leaders Boost & Crit"),
             GameModifierBridge.LOCK_INFINITE_SKILL_USE to tr("技能无限使用次数", "スキル回数無限", "Infinite Skill Uses"),
             GameModifierBridge.LOCK_INFINITE_ZIPPO to tr("无限悔棋打火机", "やり直しジッポ無限", "Infinite Retry Zippo"),
-            GameModifierBridge.LOCK_MAX_RESOURCES to tr("资源不低于999", "チケット・勲章999維持", "Keep Resources >= 999")
+            GameModifierBridge.LOCK_MAX_RESOURCES to tr("资源不低于999", "チケット・勲章999維持", "Keep Resources >= 999"),
+            GameModifierBridge.LOCK_TREASURE_100 to tr("宝箱100%掉落", "宝箱100%ドロップ", "100% Treasure Drop")
         )
 
-        var floatEnabled = GameModifierBridge.isFloatingEnabled(this)
         var lockMask = GameModifierBridge.getSavedLockMask(this)
-
         val labels = lockDefs.map { it.second }.toTypedArray()
         val checked = BooleanArray(lockDefs.size) { idx ->
-            val bit = lockDefs[idx].first
-            if (bit == 0) floatEnabled else (lockMask and bit) != 0
+            (lockMask and lockDefs[idx].first) != 0
         }
 
         AlertDialog.Builder(this)
-            .setTitle(tr("悬浮窗与实时锁定", "ゲーム内ロック設定", "In-Game Floating & Locks"))
+            .setTitle(tr("实时锁定设置", "リアルタイムロック設定", "Live Locks"))
             .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
                 val bit = lockDefs[which].first
-                if (bit == 0) {
-                    floatEnabled = isChecked
-                } else {
-                    lockMask = if (isChecked) (lockMask or bit) else (lockMask and bit.inv())
-                }
+                lockMask = if (isChecked) (lockMask or bit) else (lockMask and bit.inv())
             }
             .setPositiveButton(R.string.ok) { _, _ ->
-                GameModifierBridge.setFloatingEnabled(this, floatEnabled)
                 GameModifierBridge.setSavedLockMask(this, lockMask)
-                refreshList()
-                Toast.makeText(this, tr("设置已保存", "設定を保存しました", "Settings saved"), Toast.LENGTH_SHORT).show()
+                refreshSummaryText()
+                Toast.makeText(this, tr("锁定设置已保存", "設定を保存しました", "Locks saved"), Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton(tr("全部关闭", "すべて解除", "Clear All")) { _, _ ->
                 GameModifierBridge.setSavedLockMask(this, 0)
-                refreshList()
+                refreshSummaryText()
                 Toast.makeText(this, tr("已关闭全部锁定", "すべてのロックを解除しました", "All locks cleared"), Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(R.string.cancel, null)
@@ -475,6 +480,7 @@ class GameModifierActivity : Activity() {
 
         val options = mutableListOf(
             tr("一键满资源与满属性", "リソース・部隊ステータス最大", "One-Click Max Resources & Stats"),
+            tr("一键宝箱100%掉落", "宝箱100%ドロップ化", "One-Click 100% Treasure Drop"),
             tr("一键全卡牌99叠卡与全员5星", "全カード99枚＋全キャラ★5", "One-Click All Cards x99 & 5★"),
             tr("一键四国满兵力与人类零伤亡", "四国兵力最大＋人類被害ゼロ", "One-Click Max Armies & 0 Casualties"),
             tr("修改资源与回合进度…", "リソース・ターン編集…", "Edit Resources & Turn…"),
@@ -514,6 +520,16 @@ class GameModifierActivity : Activity() {
                     }
                     1 -> {
                         val mod = JSONObject().apply {
+                            put("perFindTreasure", 999)
+                            put("treasureNotGetCount", 99)
+                            put("rareLuck", 999)
+                            put("itemStar", 99)
+                            put("partyIsFixStatus", 1)
+                        }
+                        applyLocalSaveMod(entry, mod)
+                    }
+                    2 -> {
+                        val mod = JSONObject().apply {
                             put("setCardCount", 99)
                             put("cardAtkBonus", 999)
                             put("cardHpBonus", 999)
@@ -522,7 +538,7 @@ class GameModifierActivity : Activity() {
                         }
                         applyLocalSaveMod(entry, mod)
                     }
-                    2 -> {
+                    3 -> {
                         val mod = JSONObject().apply {
                             put("humanCount", 350000)
                             put("humanDead", 0)
@@ -551,11 +567,11 @@ class GameModifierActivity : Activity() {
                         }
                         applyLocalSaveMod(entry, mod)
                     }
-                    3 -> showLocalSaveResourcesDialog(entry, info)
-                    4 -> showLocalSavePartyDialog(entry, info)
-                    5 -> showLocalSaveWorldDialog(entry, info)
-                    6 -> showLocalSaveCardsDialog(entry)
-                    7 -> {
+                    4 -> showLocalSaveResourcesDialog(entry, info)
+                    5 -> showLocalSavePartyDialog(entry, info)
+                    6 -> showLocalSaveWorldDialog(entry, info)
+                    7 -> showLocalSaveCardsDialog(entry)
+                    8 -> {
                         if (GameModifierBridge.restoreModBackup(entry.file)) {
                             refreshList()
                             Toast.makeText(this, tr("已恢复备份", "バックアップを復元しました", "Backup restored"), Toast.LENGTH_SHORT).show()
@@ -600,7 +616,7 @@ class GameModifierActivity : Activity() {
             Triple("perCrit", tr("暴击率加成%", "クリティカル%", "Crit %"), info.optInt("perCrit", 0)),
             Triple("perMulti", tr("连击率加成%", "連撃率%", "Multi-Hit %"), info.optInt("perMulti", 0)),
             Triple("perExpUp", tr("经验获取加成%", "経験値%", "EXP Bonus %"), info.optInt("perExpUp", 0)),
-            Triple("perFindTreasure", tr("寻宝发现率%", "宝箱発見率%", "Treasure %"), info.optInt("perFindTreasure", 0))
+            Triple("perFindTreasure", tr("宝箱掉落率%", "宝箱発見率%", "Treasure Drop %"), info.optInt("perFindTreasure", 0))
         )
         showNumberEditDialog("${entry.file.name} - ${tr("部队与属性", "部隊・ステータス", "Party & Stats")}", fields) { mod ->
             applyLocalSaveMod(entry, mod)

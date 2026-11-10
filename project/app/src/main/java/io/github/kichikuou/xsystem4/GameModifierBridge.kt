@@ -24,6 +24,7 @@ object GameModifierBridge {
     const val LOCK_INFINITE_SKILL_USE = 1 shl 7
     const val LOCK_INFINITE_ZIPPO = 1 shl 8
     const val LOCK_MAX_RESOURCES = 1 shl 9
+    const val LOCK_TREASURE_100 = 1 shl 10
 
     @Volatile
     private var loaded = false
