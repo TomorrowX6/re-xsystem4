@@ -296,7 +296,11 @@ void apply_game_specific_hacks(struct ain *ain)
 	game_rance10 = ain->version == 12
 		&& ain_get_function(ain, "CardConstructProcessCacheFront@CreateOrganizationProcess") >= 0;
 	// The Chinese release uses CP936 for script text and archive entry names.
-	sys4_set_text_gbk(config.game_name && strstr(config.game_name, "\xc0\xbc\xcb\xb9"));
+	// Also detect via GBK symbols in AIN so mods that change GameName in AliceStart.ini still enable GBK.
+	sys4_set_text_gbk((config.game_name && strstr(config.game_name, "\xc0\xbc\xcb\xb9"))
+		|| ain_get_global(ain, "\xc8\xab\xcc\xe5\xa3\xc3\xa3\xc7\xb1\xa3\xb3\xd6") >= 0
+		|| ain_get_struct(ain, "\xa3\xd3\xb2\xbf\xb6\xd3\xd2\xbb\xc0\xc0") >= 0
+		|| (game_rance10 && ain_get_global(ain, "\x91\x53\x91\xcc\x82\x62\x82\x66\x95\xdb\x8e\x9d") < 0));
 	if (game_rance10 && config.view_width == 800 && config.view_height == 600) {
 		// The original Rance X executable stores this outside AliceStart.ini.
 		config.view_width = 1920;

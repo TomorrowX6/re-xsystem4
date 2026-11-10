@@ -85,9 +85,26 @@ bool asset_manager_load_archive(enum asset_type type, const char *archive_name)
 	if (!assets[type]) assets[type] = &afa_create_manager()->manager;
 	if (!assets[type]->load_archive)
 		ERROR("load_archive not supported on this archive type");
-	char *path = gamedir_path(archive_name);
+	char rel_name[PATH_MAX];
+	snprintf(rel_name, sizeof(rel_name), "%s.afa", archive_name);
+	char *path = gamedir_path_icase(rel_name);
+	if (!path || !file_exists(path)) {
+		free(path);
+		path = gamedir_path(archive_name);
+	}
 	bool r = assets[type]->load_archive(assets[type], path);
 	free(path);
+	if (r && type == ASSET_CG) {
+		size_t len = strlen(archive_name);
+		if (len >= 3 && !strcasecmp(archive_name + len - 3, "CG5")) {
+			char cg6_rel[PATH_MAX];
+			snprintf(cg6_rel, sizeof(cg6_rel), "%.*s6.afa", (int)(len - 1), archive_name);
+			char *cg6_path = gamedir_path_icase(cg6_rel);
+			if (cg6_path && file_exists(cg6_path))
+				assets[type]->load_archive(assets[type], cg6_path);
+			free(cg6_path);
+		}
+	}
 	return r;
 }
 
@@ -175,18 +192,58 @@ static struct archive_data *ald_get_by_id(struct asset_manager *_manager, int id
 	return archive_get(manager->archive, id - 1);
 }
 
+static bool afa_is_mod_archive(const char *filepath)
+{
+	const char *base = strrchr(filepath, '/');
+	base = base ? base + 1 : filepath;
+	for (const char *p = base; p[0] && p[1] && p[2]; p++) {
+		if (tolower((unsigned char)p[0]) == 'm' &&
+		    tolower((unsigned char)p[1]) == 'o' &&
+		    tolower((unsigned char)p[2]) == 'd')
+			return true;
+	}
+	return false;
+}
+
+static bool afa_is_base_primary_archive(const char *filepath)
+{
+	if (afa_is_mod_archive(filepath)) return false;
+	size_t len = strlen(filepath);
+	if (len < 5) return false;
+	char c = filepath[len - 5];
+	return !(c >= '2' && c <= '9');
+}
+
+static size_t afa_find_insert_pos(struct asset_manager_afa *manager, const char *filepath)
+{
+	if (afa_is_mod_archive(filepath))
+		return 0;
+	size_t pos = 0;
+	while (pos < manager->nr_archives && afa_is_mod_archive(manager->archives[pos]->filename))
+		pos++;
+	return pos;
+}
+
 static bool afa_load_archive(struct asset_manager *_manager, const char *name)
 {
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
 	char path[PATH_MAX];
-	snprintf(path, PATH_MAX, "%s.afa", name);
+	size_t name_len = strlen(name);
+	if (name_len >= 4 && !strcasecmp(name + name_len - 4, ".afa"))
+		snprintf(path, PATH_MAX, "%s", name);
+	else
+		snprintf(path, PATH_MAX, "%s.afa", name);
 	for (size_t i = 0; i < manager->nr_archives; i++) {
 		if (strcasecmp(manager->archives[i]->filename, path)) continue;
-		// Repeated loading is common when a script resumes its startup task.
-		// Reuse the mapped archive and restore its lookup priority.
+		if (afa_is_base_primary_archive(path))
+			return true;
 		struct afa_archive *ar = manager->archives[i];
-		memmove(manager->archives + 1, manager->archives, i * sizeof(*manager->archives));
-		manager->archives[0] = ar;
+		memmove(manager->archives + i, manager->archives + i + 1,
+			(manager->nr_archives - i - 1) * sizeof(*manager->archives));
+		size_t pos = afa_find_insert_pos(manager, path);
+		memmove(manager->archives + pos + 1, manager->archives + pos,
+			(manager->nr_archives - 1 - pos) * sizeof(*manager->archives));
+		manager->archives[pos] = ar;
 		return true;
 	}
 
@@ -201,11 +258,12 @@ static bool afa_load_archive(struct asset_manager *_manager, const char *name)
 		}
 	}
 
+	size_t pos = afa_find_insert_pos(manager, path);
 	manager->archives = xrealloc(manager->archives,
 		(manager->nr_archives + 1) * sizeof(*manager->archives));
-	memmove(manager->archives + 1, manager->archives,
-		manager->nr_archives * sizeof(*manager->archives));
-	manager->archives[0] = ar;
+	memmove(manager->archives + pos + 1, manager->archives + pos,
+		(manager->nr_archives - pos) * sizeof(*manager->archives));
+	manager->archives[pos] = ar;
 	manager->nr_archives++;
 	return true;
 }
@@ -335,6 +393,17 @@ static void afa_init(enum asset_type type, char *file)
 	manager->archives[0] = ar;
 	manager->nr_archives = 1;
 	assets[type] = &manager->manager;
+
+	char bak_path[PATH_MAX];
+	snprintf(bak_path, sizeof(bak_path), "%s.vanilla.bak", file);
+	if (file_exists(bak_path)) {
+		struct afa_archive *bak_ar = afa_open(bak_path, MMAP_IF_64BIT, &error);
+		if (bak_ar) {
+			manager->archives = xrealloc(manager->archives, 2 * sizeof(*manager->archives));
+			manager->archives[1] = bak_ar;
+			manager->nr_archives = 2;
+		}
+	}
 
 	free(file);
 }

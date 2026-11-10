@@ -382,10 +382,17 @@ static bool TextFile_Create(struct string *file_name)
 	if (!file_name)
 		return false;
 	TextFile_Close();
-	char *path = unix_path(file_name->text);
+	char *path = fileop_resolve_path(file_name->text);
 	if (!path)
 		return false;
 	text_file_fp = file_open_utf8(path, "wb");
+	if (!text_file_fp && config.game_dir && file_name->text[0] != '/') {
+		char *gd_path = gamedir_path(file_name->text);
+		if (gd_path) {
+			text_file_fp = file_open_utf8(gd_path, "wb");
+			free(gd_path);
+		}
+	}
 	free(path);
 	return text_file_fp != NULL;
 }

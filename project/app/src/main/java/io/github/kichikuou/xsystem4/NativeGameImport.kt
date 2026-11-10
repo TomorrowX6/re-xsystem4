@@ -106,4 +106,62 @@ object NativeGameImport {
             if (staging.exists()) staging.deleteRecursively()
         }
     }
+
+    suspend fun copyModTree(context: Context, tree: Uri, storage: File, progress: suspend (String) -> Unit): File {
+        val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        val files = children(context, tree, root)
+        val staging = File(storage, ".mod-import-${UUID.randomUUID()}").canonicalFile
+        if (staging.parentFile != storage.canonicalFile || !staging.mkdir())
+            throw IOException("Cannot create MOD staging directory")
+        var copied = 0L
+        var lastUpdate = 0L
+        try {
+            suspend fun copy(documents: List<Document>, destination: File) {
+                for (document in documents) {
+                    currentCoroutineContext().ensureActive()
+                    val name = document.name
+                    if (name.isEmpty() || name == "." || name == ".." || '/' in name || '\\' in name)
+                        throw IOException("Invalid document name")
+                    if (skip(name)) continue
+                    val target = File(destination, name)
+                    if (document.folder) {
+                        if (!target.mkdir()) throw IOException("Cannot create directory: $name")
+                        copy(children(context, tree, document.uri), target)
+                        continue
+                    }
+                    if (document.size > StatFs(storage.path).availableBytes - 32L * 1024 * 1024)
+                        throw GameList.InstallFailureException(R.string.import_no_space)
+                    var fileBytes = 0L
+                    val input = context.contentResolver.openInputStream(document.uri)
+                        ?: throw IOException("Cannot open $name")
+                    input.use { source ->
+                        target.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(256 * 1024)
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val count = source.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                copied += count
+                                fileBytes += count
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                if (now - lastUpdate >= 200) {
+                                    progress(context.getString(R.string.import_copy_progress, copied / (1024 * 1024), name))
+                                    lastUpdate = now
+                                }
+                            }
+                        }
+                    }
+                    if (document.size >= 0 && document.size != fileBytes)
+                        throw IOException("Incomplete document: $name")
+                }
+            }
+            copy(files, staging)
+            currentCoroutineContext().ensureActive()
+            return staging
+        } catch (t: Throwable) {
+            if (staging.exists()) staging.deleteRecursively()
+            throw t
+        }
+    }
 }

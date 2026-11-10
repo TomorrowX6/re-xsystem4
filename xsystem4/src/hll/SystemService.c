@@ -325,7 +325,14 @@ static bool SystemService_GetMouseCursorConfig(int type, int *value)
 void SystemService_GetGameFolderPath(struct string **folder_path)
 {
 	char *sjis = utf2sjis(config.game_dir, 0);
-	*folder_path = make_string(sjis, strlen(sjis));
+	size_t len = strlen(sjis);
+	if (len > 0 && sjis[len - 1] != '/' && sjis[len - 1] != '\\') {
+		struct string *s = make_string(sjis, len);
+		string_push_back(&s, '/');
+		*folder_path = s;
+	} else {
+		*folder_path = make_string(sjis, len);
+	}
 	free(sjis);
 }
 

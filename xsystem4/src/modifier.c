@@ -21,7 +21,11 @@
 #include "vm.h"
 #include "vm/heap.h"
 #include "vm/page.h"
+#include "input.h"
 #include "modifier.h"
+
+extern bool key_state[VK_NR_KEYCODES];
+static int s_pulse_key0_frames = 0;
 
 /* Lock bitmask flags */
 #define LOCK_PARTY_MAX_HP       (1 << 0)
@@ -1016,6 +1020,16 @@ static void vm_execute_pending_action(const char *json_str)
 		vm_process_all_characters(set_char_star, set_char_exp);
 	}
 
+	if ((it = cJSON_GetObjectItem(act, "triggerKey0")) && (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+		s_pulse_key0_frames = 8;
+		key_state[VK_0] = true;
+	}
+	cJSON *tt_idx = cJSON_GetObjectItem(act, "ttFlagIdx");
+	cJSON *tt_val = cJSON_GetObjectItem(act, "ttFlagVal");
+	if (tt_idx && cJSON_IsNumber(tt_idx) && tt_val && cJSON_IsNumber(tt_val)) {
+		vm_set_tt(tt_idx->valueint, tt_val->valueint);
+	}
+
 	cJSON_Delete(act);
 }
 
@@ -1249,6 +1263,11 @@ void modifier_on_frame(void)
 	if (pending) {
 		vm_execute_pending_action(pending);
 		free(pending);
+	}
+	if (s_pulse_key0_frames > 0) {
+		key_state[VK_0] = true;
+		if (--s_pulse_key0_frames == 0)
+			key_state[VK_0] = false;
 	}
 	if (lock_mask) {
 		vm_enforce_locks(lock_mask);

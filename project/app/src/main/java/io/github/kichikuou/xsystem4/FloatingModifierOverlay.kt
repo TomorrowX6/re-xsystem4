@@ -299,7 +299,8 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("一键宝箱100%掉落", "宝箱100%ドロップ化", "100% Treasure Drop"),
             tr("一键部队满血与全属性+999%", "部隊HP99万＋全ステータス+999%", "Max Party HP & +999% Multipliers"),
             tr("一键全卡牌99叠卡 + 全角色5星", "全カード99枚＋全キャラ★5", "All Cards x99 & All Chars 5★"),
-            tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties")
+            tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties"),
+            tr("打开MOD内置作弊器 (按键0)", "MOD内蔵チートを開く (キー0)", "Open MOD Cheat Console (Key 0)")
         )
         AlertDialog.Builder(activity)
             .setTitle(tr("一键全局强化", "一括強化プリセット", "One-Click Boosts"))
@@ -380,6 +381,10 @@ class FloatingModifierOverlay(private val activity: Activity) {
                             put("subHanny", 99999)
                         },
                         tr("已生效：四国满兵力与人类零伤亡", "四国兵力最大を適用", "World & armies maxed")
+                    )
+                    5 -> sendAction(
+                        JSONObject().put("triggerKey0", true),
+                        tr("已发送按键0", "キー0を送信しました", "Sent Key 0")
                     )
                 }
             }

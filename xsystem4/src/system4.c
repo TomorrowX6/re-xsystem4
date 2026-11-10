@@ -301,6 +301,11 @@ static void config_init(void)
 	config.home_dir = get_xsystem4_home();
 	if (!config.game_name)
 		config.game_name = strdup(config.ain_filename);
+	if ((config.game_name && strstr(config.game_name, "\xc0\xbc\xcb\xb9"))
+			|| (config.ain_filename && !strcasecmp(config.ain_filename, "Rance10.ain")
+				&& (!config.game_name || !strstr(config.game_name, "\x83\x89\x83\x93\x83\x58")))) {
+		sys4_set_text_gbk(true);
+	}
 
 	char *new_save_dir = get_save_path(config.save_dir);
 	free(config.save_dir);

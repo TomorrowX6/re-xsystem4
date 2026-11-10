@@ -49,7 +49,7 @@ object GameModifierBridge {
 
     fun isFloatingEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_FLOATING_ENABLED, true)
+        return prefs.getBoolean(KEY_FLOATING_ENABLED, false)
     }
 
     fun setFloatingEnabled(context: Context, enabled: Boolean) {

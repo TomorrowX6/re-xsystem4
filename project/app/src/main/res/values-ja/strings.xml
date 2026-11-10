@@ -109,4 +109,17 @@
     <string name="save_clear_confirm_title">全セーブデータの削除確認</string>
     <string name="save_clear_confirm_msg">「%2$s」内の全 %1$d 個のセーブファイルを削除しますか？事前にバックアップを推奨します。この操作は元に戻せません。</string>
     <string name="save_cleared_toast">現在のディレクトリのセーブを全て削除しました</string>
+
+    <string name="action_install_mod">MODインストール</string>
+    <string name="mod_no_game_installed">先にゲーム本体をインポートしてください。</string>
+    <string name="mod_select_game_title">MOD適用先のゲームを選択</string>
+    <string name="mod_dialog_title">MOD管理 (%1$s)</string>
+    <string name="mod_opt_zip">ZIPからMODをインストール (.zip)</string>
+    <string name="mod_opt_dir">フォルダからMODをインストール</string>
+    <string name="mod_opt_restore_vanilla">バニラに戻す (MOD解除)</string>
+    <string name="mod_choose_zip">MODのZIPファイルを選択 (.zip)</string>
+    <string name="mod_invalid_package">有効なMODファイル（.ain / .afa / .ex 等）が見つかりません。</string>
+    <string name="mod_install_error">MODのインストールに失敗しました。ファイルと空き容量を確認してください。</string>
+    <string name="mod_installed_toast">MODをインストールしました</string>
+    <string name="mod_restored_toast">バニラに戻しました</string>
 </resources>

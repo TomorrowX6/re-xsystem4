@@ -276,6 +276,36 @@ static void ex_read_table(struct ex_reader *r, struct ex_table *table, struct ex
 		table->rows[i] = xcalloc(table->nr_columns, sizeof(struct ex_value));
 		for (uint32_t j = 0; j < table->nr_columns; j++) {
 			ex_read_value(r, &table->rows[i][j], fields[j].subfields, fields[j].nr_subfields);
+			if (fields[j].type == EX_INT && table->rows[i][j].type == EX_STRING && table->rows[i][j].s) {
+				const unsigned char *p = (const unsigned char *)table->rows[i][j].s->text;
+				int sign = 1, val = 0;
+				bool ok = false;
+				if (*p == '-') { sign = -1; p++; }
+				else if (p[0] == 0xa3 && p[1] == 0xad) { sign = -1; p += 2; }
+				while (*p) {
+					if (*p >= '0' && *p <= '9') {
+						val = val * 10 + (*p - '0');
+						p++;
+						ok = true;
+					} else if (p[0] == 0xa3 && p[1] >= 0xb0 && p[1] <= 0xb9) {
+						val = val * 10 + (p[1] - 0xb0);
+						p += 2;
+						ok = true;
+					} else if (p[0] == 0x82 && p[1] >= 0x4f && p[1] <= 0x58) {
+						val = val * 10 + (p[1] - 0x4f);
+						p += 2;
+						ok = true;
+					} else {
+						ok = false;
+						break;
+					}
+				}
+				if (ok) {
+					free_string(table->rows[i][j].s);
+					table->rows[i][j].type = EX_INT;
+					table->rows[i][j].i = sign * val;
+				}
+			}
 			if (table->rows[i][j].type != fields[j].type) {
 				// broken table in Rance 03?
 				EX_WARNING(r, "Column type doesn't match field type: expected %s; got %s",

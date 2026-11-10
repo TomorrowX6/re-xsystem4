@@ -61,7 +61,20 @@ data class Item(val name: String, val path: File, val homedir: File, val savedir
             File(dir, "crash_history.log").delete()
             File(savedir, "crash.log").delete()
             File(savedir, "crash_history.log").delete()
-            return Item(ini.gameName, dir, homedir, savedir, icon, null)
+            val hasModMarker = File(dir, ".mod_installed_files.txt").exists() ||
+                File(dir, "Rance10MODCG.afa").exists() ||
+                (dir.listFiles()?.any { it.name.endsWith(".vanilla.bak") } == true)
+            val rawName = ini.gameName
+            val displayName = if (hasModMarker || rawName.contains("收费必是倒卖")) {
+                val bakIni = File(dir, "AliceStart.ini.vanilla.bak").takeIf { it.exists() }
+                    ?: File(dir, "System40.ini.vanilla.bak").takeIf { it.exists() }
+                val baseName = bakIni?.let { System40Ini.parse(it).gameName }
+                    ?: if (rawName.contains("收费必是倒卖")) "兰斯10" else rawName
+                if (baseName.endsWith("[MOD]")) baseName else "$baseName [MOD]"
+            } else {
+                rawName
+            }
+            return Item(displayName, dir, homedir, savedir, icon, null)
         }
 
         private fun findIcon(dir: File): File? {
@@ -330,4 +343,201 @@ class GameList(activity: Activity) {
         items.remove(item)
     }
 
+    fun hasInstalledMod(item: Item): Boolean {
+        val dir = item.path
+        return File(dir, ".mod_installed_files.txt").exists() ||
+            (dir.listFiles()?.any { it.name.endsWith(".vanilla.bak") } == true)
+    }
+
+    fun restoreMod(item: Item): Boolean {
+        if (installJob?.isActive == true) return false
+        return try {
+            restoreVanillaFromMod(item.path)
+            val idx = items.indexOfFirst { it.path == item.path }
+            if (idx >= 0) {
+                items[idx] = Item.fromDirectory(item.path, item.homedir, context)
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("GameList", "Failed to restore vanilla game", e)
+            false
+        }
+    }
+
+    fun installModDirectory(targetItem: Item, uri: Uri) {
+        if (installJob?.isActive == true) return
+        installState = InstallState.Installing(null)
+        installJob = scope.launch {
+            val storage = targetItem.path.parentFile ?: storageDirs[0]
+            var staging: File? = null
+            try {
+                withContext(Dispatchers.IO) {
+                    staging = NativeGameImport.copyModTree(context, uri, storage) { progress ->
+                        withContext(Dispatchers.Main) { setInstallProgress(progress) }
+                    }
+                    applyModStagingToGameDir(staging!!, targetItem.path)
+                }
+                val idx = items.indexOfFirst { it.path == targetItem.path }
+                if (idx >= 0) {
+                    items[idx] = Item.fromDirectory(targetItem.path, targetItem.homedir, context)
+                }
+                setInstallSucceeded()
+            } catch (e: InstallFailureException) {
+                setInstallFailed(e.msgId)
+            } catch (e: Exception) {
+                Log.e("GameList", "Failed to install MOD from directory", e)
+                setInstallFailed(R.string.mod_install_error)
+            } finally {
+                withContext(Dispatchers.IO) {
+                    staging?.deleteRecursively()
+                }
+            }
+        }
+    }
+
+    fun installModZip(targetItem: Item, input: InputStream) {
+        if (installJob?.isActive == true) {
+            closeRejectedInput(input)
+            return
+        }
+        installState = InstallState.Installing(null)
+        installJob = scope.launch {
+            val storagePath = targetItem.path.parentFile ?: storageDirs[0]
+            val tempDir = File(storagePath, ".mod_install_temp")
+            try {
+                input.use { installInput ->
+                    withContext(Dispatchers.IO) {
+                        tempDir.deleteRecursively()
+                        val tempDirCanonical = tempDir.canonicalFile
+                        val zip = ZipInputStream(installInput.buffered(), Charset.forName("GBK"))
+                        zip.use {
+                            while (true) {
+                                val entry = zip.nextEntry ?: break
+                                if (entry.isDirectory || NativeGameImport.skip(entry.name)) {
+                                    continue
+                                }
+                                val path = resolveZipEntryPath(tempDir, tempDirCanonical, entry.name)
+                                withContext(Dispatchers.Main) {
+                                    setInstallProgress(entry.name)
+                                }
+                                path.parentFile?.mkdirs()
+                                path.outputStream().buffered().use { out -> zip.copyTo(out) }
+                            }
+                        }
+                        applyModStagingToGameDir(tempDir, targetItem.path)
+                    }
+                }
+                val idx = items.indexOfFirst { it.path == targetItem.path }
+                if (idx >= 0) {
+                    items[idx] = Item.fromDirectory(targetItem.path, targetItem.homedir, context)
+                }
+                setInstallSucceeded()
+            } catch (e: InstallFailureException) {
+                setInstallFailed(e.msgId)
+            } catch (e: Exception) {
+                Log.e("GameList", "Failed to install MOD from ZIP", e)
+                setInstallFailed(R.string.mod_install_error)
+            } finally {
+                withContext(Dispatchers.IO) {
+                    tempDir.deleteRecursively()
+                }
+            }
+        }
+    }
+
+    private fun isModAssetFile(file: File): Boolean {
+        if (!file.isFile) return false
+        val ext = file.extension.lowercase()
+        return ext == "ain" || ext == "afa" || ext == "ex" || ext == "ald" || ext == "bgi" || ext == "wai" || ext == "fnl"
+    }
+
+    private fun findModRoot(stagingDir: File): File {
+        var cur = stagingDir
+        while (true) {
+            val children = cur.listFiles() ?: break
+            if (children.any { isModAssetFile(it) }) {
+                return cur
+            }
+            val dirs = children.filter { it.isDirectory && !it.name.startsWith(".") }
+            if (dirs.size == 1) {
+                cur = dirs[0]
+            } else {
+                val found = dirs.firstOrNull { d -> d.walkTopDown().any { isModAssetFile(it) } }
+                if (found != null) {
+                    cur = found
+                } else {
+                    break
+                }
+            }
+        }
+        throw InstallFailureException(R.string.mod_invalid_package)
+    }
+
+    private fun restoreVanillaFromMod(targetDir: File) {
+        val manifestFile = File(targetDir, ".mod_installed_files.txt")
+        if (manifestFile.exists()) {
+            for (rel in manifestFile.readLines()) {
+                val trimmed = rel.trim()
+                if (trimmed.isEmpty() || trimmed.contains("..")) continue
+                val f = File(targetDir, trimmed)
+                if (f.exists() && f.isFile) {
+                    f.delete()
+                }
+            }
+            manifestFile.delete()
+        }
+        File(targetDir, "AsraTest.ini").delete()
+        val bakFiles = targetDir.walkBottomUp().filter { it.isFile && it.name.endsWith(".vanilla.bak") }.toList()
+        for (bak in bakFiles) {
+            val origName = bak.name.removeSuffix(".vanilla.bak")
+            val origFile = File(bak.parentFile, origName)
+            if (origFile.exists()) {
+                origFile.delete()
+            }
+            if (!bak.renameTo(origFile)) {
+                bak.copyTo(origFile, overwrite = true)
+                bak.delete()
+            }
+        }
+    }
+
+    private fun applyModStagingToGameDir(stagingDir: File, targetDir: File) {
+        val modRoot = findModRoot(stagingDir)
+        if (File(targetDir, ".mod_installed_files.txt").exists() ||
+            targetDir.listFiles()?.any { it.name.endsWith(".vanilla.bak") } == true) {
+            restoreVanillaFromMod(targetDir)
+        }
+        val addedFiles = linkedSetOf<String>()
+        val modFiles = modRoot.walkTopDown().filter { it.isFile }.toList()
+        for (srcFile in modFiles) {
+            val relPath = srcFile.relativeTo(modRoot).path.replace('\\', '/')
+            if (relPath.isEmpty() || relPath.startsWith(".") || relPath.endsWith(".vanilla.bak") || NativeGameImport.skip(relPath)) {
+                continue
+            }
+            val existingIgnoreCase = targetDir.listFiles()?.firstOrNull {
+                it.isFile && !it.name.endsWith(".vanilla.bak") && it.name.equals(relPath, ignoreCase = true)
+            }
+            val destFile = existingIgnoreCase ?: File(targetDir, relPath)
+            destFile.parentFile?.mkdirs()
+            if (destFile.exists()) {
+                val bakFile = File(destFile.parentFile, "${destFile.name}.vanilla.bak")
+                if (!bakFile.exists()) {
+                    if (!destFile.renameTo(bakFile)) {
+                        destFile.copyTo(bakFile, overwrite = true)
+                        destFile.delete()
+                    }
+                } else {
+                    destFile.delete()
+                }
+            } else {
+                addedFiles.add(destFile.relativeTo(targetDir).path.replace('\\', '/'))
+            }
+            if (!srcFile.renameTo(destFile)) {
+                srcFile.copyTo(destFile, overwrite = true)
+                srcFile.delete()
+            }
+        }
+        addedFiles.add("AsraTest.ini")
+        File(targetDir, ".mod_installed_files.txt").writeText(addedFiles.joinToString("\n"))
+    }
 }

@@ -20,10 +20,13 @@ import android.widget.BaseAdapter
 import android.widget.ImageView
 import android.widget.ListView
 import android.widget.TextView
+import android.widget.Toast
 
 private const val ICON_SIZE_DP = 40
 private const val INSTALL_REQUEST = 1
 private const val DIRECTORY_REQUEST = 2
+private const val MOD_ZIP_REQUEST = 3
+private const val MOD_DIRECTORY_REQUEST = 4
 private const val GITHUB_URL = "https://github.com/TomorrowX6/re-xsystem4"
 
 private class GameListAdapter(activity: Activity, private val gameList: GameList) : BaseAdapter() {
@@ -63,6 +66,7 @@ class LauncherActivity : Activity(), GameListObserver {
     private lateinit var gameList: GameList
     private lateinit var adapter: GameListAdapter
     private var progressDialog: Dialog? = null
+    private var pendingModTarget: Item? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +80,7 @@ class LauncherActivity : Activity(), GameListObserver {
         listView.adapter = adapter
         findViewById<View>(R.id.import_directory).setOnClickListener { chooseDirectory() }
         findViewById<View>(R.id.import_zip).setOnClickListener { chooseZip() }
+        findViewById<View>(R.id.install_mod).setOnClickListener { openInstallMod() }
         findViewById<View>(R.id.save_manager).setOnClickListener { openSaveManager() }
         findViewById<View>(R.id.game_modifier).setOnClickListener { openGameModifier() }
         findViewById<View>(R.id.open_github).setOnClickListener { openGitHub() }
@@ -119,6 +124,10 @@ class LauncherActivity : Activity(), GameListObserver {
                 chooseDirectory()
                 true
             }
+            R.id.install_mod -> {
+                openInstallMod()
+                true
+            }
             R.id.save_manager -> {
                 openSaveManager()
                 true
@@ -151,7 +160,80 @@ class LauncherActivity : Activity(), GameListObserver {
                 gameList.install(input)
                 renderInstallState(gameList.installState)
             }
+            MOD_DIRECTORY_REQUEST -> {
+                val target = pendingModTarget ?: if (gameList.size > 0) gameList[0] else return
+                gameList.installModDirectory(target, uri)
+                renderInstallState(gameList.installState)
+            }
+            MOD_ZIP_REQUEST -> {
+                val target = pendingModTarget ?: if (gameList.size > 0) gameList[0] else return
+                val input = contentResolver.openInputStream(uri) ?: return
+                gameList.installModZip(target, input)
+                renderInstallState(gameList.installState)
+            }
         }
+    }
+
+    private fun openInstallMod() {
+        if (gameList.installState is InstallState.Installing) return
+        if (gameList.size == 0) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.action_install_mod)
+                .setMessage(R.string.mod_no_game_installed)
+                .setPositiveButton(R.string.ok, null)
+                .show()
+            return
+        }
+        if (gameList.size == 1) {
+            showModActionDialog(gameList[0])
+            return
+        }
+        val names = Array(gameList.size) { gameList[it].name }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.mod_select_game_title)
+            .setItems(names) { _, which ->
+                if (which in 0 until gameList.size) {
+                    showModActionDialog(gameList[which])
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showModActionDialog(target: Item) {
+        val options = mutableListOf(
+            getString(R.string.mod_opt_zip),
+            getString(R.string.mod_opt_dir)
+        )
+        if (gameList.hasInstalledMod(target)) {
+            options.add(getString(R.string.mod_opt_restore_vanilla))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.mod_dialog_title, target.name))
+            .setItems(options.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> {
+                        pendingModTarget = target
+                        val i = Intent(Intent.ACTION_GET_CONTENT)
+                        i.type = "application/zip"
+                        startActivityForResult(Intent.createChooser(i, getString(R.string.mod_choose_zip)), MOD_ZIP_REQUEST)
+                    }
+                    1 -> {
+                        pendingModTarget = target
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }, MOD_DIRECTORY_REQUEST)
+                    }
+                    2 -> {
+                        if (gameList.restoreMod(target)) {
+                            adapter.notifyDataSetChanged()
+                            Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun chooseDirectory() {

@@ -6,6 +6,9 @@
         android:id="@+id/install_from_zip"
         android:title="@string/action_install_from_zip" />
     <item
+        android:id="@+id/install_mod"
+        android:title="@string/action_install_mod" />
+    <item
         android:id="@+id/save_manager"
         android:title="@string/action_save_manager" />
     <item
