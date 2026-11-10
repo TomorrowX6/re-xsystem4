@@ -102,10 +102,6 @@ class LauncherActivity : Activity(), GameListObserver {
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.launcher_menu, menu)
-        // The charset parameter of ZipInputStream is not supported on Android <7.0.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            menu.findItem(R.id.install_from_zip).isEnabled = false
-        }
         return true
     }
 
@@ -115,12 +111,8 @@ class LauncherActivity : Activity(), GameListObserver {
                 setGameList(getGameList(refresh = true))
                 true
             }
-            R.id.install_from_zip -> {
-                chooseZip()
-                true
-            }
-            R.id.install_from_directory -> {
-                chooseDirectory()
+            R.id.install_game -> {
+                openInstallGame()
                 true
             }
             R.id.install_mod -> {
