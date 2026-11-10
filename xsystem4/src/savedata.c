@@ -161,9 +161,10 @@ static int32_t add_value_to_gsave(enum ain_data_type type, union vm_value val, s
 			}
 			for (int i = 0; i < page->nr_vars; i++) {
 				enum ain_data_type type = st->members[i].type.data;
-				int32_t value = add_value_to_gsave(type, page->values[i], save);
+				const char *field_name = st->members[i].name2 ? st->members[i].name2 : st->members[i].name;
+				int32_t value = field_name[0] ? add_value_to_gsave(type, page->values[i], save) : 0;
 				struct gsave_keyval kv = {
-					.name = strdup(st->members[i].name),
+					.name = strdup(field_name),
 					.type = type,
 					.value = value,
 				};
@@ -225,12 +226,17 @@ int save_globals(const char *keyname, const char *filename, const char *group_na
 			WARNING("Unregistered global group: %s", display_sjis0(group_name));
 		} else {
 			for (int i = 0; i < ain->nr_globals; i++) {
+				if (ain->globals[i].name2 && !ain->globals[i].name2[0])
+					continue;
 				if (ain->globals[i].group_index == group)
 					nr_vars++;
 			}
 		}
 	} else {
-		nr_vars = ain->nr_globals;
+		for (int i = 0; i < ain->nr_globals; i++) {
+			if (!(ain->globals[i].name2 && !ain->globals[i].name2[0]))
+				nr_vars++;
+		}
 	}
 
 	struct gsave *save = gsave_create(get_gsave_version(), keyname, ain->nr_globals, group_name);
@@ -239,9 +245,12 @@ int save_globals(const char *keyname, const char *filename, const char *group_na
 	if (nr_vars > 0) {
 		struct gsave_global *global = save->globals;
 		for (int i = 0; i < ain->nr_globals; i++) {
+			if (ain->globals[i].name2 && !ain->globals[i].name2[0])
+				continue;
 			if (group >= 0 && ain->globals[i].group_index != group)
 				continue;
-			global->name = strdup(ain->globals[i].name);
+			const char *gname = (ain->globals[i].name2 && ain->globals[i].name2[0]) ? ain->globals[i].name2 : ain->globals[i].name;
+			global->name = strdup(gname);
 			global->type = ain->globals[i].type.data;
 			global->value = add_value_to_gsave(global->type, global_get(i), save);
 			global++;
@@ -457,7 +466,11 @@ cleanup:
 
 static int struct_member_index(struct ain_struct *st, const char *name)
 {
+	if (!name || !name[0])
+		return -1;
 	for (int i = 0; i < st->nr_members; i++) {
+		if (st->members[i].name2 && st->members[i].name2[0] && !strcmp(st->members[i].name2, name))
+			return i;
 		if (!strcmp(st->members[i].name, name))
 			return i;
 	}
@@ -528,6 +541,8 @@ static union vm_value gsave_to_vm_value(struct gsave *save, enum ain_data_type t
 				struct gsave_keyval *kv = &save->keyvals[rec->indices[i]];
 				const char *field_name = sd ? sd->fields[i].name : kv->name;
 				enum ain_data_type field_type = sd ? sd->fields[i].type : kv->type;
+				if (!field_name || !field_name[0])
+					continue;
 				int index = struct_member_index(st, field_name);
 				if (index < 0) {
 					WARNING("structure %s has no member named %s", display_sjis0(struct_name), display_sjis1(field_name));
@@ -613,6 +628,14 @@ int load_globals_from_gsave(struct gsave *save, const char *keyname, const char 
 	for (struct gsave_global *g = save->globals; g < save->globals + save->nr_globals; g++) {
 		if (g->type == AIN_VOID && !g->name[0]) continue;
 		int global_index = ain_get_global(ain, g->name);
+		if (global_index < 0) {
+			for (int i = 0; i < ain->nr_globals; i++) {
+				if (ain->globals[i].name2 && ain->globals[i].name2[0] && !strcmp(ain->globals[i].name2, g->name)) {
+					global_index = i;
+					break;
+				}
+			}
+		}
 		if (global_index < 0) {
 			WARNING("invalid global name %s", display_sjis0(g->name));
 			return 0;

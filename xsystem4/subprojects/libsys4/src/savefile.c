@@ -646,8 +646,9 @@ int32_t gsave_add_struct_def(struct gsave *gs, struct ain_struct *st)
 	sd->fields = xcalloc(st->nr_members, sizeof(struct gsave_field_def));
 
 	for (int i = 0; i < st->nr_members; i++) {
+		const char *field_name = st->members[i].name2 ? st->members[i].name2 : st->members[i].name;
 		sd->fields[i].type = st->members[i].type.data;
-		sd->fields[i].name = strdup(st->members[i].name);
+		sd->fields[i].name = strdup(field_name);
 	}
 
 	return n;
