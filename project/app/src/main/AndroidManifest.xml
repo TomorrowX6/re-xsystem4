@@ -108,6 +108,12 @@
             android:exported="false">
         </activity>
 
+        <activity android:name="io.github.kichikuou.xsystem4.GameModifierActivity"
+            android:label="@string/action_game_modifier"
+            android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"
+            android:exported="false">
+        </activity>
+
         <activity android:name="io.github.kichikuou.xsystem4.LicensesMenuActivity"
             android:label="@string/action_licenses"
             android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"

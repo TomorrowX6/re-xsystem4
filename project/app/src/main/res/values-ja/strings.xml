@@ -3,6 +3,7 @@
     <string name="action_install_from_directory">フォルダからインポート</string>
     <string name="action_install_from_zip">ZIPからインポート</string>
     <string name="action_save_manager">セーブ管理</string>
+    <string name="action_game_modifier">ゲーム改造</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">オープンソースライセンス</string>
     <string name="choose_a_file">ゲームのZIPファイルを選択</string>

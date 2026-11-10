@@ -9,6 +9,9 @@
         android:id="@+id/save_manager"
         android:title="@string/action_save_manager" />
     <item
+        android:id="@+id/game_modifier"
+        android:title="@string/action_game_modifier" />
+    <item
         android:id="@+id/refresh"
         android:title="@string/action_refresh" />
     <item

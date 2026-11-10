@@ -3,6 +3,7 @@
     <string name="action_install_from_directory">导入游戏目录</string>
     <string name="action_install_from_zip">从ZIP导入</string>
     <string name="action_save_manager">存档管理器</string>
+    <string name="action_game_modifier">游戏修改器</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">开源许可证</string>
     <string name="choose_a_file">选择游戏 ZIP 文件</string>

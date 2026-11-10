@@ -68,6 +68,7 @@ target_sources(xsystem4 PRIVATE
   src/input.c
   src/json.c
   src/movie_plmpeg.c
+  src/modifier.c
   src/msgqueue.c
   src/page.c
   src/resume.c

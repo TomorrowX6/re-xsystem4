@@ -4,6 +4,7 @@
     <string name="action_install_from_directory">Import Game Directory</string>
     <string name="action_install_from_zip">Import from ZIP</string>
     <string name="action_save_manager">Save Manager</string>
+    <string name="action_game_modifier">Game Modifier</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">Open Source Licenses</string>
     <string name="choose_a_file">Select Game ZIP Archive</string>

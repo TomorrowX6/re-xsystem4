@@ -22,6 +22,7 @@ class XSystem4Activity : SDLActivity() {
     }
 
     private var loadingLabel: TextView? = null
+    private var modifierOverlay: FloatingModifierOverlay? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +40,7 @@ class XSystem4Activity : SDLActivity() {
         loadingLabel = label
         addContentView(label, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+        modifierOverlay = FloatingModifierOverlay(this).also { it.attach() }
     }
 
     override fun getLibraries(): Array<String> {
@@ -52,6 +54,7 @@ class XSystem4Activity : SDLActivity() {
     }
 
     override fun onDestroy() {
+        modifierOverlay?.detach()
         try {
             // Let SDL stop and join its native thread before terminating the game process.
             super.onDestroy()

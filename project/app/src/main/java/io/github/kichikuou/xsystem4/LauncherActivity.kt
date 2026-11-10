@@ -77,6 +77,7 @@ class LauncherActivity : Activity(), GameListObserver {
         findViewById<View>(R.id.import_directory).setOnClickListener { chooseDirectory() }
         findViewById<View>(R.id.import_zip).setOnClickListener { chooseZip() }
         findViewById<View>(R.id.save_manager).setOnClickListener { openSaveManager() }
+        findViewById<View>(R.id.game_modifier).setOnClickListener { openGameModifier() }
         findViewById<View>(R.id.open_github).setOnClickListener { openGitHub() }
         listView.setOnItemClickListener { _, _, pos, _ ->
             onListItemClick(listView.adapter.getItem(pos) as Item)
@@ -120,6 +121,10 @@ class LauncherActivity : Activity(), GameListObserver {
             }
             R.id.save_manager -> {
                 openSaveManager()
+                true
+            }
+            R.id.game_modifier -> {
+                openGameModifier()
                 true
             }
             R.id.licenses -> {
@@ -167,6 +172,14 @@ class LauncherActivity : Activity(), GameListObserver {
         val intent = Intent(this, SaveManagerActivity::class.java)
         if (dirName != null) {
             intent.putExtra(SaveManagerActivity.EXTRA_DIR_NAME, dirName)
+        }
+        startActivity(intent)
+    }
+
+    private fun openGameModifier(dirName: String? = null) {
+        val intent = Intent(this, GameModifierActivity::class.java)
+        if (dirName != null) {
+            intent.putExtra(GameModifierActivity.EXTRA_DIR_NAME, dirName)
         }
         startActivity(intent)
     }

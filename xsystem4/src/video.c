@@ -30,6 +30,7 @@
 #include "gfx/gfx.h"
 #include "gfx/private.h"
 #include "icon.h"
+#include "modifier.h"
 #include "xsystem4.h"
 
 struct sdl_private sdl;
@@ -447,6 +448,7 @@ void gfx_swap(void)
 	glViewport(0, 0, sdl.w, sdl.h);
 
 	gfx_update_frame_rate_counter();
+	modifier_on_frame();
 }
 
 void gfx_set_view(struct texture *t)
