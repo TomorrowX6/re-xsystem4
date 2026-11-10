@@ -207,15 +207,6 @@ static bool afa_is_mod_archive(const char *filepath)
 	return false;
 }
 
-static bool afa_is_base_primary_archive(const char *filepath)
-{
-	if (afa_is_mod_archive(filepath)) return false;
-	size_t len = strlen(filepath);
-	if (len < 5) return false;
-	char c = filepath[len - 5];
-	return !(c >= '2' && c <= '9');
-}
-
 static size_t afa_find_insert_pos(struct asset_manager_afa *manager, const char *filepath)
 {
 	if (afa_is_mod_archive(filepath))
@@ -236,17 +227,8 @@ static bool afa_load_archive(struct asset_manager *_manager, const char *name)
 	else
 		snprintf(path, PATH_MAX, "%s.afa", name);
 	for (size_t i = 0; i < manager->nr_archives; i++) {
-		if (strcasecmp(manager->archives[i]->filename, path)) continue;
-		if (afa_is_base_primary_archive(path))
+		if (!strcasecmp(manager->archives[i]->filename, path))
 			return true;
-		struct afa_archive *ar = manager->archives[i];
-		memmove(manager->archives + i, manager->archives + i + 1,
-			(manager->nr_archives - i - 1) * sizeof(*manager->archives));
-		size_t pos = afa_find_insert_pos(manager, path);
-		memmove(manager->archives + pos + 1, manager->archives + pos,
-			(manager->nr_archives - 1 - pos) * sizeof(*manager->archives));
-		manager->archives[pos] = ar;
-		return true;
 	}
 
 	int error;

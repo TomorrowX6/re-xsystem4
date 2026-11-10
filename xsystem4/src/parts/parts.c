@@ -1775,6 +1775,9 @@ static bool _parts_animation_set_cg(struct parts *parts, struct parts_animation 
 	}
 
 	parts_set_dims(parts, &anim->common, w, h);
+	for (unsigned i = 0; i < anim->nr_frames; i++) {
+		gfx_delete_texture(&anim->frames[i]);
+	}
 	free(anim->frames);
 	anim->start_no = start_no;
 	anim->frames = frames;
@@ -1864,8 +1867,9 @@ bool PE_SetLoopCGSurfaceArea(int parts_no, int x, int y, int w, int h, int state
 
 static void _parts_set_gauge_cg(struct parts *parts, struct parts_gauge *g, struct cg *cg)
 {
+	gfx_delete_texture(&g->cg);
+	gfx_delete_texture(&g->common.texture);
 	gfx_init_texture_with_cg(&g->cg, cg);
-	gfx_init_texture_with_cg(&g->common.texture, cg);
 
 	gfx_init_texture_rgba(&g->common.texture, g->cg.w, g->cg.h, (SDL_Color){0,0,0,255});
 	gfx_copy_with_alpha_map(&g->common.texture, 0, 0, &g->cg, 0, 0, g->cg.w, g->cg.h);
