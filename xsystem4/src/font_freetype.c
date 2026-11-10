@@ -22,6 +22,7 @@
 #include <SDL.h>
 
 #include "system4.h"
+#include "system4/file.h"
 #include "system4/hashtable.h"
 #include "system4/string.h"
 #include "system4/utfsjis.h"
@@ -209,15 +210,78 @@ static float ft_font_size_char_kerning(struct font_size *size, uint32_t code,
 	return (advance / 65536.f) + (delta.x / 64.f);
 }
 
+#ifdef __ANDROID__
+static uint8_t *load_asset_chunked(const char *path, size_t *size_out)
+{
+	SDL_RWops *rw = SDL_RWFromFile(path, "rb");
+	if (!rw)
+		return NULL;
+	Sint64 total_size = SDL_RWsize(rw);
+	if (total_size <= 0) {
+		SDL_RWclose(rw);
+		return NULL;
+	}
+	uint8_t *buf = malloc((size_t)total_size);
+	if (!buf) {
+		SDL_RWclose(rw);
+		return NULL;
+	}
+	size_t offset = 0;
+	const size_t chunk_size = 64 * 1024;
+	while (offset < (size_t)total_size) {
+		size_t to_read = (size_t)total_size - offset;
+		if (to_read > chunk_size)
+			to_read = chunk_size;
+		size_t n = SDL_RWread(rw, buf + offset, 1, to_read);
+		if (n == 0)
+			break;
+		offset += n;
+	}
+	SDL_RWclose(rw);
+	if (offset != (size_t)total_size) {
+		free(buf);
+		return NULL;
+	}
+	*size_out = offset;
+	return buf;
+}
+#endif
+
 struct font *ft_font_load(const char *path)
 {
+	if (!path || !path[0])
+		return NULL;
+#ifdef __ANDROID__
+	if (path[0] == '/') {
+		if (!file_exists(path))
+			return NULL;
+		struct font_ft *font = xcalloc(1, sizeof(struct font_ft));
+		if (FT_New_Face(ft_lib, path, 0, &font->font)) {
+			free(font);
+			return NULL;
+		}
+		if (!font->font->charmap) {
+			FT_Done_Face(font->font);
+			free(font);
+			return NULL;
+		}
+		font->super.get_size = ft_font_get_size;
+		font->super.get_actual_size = ft_font_get_actual_size;
+		font->super.get_actual_size_round_down = ft_font_get_actual_size;
+		font->super.get_glyph = ft_font_get_glyph;
+		font->super.size_char = ft_font_size_char;
+		font->super.size_char_kerning = ft_font_size_char_kerning;
+		return &font->super;
+	}
+#endif
+
 	struct font_ft *font = xcalloc(1, sizeof(struct font_ft));
 
 #ifdef __ANDROID__
 	// On Android, path may be an asset name which FT_New_Face cannot read
-	// directly, so use SDL_LoadFile to load the content into memory.
-	size_t size;
-	void *buf = SDL_LoadFile(path, &size);
+	// directly, so read it into memory in 64 KB chunks.
+	size_t size = 0;
+	void *buf = load_asset_chunked(path, &size);
 	if (!buf) {
 		free(font);
 		return NULL;

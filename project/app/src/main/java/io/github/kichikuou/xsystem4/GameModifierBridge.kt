@@ -28,6 +28,10 @@ object GameModifierBridge {
     @Volatile
     private var loaded = false
 
+    fun markAlreadyLoaded() {
+        loaded = true
+    }
+
     @Synchronized
     fun ensureLoaded(): Boolean {
         if (loaded) return true
@@ -60,7 +64,7 @@ object GameModifierBridge {
     fun setSavedLockMask(context: Context, mask: Int) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putInt(KEY_LOCK_MASK, mask).apply()
-        if (ensureLoaded()) {
+        if (loaded) {
             try {
                 nativeSetLiveLocks(mask)
             } catch (_: Throwable) {
@@ -194,5 +198,5 @@ object GameModifierBridge {
     external fun nativeGetLiveLocks(): Int
 
     @JvmStatic
-    external fun nativeApplyLiveAction(actionSpec: String): Boolean
+    external fun nativeApplyLiveAction(actionSpec: String)
 }

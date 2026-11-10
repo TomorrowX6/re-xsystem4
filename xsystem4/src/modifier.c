@@ -621,9 +621,24 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
  * Live In-Game VM Memory Helpers (Executed on VM Thread in modifier_on_frame)
  * ========================================================================= */
 
+static bool vm_is_ready(void)
+{
+	return ain != NULL && heap != NULL && heap_size > 0 &&
+	       heap[0].ref > 0 && heap[0].page != NULL &&
+	       heap[0].page->type == GLOBAL_PAGE &&
+	       call_stack_ptr > 0;
+}
+
+static struct page *vm_safe_get_page(int slot)
+{
+	if (slot <= 0 || !heap || !page_index_valid(slot))
+		return NULL;
+	return heap[slot].page;
+}
+
 static int vm_find_global_idx(const char *name1, const char *name2)
 {
-	if (!ain || !ain->globals) return -1;
+	if (!vm_is_ready() || !ain->globals) return -1;
 	for (int i = 0; i < ain->nr_globals; i++) {
 		const char *n1 = ain->globals[i].name;
 		const char *n2 = ain->globals[i].name2;
@@ -636,10 +651,9 @@ static int vm_find_global_idx(const char *name1, const char *name2)
 static struct page *vm_get_global_page(const char *name1, const char *name2)
 {
 	int idx = vm_find_global_idx(name1, name2);
-	if (idx < 0) return NULL;
+	if (idx < 0 || idx >= heap[0].page->nr_vars) return NULL;
 	union vm_value v = global_get(idx);
-	if (v.i <= 0) return NULL;
-	return heap_get_page(v.i);
+	return vm_safe_get_page(v.i);
 }
 
 static union vm_value *vm_get_struct_member(struct page *page, const char *name1, const char *name2)
@@ -673,8 +687,8 @@ static void vm_set_field_int(struct page *page, const char *name1, const char *n
 static struct page *vm_get_field_page(struct page *page, const char *name1, const char *name2)
 {
 	union vm_value *v = vm_get_struct_member(page, name1, name2);
-	if (!v || v->i <= 0) return NULL;
-	return heap_get_page(v->i);
+	if (!v) return NULL;
+	return vm_safe_get_page(v->i);
 }
 
 static int32_t vm_get_tt(int idx, int32_t def_val)
@@ -695,7 +709,7 @@ static void vm_boost_card_array(struct page *arr, int set_count, int add_count, 
 {
 	if (!arr || arr->type != ARRAY_PAGE) return;
 	for (int i = 0; i < arr->nr_vars; i++) {
-		struct page *c_page = heap_get_page(arr->values[i].i);
+		struct page *c_page = vm_safe_get_page(arr->values[i].i);
 		if (!c_page || c_page->type != STRUCT_PAGE) continue;
 		if (total_cards) (*total_cards)++;
 		if (set_count > 0) {
@@ -727,7 +741,7 @@ static int vm_process_all_cards(int set_count, int add_count, int atk_bonus, int
 	struct page *org_arr = vm_get_field_page(pc, "m_org", NULL);
 	if (org_arr && org_arr->type == ARRAY_PAGE) {
 		for (int i = 0; i < org_arr->nr_vars; i++) {
-			struct page *org_page = heap_get_page(org_arr->values[i].i);
+			struct page *org_page = vm_safe_get_page(org_arr->values[i].i);
 			struct page *card_arr = vm_get_field_page(org_page, "m_card", NULL);
 			vm_boost_card_array(card_arr, set_count, add_count, atk_bonus, hp_bonus, &total);
 		}
@@ -745,7 +759,7 @@ static int vm_process_all_characters(int set_star, int set_exp)
 	struct page *arr = vm_get_field_page(ch, "m_character", NULL);
 	if (!arr || arr->type != ARRAY_PAGE) return 0;
 	for (int i = 0; i < arr->nr_vars; i++) {
-		struct page *c_page = heap_get_page(arr->values[i].i);
+		struct page *c_page = vm_safe_get_page(arr->values[i].i);
 		if (!c_page || c_page->type != STRUCT_PAGE) continue;
 		if (set_star > 0) {
 			int32_t cur = vm_get_field_int(c_page, "m_star", NULL, 0);
@@ -767,7 +781,7 @@ static void vm_cure_and_boost_leaders(bool boost_crit, bool reset_skills)
 	if (!leaders_arr || leaders_arr->type != ARRAY_PAGE) return;
 
 	for (int i = 0; i < leaders_arr->nr_vars; i++) {
-		struct page *lc = heap_get_page(leaders_arr->values[i].i);
+		struct page *lc = vm_safe_get_page(leaders_arr->values[i].i);
 		if (!lc || lc->type != STRUCT_PAGE) continue;
 		if (boost_crit) {
 			struct page *ls = vm_get_field_page(lc, "m_state", NULL);
@@ -785,7 +799,7 @@ static void vm_cure_and_boost_leaders(bool boost_crit, bool reset_skills)
 			struct page *sc_arr = vm_get_field_page(sc_col, "m_counter", NULL);
 			if (sc_arr && sc_arr->type == ARRAY_PAGE) {
 				for (int k = 0; k < sc_arr->nr_vars; k++) {
-					struct page *scv = heap_get_page(sc_arr->values[k].i);
+					struct page *scv = vm_safe_get_page(sc_arr->values[k].i);
 					if (scv && scv->type == STRUCT_PAGE) {
 						vm_set_field_int(scv, "IsUsed", NULL, 0);
 						vm_set_field_int(scv, "IsLastUsed", NULL, 0);
@@ -1203,9 +1217,6 @@ static char *vm_build_live_state_json(int lock_mask)
 	cJSON_AddItemToObject(root, "countryEnemyArmy", c_earmy);
 	cJSON_AddItemToObject(root, "subArmy", c_sub);
 
-	cJSON_AddNumberToObject(root, "cardCount", vm_process_all_cards(0, 0, 0, 0));
-	cJSON_AddNumberToObject(root, "charCount", vm_process_all_characters(0, 0));
-
 	char *out = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	return out;
@@ -1213,6 +1224,9 @@ static char *vm_build_live_state_json(int lock_mask)
 
 void modifier_on_frame(void)
 {
+	if (!vm_is_ready())
+		return;
+
 	static uint32_t s_frame_tick = 0;
 	s_frame_tick++;
 
@@ -1230,8 +1244,8 @@ void modifier_on_frame(void)
 		vm_enforce_locks(lock_mask);
 	}
 
-	/* Refresh live snapshot when action executed or every 15 frames */
-	if (pending || (s_frame_tick % 15 == 1)) {
+	/* Refresh live snapshot when action executed or every 30 frames */
+	if (pending || (s_frame_tick % 30 == 1)) {
 		char *snap = vm_build_live_state_json(lock_mask);
 		pthread_mutex_lock(&g_mod_mutex);
 		free(g_cached_live_state_json);

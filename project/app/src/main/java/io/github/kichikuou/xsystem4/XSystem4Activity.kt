@@ -40,6 +40,12 @@ class XSystem4Activity : SDLActivity() {
         loadingLabel = label
         addContentView(label, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+        GameModifierBridge.markAlreadyLoaded()
+        window.decorView.postDelayed({ ensureModifierOverlayAttached() }, 3500L)
+    }
+
+    private fun ensureModifierOverlayAttached() {
+        if (isFinishing || isDestroyed || modifierOverlay != null) return
         modifierOverlay = FloatingModifierOverlay(this).also { it.attach() }
     }
 
@@ -66,7 +72,11 @@ class XSystem4Activity : SDLActivity() {
     override fun onUnhandledMessage(command: Int, param: Any): Boolean {
         when (command) {
             COMMAND_SHOW_WAIT_MESSAGE -> {
-                loadingLabel?.visibility = if (((param as? Number)?.toInt() ?: 0) != 0) View.VISIBLE else View.GONE
+                val show = ((param as? Number)?.toInt() ?: 0) != 0
+                loadingLabel?.visibility = if (show) View.VISIBLE else View.GONE
+                if (!show) {
+                    ensureModifierOverlayAttached()
+                }
                 return true
             }
             COMMAND_OPEN_PLAYING_MANUAL -> {

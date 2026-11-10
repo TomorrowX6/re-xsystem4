@@ -45,6 +45,9 @@ android {
         abortOnError false
         checkReleaseBuilds false
     }
+    aaptOptions {
+        noCompress 'ttf', 'ttc', 'otf', 'glsl', 'zip'
+    }
 
     if (buildAsLibrary) {
         libraryVariants.all { variant ->

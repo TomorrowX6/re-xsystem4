@@ -83,7 +83,11 @@ void gfx_font_init(void)
 		return;
 	ft_font_init();
 	font_ttf[FONT_GOTHIC] = load_font(FONT_GOTHIC);
-	font_ttf[FONT_MINCHO] = load_font(FONT_MINCHO);
+	if (sys4_text_is_gbk && !config.font_paths[FONT_GOTHIC] && !config.font_paths[FONT_MINCHO]) {
+		font_ttf[FONT_MINCHO] = font_ttf[FONT_GOTHIC];
+	} else {
+		font_ttf[FONT_MINCHO] = load_font(FONT_MINCHO);
+	}
 
 	if (config.fnl_path) {
 		struct fnl *fnl = fnl_open(config.fnl_path);
