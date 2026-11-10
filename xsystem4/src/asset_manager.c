@@ -74,6 +74,8 @@ struct asset_manager_afa {
 	struct asset_manager manager;
 	struct afa_archive **archives;
 	size_t nr_archives;
+	struct afa_archive **id_archives;
+	size_t nr_id_archives;
 };
 
 static struct asset_manager *assets[ASSET_TYPE_MAX] = {0};
@@ -265,14 +267,47 @@ static bool afa_load_archive(struct asset_manager *_manager, const char *name)
 		(manager->nr_archives - pos) * sizeof(*manager->archives));
 	manager->archives[pos] = ar;
 	manager->nr_archives++;
+	manager->id_archives = xrealloc(manager->id_archives,
+		(manager->nr_id_archives + 1) * sizeof(*manager->id_archives));
+	manager->id_archives[manager->nr_id_archives++] = ar;
 	return true;
+}
+
+static size_t afa_register_id_archive(struct asset_manager_afa *manager, struct afa_archive *ar)
+{
+	for (size_t i = 0; i < manager->nr_id_archives; i++) {
+		if (manager->id_archives[i] == ar)
+			return i;
+	}
+	manager->id_archives = xrealloc(manager->id_archives,
+		(manager->nr_id_archives + 1) * sizeof(*manager->id_archives));
+	manager->id_archives[manager->nr_id_archives] = ar;
+	return manager->nr_id_archives++;
+}
+
+static int afa_encode_id(struct asset_manager_afa *manager, struct afa_archive *ar, int local_no)
+{
+	size_t idx = afa_register_id_archive(manager, ar);
+	if (idx > 127)
+		idx = 0;
+	return ((int)idx << 24) | ((local_no + 1) & 0x00ffffff);
 }
 
 static bool afa_exists_by_id(struct asset_manager *_manager, int id)
 {
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
+	if (id <= 0)
+		return false;
+	size_t ar_idx = ((unsigned int)id >> 24) & 0x7f;
+	int local_id = id & 0x00ffffff;
+	if (local_id <= 0)
+		return false;
+	if (ar_idx < manager->nr_id_archives) {
+		if (archive_exists(&manager->id_archives[ar_idx]->ar, local_id - 1))
+			return true;
+	}
 	for (size_t i = 0; i < manager->nr_archives; i++) {
-		if (archive_exists(&manager->archives[i]->ar, id - 1))
+		if (archive_exists(&manager->archives[i]->ar, local_id - 1))
 			return true;
 	}
 	return false;
@@ -281,8 +316,19 @@ static bool afa_exists_by_id(struct asset_manager *_manager, int id)
 static struct archive_data *afa_get_by_id(struct asset_manager *_manager, int id)
 {
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
+	if (id <= 0)
+		return NULL;
+	size_t ar_idx = ((unsigned int)id >> 24) & 0x7f;
+	int local_id = id & 0x00ffffff;
+	if (local_id <= 0)
+		return NULL;
+	if (ar_idx < manager->nr_id_archives) {
+		struct archive_data *data = archive_get(&manager->id_archives[ar_idx]->ar, local_id - 1);
+		if (data)
+			return data;
+	}
 	for (size_t i = 0; i < manager->nr_archives; i++) {
-		struct archive_data *data = archive_get(&manager->archives[i]->ar, id - 1);
+		struct archive_data *data = archive_get(&manager->archives[i]->ar, local_id - 1);
 		if (data)
 			return data;
 	}
@@ -299,7 +345,7 @@ static struct archive_data *afa_get_by_name(struct asset_manager *_manager, cons
 		data = archive_get_by_basename(&manager->archives[i]->ar, name);
 		if (data) {
 			if (id_out)
-				*id_out = data->no + 1;
+				*id_out = afa_encode_id(manager, manager->archives[i], data->no);
 			return data;
 		}
 	}
@@ -311,9 +357,10 @@ static bool afa_exists_by_name(struct asset_manager *_manager, const char *name,
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
 
 	for (size_t i = 0; i < manager->nr_archives; i++) {
-		if (archive_exists_by_basename(&manager->archives[i]->ar, name, id_out)) {
+		int local_no = 0;
+		if (archive_exists_by_basename(&manager->archives[i]->ar, name, id_out ? &local_no : NULL)) {
 			if (id_out)
-				*id_out += 1;
+				*id_out = afa_encode_id(manager, manager->archives[i], local_no);
 			return true;
 		}
 	}
@@ -392,6 +439,7 @@ static void afa_init(enum asset_type type, char *file)
 	manager->archives = xmalloc(sizeof(*manager->archives));
 	manager->archives[0] = ar;
 	manager->nr_archives = 1;
+	afa_register_id_archive(manager, ar);
 	assets[type] = &manager->manager;
 
 	char bak_path[PATH_MAX];
@@ -402,6 +450,7 @@ static void afa_init(enum asset_type type, char *file)
 			manager->archives = xrealloc(manager->archives, 2 * sizeof(*manager->archives));
 			manager->archives[1] = bak_ar;
 			manager->nr_archives = 2;
+			afa_register_id_archive(manager, bak_ar);
 		}
 	}
 
