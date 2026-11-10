@@ -78,8 +78,7 @@ class LauncherActivity : Activity(), GameListObserver {
 
         val listView = findViewById<ListView>(R.id.list)
         listView.adapter = adapter
-        findViewById<View>(R.id.import_directory).setOnClickListener { chooseDirectory() }
-        findViewById<View>(R.id.import_zip).setOnClickListener { chooseZip() }
+        findViewById<View>(R.id.install_game).setOnClickListener { openInstallGame() }
         findViewById<View>(R.id.install_mod).setOnClickListener { openInstallMod() }
         findViewById<View>(R.id.save_manager).setOnClickListener { openSaveManager() }
         findViewById<View>(R.id.game_modifier).setOnClickListener { openGameModifier() }
@@ -172,6 +171,24 @@ class LauncherActivity : Activity(), GameListObserver {
                 renderInstallState(gameList.installState)
             }
         }
+    }
+
+    private fun openInstallGame() {
+        if (gameList.installState is InstallState.Installing) return
+        val options = arrayOf(
+            getString(R.string.game_opt_zip),
+            getString(R.string.game_opt_dir)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.action_install_game)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> chooseZip()
+                    1 -> chooseDirectory()
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun openInstallMod() {

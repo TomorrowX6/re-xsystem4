@@ -110,6 +110,9 @@
     <string name="save_clear_confirm_msg">「%2$s」内の全 %1$d 個のセーブファイルを削除しますか？事前にバックアップを推奨します。この操作は元に戻せません。</string>
     <string name="save_cleared_toast">現在のディレクトリのセーブを全て削除しました</string>
 
+    <string name="action_install_game">ゲームインストール</string>
+    <string name="game_opt_zip">ZIPからゲームをインストール (.zip)</string>
+    <string name="game_opt_dir">フォルダからゲームをインストール</string>
     <string name="action_install_mod">MODインストール</string>
     <string name="mod_no_game_installed">先にゲーム本体をインポートしてください。</string>
     <string name="mod_select_game_title">MOD適用先のゲームを選択</string>

@@ -110,6 +110,9 @@
     <string name="save_clear_confirm_msg">确定要清空“%2$s”下的全部 %1$d 个存档文件吗？建议先导出备份，此操作不可恢复。</string>
     <string name="save_cleared_toast">已清空当前目录存档</string>
 
+    <string name="action_install_game">安装游戏</string>
+    <string name="game_opt_zip">从 ZIP 安装游戏 (.zip)</string>
+    <string name="game_opt_dir">从文件夹安装游戏</string>
     <string name="action_install_mod">安装 MOD</string>
     <string name="mod_no_game_installed">请先导入原版游戏，再安装 MOD。</string>
     <string name="mod_select_game_title">选择要安装 MOD 的游戏</string>
