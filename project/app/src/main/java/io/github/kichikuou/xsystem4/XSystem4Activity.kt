@@ -78,6 +78,15 @@ class XSystem4Activity : SDLActivity() {
     override fun getArguments(): Array<String> {
         val saveFolder = intent.getStringExtra(EXTRA_SAVE_DIR)!!
         val gameRoot = intent.getStringExtra(EXTRA_GAME_ROOT)!!
+        GameModifierBridge.markAlreadyLoaded()
+        try {
+            val lockMask = GameModifierBridge.getSavedLockMask(this)
+            GameModifierBridge.nativeSetLiveLocks(lockMask)
+            if ((lockMask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0) {
+                GameModifierBridge.writeStreamerModeForDir(java.io.File(saveFolder), false)
+            }
+        } catch (_: Throwable) {
+        }
         return arrayOf("--save-folder", saveFolder, "--save-format=rsm", gameRoot)
     }
 

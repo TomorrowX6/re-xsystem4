@@ -233,7 +233,7 @@ class GameModifierActivity : Activity() {
         val hasGlobal = File(saveDir, "GlobalSave.asd").isFile || File(saveDir, "Collection.asd").isFile
         val floatOn = GameModifierBridge.isFloatingEnabled(this)
         val streamerOff = GameModifierBridge.isDisableStreamerModeEnabled(this)
-        val lockCount = Integer.bitCount(GameModifierBridge.getSavedLockMask(this))
+        val lockCount = GameModifierBridge.getLiveLockCount(this)
 
         findViewById<TextView>(R.id.mod_target_title).text =
             getString(R.string.save_manager_current_dir, currentTarget.displayName)
@@ -459,7 +459,6 @@ class GameModifierActivity : Activity() {
     // =========================================================================
     private fun showFloatingLocksDialog() {
         val lockDefs = listOf(
-            GameModifierBridge.LOCK_DISABLE_STREAMER_MODE to tr("关闭主播模式 (日不落MOD)", "配信者モード無効化 (MOD)", "Disable Streamer Mode (MOD)"),
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
             GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
@@ -473,7 +472,7 @@ class GameModifierActivity : Activity() {
             GameModifierBridge.LOCK_TREASURE_100 to tr("宝箱100%掉落", "宝箱100%ドロップ", "100% Treasure Drop")
         )
 
-        var lockMask = GameModifierBridge.getSavedLockMask(this)
+        var lockMask = GameModifierBridge.getSavedLockMask(this) and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE.inv()
         val labels = lockDefs.map { it.second }.toTypedArray()
         val checked = BooleanArray(lockDefs.size) { idx ->
             (lockMask and lockDefs[idx].first) != 0
@@ -486,18 +485,13 @@ class GameModifierActivity : Activity() {
                 lockMask = if (isChecked) (lockMask or bit) else (lockMask and bit.inv())
             }
             .setPositiveButton(R.string.ok) { _, _ ->
-                GameModifierBridge.setSavedLockMask(this, lockMask)
-                if (!isGameProcessRunning(this) && ::currentTarget.isInitialized &&
-                    (lockMask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0
-                ) {
-                    GameModifierBridge.writeStreamerModeForDir(currentTarget.saveDir, false)
-                }
+                GameModifierBridge.setLiveLocksOnlyMask(this, lockMask)
                 syncTopSwitches()
                 refreshSummaryText()
                 Toast.makeText(this, tr("锁定设置已保存", "設定を保存しました", "Locks saved"), Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton(tr("全部关闭", "すべて解除", "Clear All")) { _, _ ->
-                GameModifierBridge.setSavedLockMask(this, 0)
+                GameModifierBridge.setLiveLocksOnlyMask(this, 0)
                 syncTopSwitches()
                 refreshSummaryText()
                 Toast.makeText(this, tr("已关闭全部锁定", "すべてのロックを解除しました", "All locks cleared"), Toast.LENGTH_SHORT).show()

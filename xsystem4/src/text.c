@@ -57,12 +57,41 @@ static struct font *load_font(enum font_face type)
 		[FONT_GOTHIC] = XSYS4_DATA_DIR "/" DEFAULT_FONT_GOTHIC,
 		[FONT_MINCHO] = XSYS4_DATA_DIR "/" DEFAULT_FONT_MINCHO
 	};
+	static const char *gbk_gothic_paths[] = {
+#ifdef __ANDROID__
+		"/system/fonts/NotoSansCJK-Regular.ttc",
+		"/system/fonts/NotoSansSC-Regular.otf",
+		"/system/fonts/DroidSansFallback.ttf",
+#else
+		"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+		"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+		"/usr/share/fonts/truetype/NotoSansCJK-Regular.ttc",
+		"/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+		"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+#endif
+	};
+	static const char *gbk_mincho_paths[] = {
+#ifdef __ANDROID__
+		"/system/fonts/NotoSerifCJK-Regular.ttc",
+#else
+		"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+		"/usr/share/fonts/truetype/noto/NotoSerifCJK-Regular.ttc",
+#endif
+	};
 
 	struct font *font;
 	// user specified font
 	if (config.font_paths[type] && (font = ft_font_load(config.font_paths[type])))
 		return font;
 	if (sys4_text_is_gbk) {
+		const char *const *paths = type == FONT_GOTHIC ? gbk_gothic_paths : gbk_mincho_paths;
+		size_t nr_paths = type == FONT_GOTHIC
+			? sizeof(gbk_gothic_paths) / sizeof(gbk_gothic_paths[0])
+			: sizeof(gbk_mincho_paths) / sizeof(gbk_mincho_paths[0]);
+		for (size_t i = 0; i < nr_paths; i++) {
+			if ((font = ft_font_load(paths[i])))
+				return font;
+		}
 		if ((font = ft_font_load(default_font_paths[FONT_MINCHO]))) return font;
 		if ((font = ft_font_load(local_font_paths[FONT_MINCHO]))) return font;
 	}
@@ -83,11 +112,7 @@ void gfx_font_init(void)
 		return;
 	ft_font_init();
 	font_ttf[FONT_GOTHIC] = load_font(FONT_GOTHIC);
-	if (sys4_text_is_gbk && !config.font_paths[FONT_GOTHIC] && !config.font_paths[FONT_MINCHO]) {
-		font_ttf[FONT_MINCHO] = font_ttf[FONT_GOTHIC];
-	} else {
-		font_ttf[FONT_MINCHO] = load_font(FONT_MINCHO);
-	}
+	font_ttf[FONT_MINCHO] = load_font(FONT_MINCHO);
 
 	if (config.fnl_path) {
 		struct fnl *fnl = fnl_open(config.fnl_path);
@@ -277,11 +302,14 @@ float gfx_render_text_mode(Texture *dst, float x, int y, char *msg, struct text_
 	float edge_advance = gfx_text_advance_edges
 		? edge_width + ceilf(ts->bold_width)
 		: 0.f;
+	int edge_y = gfx_text_advance_edges
+		? lroundf(ts->edge_up + ceilf(ts->bold_width))
+		: 0;
 
 	if (edge_width > 0.01f) {
 		struct text_render_metrics metrics = {
 			.x = x,
-			.y = y,
+			.y = y + edge_y,
 			.color = ts->edge_color,
 			.weight = weight,
 			.edge_width = edge_width,
@@ -298,7 +326,7 @@ float gfx_render_text_mode(Texture *dst, float x, int y, char *msg, struct text_
 	}
 	struct text_render_metrics metrics = {
 		.x = x,
-		.y = y,
+		.y = y + edge_y,
 		.color = ts->color,
 		.weight = weight,
 		.edge_width = ts->bold_width,

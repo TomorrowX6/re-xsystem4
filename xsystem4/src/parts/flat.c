@@ -472,9 +472,11 @@ bool parts_flat_load(struct parts *parts, struct parts_flat *f, struct string *f
 		parts_flat_free(f);
 		memset(f, 0, sizeof(struct parts_flat));
 		f->fps_rate = fps_rate;
+		parts_set_dims(parts, &f->common, 0, 0);
+		parts_dirty(parts);
 	}
 
-	if (!filename)
+	if (!filename || !filename->size || !filename->text[0])
 		return false;
 
 	struct archive_data *dfile = asset_get_by_name(ASSET_FLAT, filename->text, NULL);
@@ -1155,7 +1157,7 @@ void parts_flat_foreach_emitter_particle(struct parts_flat *f, int emitter_lib_i
 
 bool PE_ExistsFlatFile(struct string *filename)
 {
-	if (!filename)
+	if (!filename || !filename->size || !filename->text[0])
 		return false;
 	return asset_exists_by_name(ASSET_FLAT, filename->text, NULL);
 }

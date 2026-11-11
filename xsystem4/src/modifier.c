@@ -23,10 +23,13 @@
 #include "vm/page.h"
 #include "input.h"
 #include "modifier.h"
+#include "parts.h"
 #include "savedata.h"
 
 extern bool key_state[VK_NR_KEYCODES];
 static int s_pulse_key0_frames = 0;
+static char *s_pending_cheat_gbk = NULL;
+static int s_cheat_wait_frames = 0;
 
 /* Lock bitmask flags */
 #define LOCK_PARTY_MAX_HP       (1 << 0)
@@ -51,7 +54,7 @@ static int s_pulse_key0_frames = 0;
 #define GBK_STREAMER_PASSPHRASE "\xb9\xe0\xd7\xa2\x45\x69\x6e\x73\xb3\xc2\xd0\xbb\xd0\xbb\xdf\xf7"
 
 static pthread_mutex_t g_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_live_lock_mask = 0;
+static int g_live_lock_mask = LOCK_DISABLE_STREAMER_MODE;
 static char *g_pending_action_json = NULL;
 static char *g_cached_live_state_json = NULL;
 
@@ -762,7 +765,133 @@ static struct page *vm_get_field_page(struct page *page, const char *name1, cons
 static void vm_set_string_slot(int slot, const char *cstr)
 {
 	if (!cstr || slot <= 0 || !string_index_valid(slot)) return;
-	heap_string_assign(slot, make_string(cstr, strlen(cstr)));
+	struct string *s = make_string(cstr, strlen(cstr));
+	heap_string_assign(slot, s);
+	free_string(s);
+}
+
+static void vm_set_player_info_name(struct page *gc, const char *gbk_str)
+{
+	if (!gc || !gbk_str) return;
+	struct page *c2p = vm_get_field_page(gc, "PlayerInfo", "m_chapter2PlayerInfo");
+	if (!c2p) c2p = vm_get_field_page(gc, "<Chapter2PlayerInfo>", NULL);
+	if (c2p && c2p->type == STRUCT_PAGE) {
+		union vm_value *nv = vm_get_struct_member(c2p, "m_playerName", "<Name>");
+		if (!nv) nv = vm_get_struct_member(c2p, "m_name", NULL);
+		if (!nv && c2p->nr_vars > 0) nv = &c2p->values[0];
+		if (nv) vm_set_string_slot(nv->i, gbk_str);
+	}
+}
+
+static void vm_queue_cheat_code_gbk(const char *gbk_str)
+{
+	if (!gbk_str || !gbk_str[0]) return;
+	free(s_pending_cheat_gbk);
+	s_pending_cheat_gbk = strdup(gbk_str);
+	s_cheat_wait_frames = 180;
+}
+
+static void vm_queue_cheat_code_utf8(const char *utf8_str)
+{
+	if (!utf8_str || !utf8_str[0]) return;
+	if (!strcmp(utf8_str, "灌注Eins陈谢谢喵") || !strcmp(utf8_str, "关注Eins陈谢谢喵")) {
+		struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
+		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
+	}
+	if (sys4_text_is_gbk)
+		sys4_set_text_gbk(true);
+	char *gbk = utf2sjis(utf8_str, 0);
+	if (gbk) {
+		if (gbk[0]) {
+			free(s_pending_cheat_gbk);
+			s_pending_cheat_gbk = gbk;
+			s_cheat_wait_frames = 180;
+		} else {
+			free(gbk);
+		}
+	}
+}
+
+static void vm_step_pending_cheat(void)
+{
+	if (!s_pending_cheat_gbk)
+		return;
+	if (!ain || !ain->functions || call_stack_ptr <= 0)
+		return;
+
+	bool in_run_char_setting = false;
+	int scs_frame = -1;
+	struct page *scs_page = NULL;
+
+	for (int i = 0; i < call_stack_ptr; i++) {
+		int32_t fno = call_stack[i].fno;
+		if (fno < 0 || fno >= ain->nr_functions)
+			continue;
+		const char *fname = ain->functions[fno].name;
+		if (!fname)
+			continue;
+		if (!strcmp(fname, "Scenes::RunCharacterSetting")) {
+			in_run_char_setting = true;
+		} else if (!strcmp(fname, "SceneCharacterSetting@Run")) {
+			in_run_char_setting = true;
+			scs_frame = i;
+			scs_page = vm_safe_get_page(call_stack[i].struct_page);
+		}
+	}
+
+	if (scs_page && scs_frame >= 0) {
+		struct page *scs_ss = vm_get_field_page(scs_page, "m_sceneStack", NULL);
+		bool in_join = false;
+		for (int i = scs_frame + 1; i < call_stack_ptr; i++) {
+			int32_t fno = call_stack[i].fno;
+			if (fno < 0 || fno >= ain->nr_functions)
+				continue;
+			const char *fname = ain->functions[fno].name;
+			if (fname && !strcmp(fname, "SceneStack@Join")) {
+				struct page *join_ss = vm_safe_get_page(call_stack[i].struct_page);
+				if (!scs_ss || join_ss == scs_ss) {
+					if (!scs_ss) scs_ss = join_ss;
+					in_join = true;
+					break;
+				}
+			}
+		}
+		if (in_join && scs_ss) {
+			key_state[VK_0] = false;
+			s_pulse_key0_frames = 0;
+			union vm_value *cur_v = vm_get_struct_member(scs_page, "m_current", NULL);
+			if (cur_v) {
+				vm_set_string_slot(cur_v->i, s_pending_cheat_gbk);
+			}
+			struct page *gc = vm_get_global_page("g_gameContext", NULL);
+			vm_set_player_info_name(gc, s_pending_cheat_gbk);
+			vm_set_field_int(scs_ss, "<IsFinish>", "m_isFinish", 1);
+			int idx_end_busy = vm_find_global_idx("parts::detail::g_EndPartsBusyLoop", NULL);
+			if (idx_end_busy >= 0)
+				global_set(idx_end_busy, vm_int(1), false);
+			int idx_end_num = vm_find_global_idx("parts::detail::g_EndPartsBusyLoopNumber", NULL);
+			if (idx_end_num >= 0)
+				global_set(idx_end_num, vm_int(0), false);
+			PE_ReleaseMessage();
+			free(s_pending_cheat_gbk);
+			s_pending_cheat_gbk = NULL;
+			s_cheat_wait_frames = 0;
+			return;
+		}
+	}
+
+	if (in_run_char_setting) {
+		key_state[VK_0] = false;
+	} else {
+		key_state[VK_0] = true;
+	}
+
+	if (--s_cheat_wait_frames <= 0) {
+		key_state[VK_0] = false;
+		free(s_pending_cheat_gbk);
+		s_pending_cheat_gbk = NULL;
+		s_cheat_wait_frames = 0;
+	}
 }
 
 static int32_t vm_get_tt(int idx, int32_t def_val)
@@ -1093,17 +1222,18 @@ static void vm_execute_pending_action(const char *json_str)
 	if ((it = cJSON_GetObjectItem(act, "streamerMode")) && cJSON_IsNumber(it)) {
 		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, it->valueint != 0 ? 1 : 0);
 	}
-	if ((it = cJSON_GetObjectItem(act, "fillStreamerPassphrase")) &&
-	    (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+	if ((it = cJSON_GetObjectItem(act, "cheatCode")) && cJSON_IsString(it) &&
+	    it->valuestring && it->valuestring[0]) {
+		vm_queue_cheat_code_utf8(it->valuestring);
+	} else if ((it = cJSON_GetObjectItem(act, "fillStreamerPassphrase")) &&
+	           (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
 		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
-		struct page *c2p = vm_get_field_page(gc, "m_chapter2PlayerInfo", "<Chapter2PlayerInfo>");
-		if (c2p && c2p->type == STRUCT_PAGE) {
-			union vm_value *nv = vm_get_struct_member(c2p, "<Name>", "m_name");
-			if (!nv && c2p->nr_vars > 0) nv = &c2p->values[0];
-			if (nv) vm_set_string_slot(nv->i, GBK_STREAMER_PASSPHRASE);
-		}
+		vm_set_player_info_name(gc, GBK_STREAMER_PASSPHRASE);
+		vm_queue_cheat_code_gbk(GBK_STREAMER_PASSPHRASE);
 	}
-	if ((it = cJSON_GetObjectItem(act, "triggerKey0")) && (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+	if (!s_pending_cheat_gbk &&
+	    (it = cJSON_GetObjectItem(act, "triggerKey0")) &&
+	    (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
 		s_pulse_key0_frames = 8;
 		key_state[VK_0] = true;
 	}
@@ -1349,6 +1479,36 @@ void modifier_on_frame(void)
 	static uint32_t s_frame_tick = 0;
 	s_frame_tick++;
 
+#ifndef __ANDROID__
+	static bool s_env_checked = false;
+	static const char *s_action_file = NULL;
+	if (!s_env_checked) {
+		s_action_file = getenv("XSYS4_MOD_ACTION_FILE");
+		s_env_checked = true;
+	}
+	if (s_action_file && s_action_file[0] && (s_frame_tick % 10 == 1)) {
+		FILE *afp = fopen(s_action_file, "rb");
+		if (afp) {
+			if (fseek(afp, 0, SEEK_END) == 0) {
+				long sz = ftell(afp);
+				if (sz > 0 && sz < 65536 && fseek(afp, 0, SEEK_SET) == 0) {
+					char *abuf = malloc((size_t)sz + 1);
+					if (abuf) {
+						size_t rd = fread(abuf, 1, (size_t)sz, afp);
+						abuf[rd] = '\0';
+						pthread_mutex_lock(&g_mod_mutex);
+						free(g_pending_action_json);
+						g_pending_action_json = abuf;
+						pthread_mutex_unlock(&g_mod_mutex);
+					}
+				}
+			}
+			fclose(afp);
+			remove(s_action_file);
+		}
+	}
+#endif
+
 	pthread_mutex_lock(&g_mod_mutex);
 	char *pending = g_pending_action_json;
 	g_pending_action_json = NULL;
@@ -1359,7 +1519,9 @@ void modifier_on_frame(void)
 		vm_execute_pending_action(pending);
 		free(pending);
 	}
-	if (s_pulse_key0_frames > 0) {
+	if (s_pending_cheat_gbk) {
+		vm_step_pending_cheat();
+	} else if (s_pulse_key0_frames > 0) {
 		key_state[VK_0] = true;
 		if (--s_pulse_key0_frames == 0)
 			key_state[VK_0] = false;

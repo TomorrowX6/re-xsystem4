@@ -11,6 +11,7 @@ object GameModifierBridge {
     private const val PREFS_NAME = "game_modifier_prefs"
     private const val CONFIG_FILE_NAME = "modifier_config.json"
     private const val KEY_FLOATING_ENABLED = "floating_enabled"
+    private const val KEY_DISABLE_STREAMER_MODE = "disable_streamer_mode"
     private const val KEY_LOCK_MASK = "lock_mask"
     private const val FULL_UNLOCK_ASSET = "full_unlock_saves.zip"
     private const val UNLOCK_BAK_SUFFIX = ".unlock.bak"
@@ -54,18 +55,57 @@ object GameModifierBridge {
         val cfgFile = File(context.filesDir, CONFIG_FILE_NAME)
         if (cfgFile.isFile) {
             try {
-                return JSONObject(cfgFile.readText())
+                val json = JSONObject(cfgFile.readText())
+                val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
+                    json.optBoolean(KEY_DISABLE_STREAMER_MODE, true)
+                } else {
+                    true
+                }
+                val rawMask = json.optInt(KEY_LOCK_MASK, 0)
+                val mask = if (disableStreamer) {
+                    rawMask or LOCK_DISABLE_STREAMER_MODE
+                } else {
+                    rawMask and LOCK_DISABLE_STREAMER_MODE.inv()
+                }
+                json.put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
+                json.put(KEY_LOCK_MASK, mask)
+                return json
             } catch (_: Throwable) {
             }
         }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val disableStreamer = if (prefs.contains(KEY_DISABLE_STREAMER_MODE)) {
+            prefs.getBoolean(KEY_DISABLE_STREAMER_MODE, true)
+        } else {
+            true
+        }
+        val rawMask = prefs.getInt(KEY_LOCK_MASK, 0)
+        val mask = if (disableStreamer) {
+            rawMask or LOCK_DISABLE_STREAMER_MODE
+        } else {
+            rawMask and LOCK_DISABLE_STREAMER_MODE.inv()
+        }
         return JSONObject().apply {
             put(KEY_FLOATING_ENABLED, prefs.getBoolean(KEY_FLOATING_ENABLED, false))
-            put(KEY_LOCK_MASK, prefs.getInt(KEY_LOCK_MASK, 0))
+            put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
+            put(KEY_LOCK_MASK, mask)
         }
     }
 
     private fun writeConfigJson(context: Context, json: JSONObject) {
+        val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
+            json.optBoolean(KEY_DISABLE_STREAMER_MODE, true)
+        } else {
+            (json.optInt(KEY_LOCK_MASK, LOCK_DISABLE_STREAMER_MODE) and LOCK_DISABLE_STREAMER_MODE) != 0
+        }
+        val rawMask = json.optInt(KEY_LOCK_MASK, 0)
+        val mask = if (disableStreamer) {
+            rawMask or LOCK_DISABLE_STREAMER_MODE
+        } else {
+            rawMask and LOCK_DISABLE_STREAMER_MODE.inv()
+        }
+        json.put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
+        json.put(KEY_LOCK_MASK, mask)
         try {
             val cfgFile = File(context.filesDir, CONFIG_FILE_NAME)
             val tmpFile = File(context.filesDir, "$CONFIG_FILE_NAME.tmp")
@@ -79,7 +119,8 @@ object GameModifierBridge {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
             .putBoolean(KEY_FLOATING_ENABLED, json.optBoolean(KEY_FLOATING_ENABLED, false))
-            .putInt(KEY_LOCK_MASK, json.optInt(KEY_LOCK_MASK, 0))
+            .putBoolean(KEY_DISABLE_STREAMER_MODE, disableStreamer)
+            .putInt(KEY_LOCK_MASK, mask)
             .commit()
     }
 
@@ -94,11 +135,16 @@ object GameModifierBridge {
     }
 
     fun getSavedLockMask(context: Context): Int {
-        return readConfigJson(context).optInt(KEY_LOCK_MASK, 0)
+        return readConfigJson(context).optInt(KEY_LOCK_MASK, LOCK_DISABLE_STREAMER_MODE)
+    }
+
+    fun getLiveLockCount(context: Context): Int {
+        return Integer.bitCount(getSavedLockMask(context) and LOCK_DISABLE_STREAMER_MODE.inv())
     }
 
     fun setSavedLockMask(context: Context, mask: Int) {
         val json = readConfigJson(context)
+        json.put(KEY_DISABLE_STREAMER_MODE, (mask and LOCK_DISABLE_STREAMER_MODE) != 0)
         json.put(KEY_LOCK_MASK, mask)
         writeConfigJson(context, json)
         if (loaded) {
@@ -109,8 +155,18 @@ object GameModifierBridge {
         }
     }
 
+    fun setLiveLocksOnlyMask(context: Context, liveMask: Int) {
+        val keepStreamer = isDisableStreamerModeEnabled(context)
+        val merged = if (keepStreamer) {
+            (liveMask and LOCK_DISABLE_STREAMER_MODE.inv()) or LOCK_DISABLE_STREAMER_MODE
+        } else {
+            liveMask and LOCK_DISABLE_STREAMER_MODE.inv()
+        }
+        setSavedLockMask(context, merged)
+    }
+
     fun isDisableStreamerModeEnabled(context: Context): Boolean {
-        return (getSavedLockMask(context) and LOCK_DISABLE_STREAMER_MODE) != 0
+        return readConfigJson(context).optBoolean(KEY_DISABLE_STREAMER_MODE, true)
     }
 
     fun setDisableStreamerModeEnabled(context: Context, enabled: Boolean) {

@@ -26,6 +26,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private var rootOverlay: FrameLayout? = null
     private var floatingBtn: ImageView? = null
+    private var lastCheatCode: String = ""
 
     private val isZh: Boolean
         get() = Locale.getDefault().language.startsWith("zh")
@@ -173,7 +174,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         val inGame = j.optBoolean("inGame", false)
         val inBattle = j.optBoolean("inBattle", false)
         val savedMask = GameModifierBridge.getSavedLockMask(activity)
-        val lockCount = Integer.bitCount(savedMask)
+        val lockCount = GameModifierBridge.getLiveLockCount(activity)
         val streamerLockOff = (savedMask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0
         val liveStreamerMode = j.optInt("streamerMode", if (streamerLockOff) 0 else 1)
         val isStreamerDisabled = streamerLockOff || (j.has("streamerMode") && liveStreamerMode == 0)
@@ -201,6 +202,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         val items = arrayOf(
             tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…"),
             streamerItemLabel,
+            tr("输入作弊码…", "チートコード入力…", "Enter Cheat Code…"),
             tr("战斗快捷指令…", "戦闘クイック操作…", "Battle Quick Actions…"),
             tr("一键全局强化…", "一括強化プリセット…", "One-Click Boosts…"),
             tr("修改资源与回合…", "リソース・ターン編集…", "Edit Resources & Turn…"),
@@ -224,13 +226,14 @@ class FloatingModifierOverlay(private val activity: Activity) {
                             else tr("已重新开启主播模式", "配信者モードを有効化しました", "Streamer Mode enabled")
                         )
                     }
-                    2 -> showBattleQuickDialog()
-                    3 -> showOneClickBoostDialog()
-                    4 -> showEditResourcesDialog(j)
-                    5 -> showEditPartyDialog(j)
-                    6 -> showEditWorldDialog(j)
-                    7 -> showEditCardsDialog()
-                    8 -> {
+                    2 -> showCheatCodeDialog()
+                    3 -> showBattleQuickDialog()
+                    4 -> showOneClickBoostDialog()
+                    5 -> showEditResourcesDialog(j)
+                    6 -> showEditPartyDialog(j)
+                    7 -> showEditWorldDialog(j)
+                    8 -> showEditCardsDialog()
+                    9 -> {
                         floatingBtn?.visibility = View.GONE
                         Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
                     }
@@ -242,7 +245,6 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showLocksDialog() {
         val lockDefs = listOf(
-            GameModifierBridge.LOCK_DISABLE_STREAMER_MODE to tr("关闭主播模式 (日不落MOD)", "配信者モード無効化 (MOD)", "Disable Streamer Mode (MOD)"),
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
             GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
@@ -255,7 +257,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             GameModifierBridge.LOCK_MAX_RESOURCES to tr("资源不低于999", "チケット・勲章999維持", "Keep Resources >= 999"),
             GameModifierBridge.LOCK_TREASURE_100 to tr("宝箱100%掉落", "宝箱100%ドロップ", "100% Treasure Drop")
         )
-        var mask = GameModifierBridge.getSavedLockMask(activity)
+        var mask = GameModifierBridge.getSavedLockMask(activity) and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE.inv()
         val labels = lockDefs.map { it.second }.toTypedArray()
         val checked = BooleanArray(lockDefs.size) { idx -> (mask and lockDefs[idx].first) != 0 }
 
@@ -266,20 +268,104 @@ class FloatingModifierOverlay(private val activity: Activity) {
                 mask = if (isChecked) (mask or bit) else (mask and bit.inv())
             }
             .setPositiveButton(R.string.ok) { _, _ ->
-                GameModifierBridge.setSavedLockMask(activity, mask)
-                if ((mask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0) {
-                    try {
-                        GameModifierBridge.nativeApplyLiveAction(JSONObject().put("streamerMode", 0).toString())
-                    } catch (_: Throwable) {
-                    }
-                }
+                GameModifierBridge.setLiveLocksOnlyMask(activity, mask)
                 Toast.makeText(activity, tr("已更新锁定项", "ロックを更新しました", "Locks updated"), Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton(tr("全部关闭", "全解除", "Clear All")) { _, _ ->
-                GameModifierBridge.setSavedLockMask(activity, 0)
+                GameModifierBridge.setLiveLocksOnlyMask(activity, 0)
                 Toast.makeText(activity, tr("已关闭全部锁定", "全解除しました", "All locks cleared"), Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showCheatCodeDialog(prefill: String = lastCheatCode) {
+        val container = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(6))
+        }
+        val tip = TextView(activity).apply {
+            text = tr(
+                "输入后自动呼出MOD作弊器并提交生效（无需外接键盘按0，不含双引号）：",
+                "入力すると自動的にMODチートを実行します：",
+                "Automatically opens MOD cheat input and submits:"
+            )
+            setPadding(0, 0, 0, dp(8))
+        }
+        val et = EditText(activity).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            hint = tr("例如：whosyourdaddy / 打败哈尼王 / 餐券10", "例: whosyourdaddy", "e.g. whosyourdaddy")
+            setSingleLine(true)
+            setText(prefill)
+            setSelection(text.length)
+        }
+        container.addView(tip)
+        container.addView(et)
+
+        AlertDialog.Builder(activity)
+            .setTitle(tr("输入作弊码 (日不落MOD)", "チートコード入力 (MOD)", "Enter Cheat Code (MOD)"))
+            .setView(container)
+            .setPositiveButton(tr("执行", "実行", "Apply")) { _, _ ->
+                val code = et.text.toString().trim().trim('"', '“', '”')
+                if (code.isEmpty()) {
+                    Toast.makeText(
+                        activity,
+                        tr("请输入作弊码", "コードを入力してください", "Please enter a cheat code"),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    lastCheatCode = code
+                    if (code == "灌注Eins陈谢谢喵" || code == "关注Eins陈谢谢喵") {
+                        GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
+                    }
+                    sendAction(
+                        JSONObject().put("cheatCode", code),
+                        tr("已提交作弊码：$code", "チート送信：$code", "Cheat submitted: $code")
+                    )
+                }
+            }
+            .setNeutralButton(tr("常用作弊码…", "定型コード…", "Presets…")) { _, _ ->
+                showCheatCodePresetsDialog()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showCheatCodePresetsDialog() {
+        val presets = listOf(
+            "灌注Eins陈谢谢喵" to tr("关闭主播模式口令 (灌注Eins陈谢谢喵)", "配信者モード解除パス", "Disable Streamer Mode Passphrase"),
+            "1123029976" to tr("解禁全部作弊码限制 (1123029976)", "全チート制限解除 (1123029976)", "Unlock All Cheat Restrictions (1123029976)"),
+            "whosyourdaddy" to tr("击杀当前敌人 (whosyourdaddy)", "敵を即撃破 (whosyourdaddy)", "Kill Enemy (whosyourdaddy)"),
+            "血量全满" to tr("战斗中我方血量全满 (血量全满)", "戦闘中の味方HP全回復", "Full Party HP in Battle (血量全满)"),
+            "重开" to tr("重新开始当前战斗 (重开)", "現在の戦闘をやり直す", "Restart Battle (重开)"),
+            "打败哈尼王" to tr("开启兰斯世界模式 (打败哈尼王)", "ランスワールド解放", "Unlock Rance World (打败哈尼王)"),
+            "111" to tr("遗物图鉴全展示 (111)", "遺物図鑑全表示 (111)", "Show All Relics (111)"),
+            "panzer" to tr("获得游戏管理者卡牌 (panzer)", "ゲーム管理者獲得 (panzer)", "Get Game Admin Card (panzer)"),
+            "餐券10" to tr("增加10张餐券 (餐券10，可改数字)", "食券+10 (数字変更可)", "Add 10 Food Tickets (餐券10)"),
+            "部队点数up10" to tr("增加10点部队点数 (部队点数up10，可改数字)", "部隊P+10 (数字変更可)", "Add 10 Party Points (部队点数up10)"),
+            "exp道具" to tr("获得1个EXP道具 (exp道具)", "EXPアイテム獲得", "Get 1 EXP Item (exp道具)"),
+            "难度up4" to tr("难度+4 (难度up4，可改负数降难度)", "難易度+4 (負数で低下)", "Difficulty +4 (难度up4)"),
+            "4000flag200" to tr("等级上限额外+200 (4000flag200)", "Lv上限+200 (4000flag200)", "Level Cap +200 (4000flag200)"),
+            "1505flag1" to tr("开启装备解封模式 (1505flag1)", "装備解放モードON (1505flag1)", "Unlock Equipment Mode (1505flag1)"),
+            "1522flag1" to tr("重置任务技能状态 (1522flag1)", "クエストスキル回数リセット", "Reset Quest Skills (1522flag1)"),
+            "2222flag0" to tr("清空敌方盾与复生 (2222flag0)", "敵の盾・蘇生解除 (2222flag0)", "Clear Enemy Shield/Revive (2222flag0)"),
+            "2233flag0" to tr("清空敌方自动恢复次数 (2233flag0)", "敵の自動回復解除 (2233flag0)", "Clear Enemy Auto-Heal (2233flag0)"),
+            "Lv42 兰斯卡牌追加" to tr("追加指定卡牌模板 (Lv42 兰斯卡牌追加)", "指定カード追加テンプレート", "Add Card Template (Lv42 兰斯卡牌追加)"),
+            "技能识别" to tr("识别正中间角色技能编号 (技能识别)", "中央キャラのスキルID確認", "Identify Center Leader Skills (技能识别)"),
+            "装备识别" to tr("识别当前武器与防具代码 (装备识别)", "現在装備のID確認", "Identify Current Equipment IDs (装备识别)"),
+            "梗概关闭" to tr("关闭梗概模式 (梗概关闭)", "ダイジェストモードOFF", "Disable Summary Mode (梗概关闭)")
+        )
+        val labels = presets.map { it.second }.toTypedArray()
+        AlertDialog.Builder(activity)
+            .setTitle(tr("选择常用作弊码", "定型チートコード選択", "Cheat Code Presets"))
+            .setItems(labels) { _, which ->
+                val chosen = presets[which].first
+                lastCheatCode = chosen
+                showCheatCodeDialog(chosen)
+            }
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                showCheatCodeDialog()
+            }
             .show()
     }
 
@@ -424,9 +510,8 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         sendAction(
                             JSONObject()
                                 .put("streamerMode", 0)
-                                .put("fillStreamerPassphrase", true)
-                                .put("triggerKey0", true),
-                            tr("已关闭主播模式并自动填入“灌注Eins陈谢谢喵”（同时已复制剪贴板）", "パスフレーズを自動入力してキー0を送信しました", "Passphrase filled & Key 0 sent")
+                                .put("cheatCode", pass),
+                            tr("已关闭主播模式并自动提交“灌注Eins陈谢谢喵”", "パスフレーズを自動送信しました", "Passphrase auto-submitted")
                         )
                     }
                     6 -> sendAction(

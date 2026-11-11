@@ -15,10 +15,12 @@
  */
 
 #include <math.h>
+#include <string.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_BITMAP_H
 #include FT_ADVANCES_H
+#include FT_TRUETYPE_TABLES_H
 #include <SDL.h>
 
 #include "system4.h"
@@ -78,7 +80,14 @@ static struct font_size *ft_font_get_size(struct font *_font, float size)
 		ERROR("Exceeded maximum number of font sizes");
 	struct font_size *fs = &font->sizes[font->nr_sizes++];
 	fs->size = size;
-	fs->y_offset = -roundf(size * 0.15f);
+	float desc_ratio = 0.15f;
+	TT_OS2 *os2 = FT_Get_Sfnt_Table(font->font, FT_SFNT_OS2);
+	if (os2 && font->font->units_per_EM > 0 && os2->sTypoAscender > 0
+			&& os2->sTypoAscender < (FT_Short)font->font->units_per_EM) {
+		desc_ratio = (float)(font->font->units_per_EM - os2->sTypoAscender)
+			/ (float)font->font->units_per_EM;
+	}
+	fs->y_offset = -roundf(size * desc_ratio);
 	fs->font = _font;
 	fs->glyph_table = ht_create(4096);
 	return fs;
@@ -146,6 +155,19 @@ static bool ft_font_get_glyph(struct font_size *size, struct glyph *glyph, uint3
 	if (FT_Load_Char(font->font, code, FT_LOAD_RENDER)) {
 		WARNING("Failed to load glyph for codepoint 0x%x", code);
 		return false;
+	}
+	if (half_width && size->size >= 4) {
+		int cell_w = size->size / 2;
+		float adv_px = font->font->glyph->advance.x / 64.0f;
+		if (cell_w > 0 && adv_px > (float)cell_w + 0.5f) {
+			unsigned x_ppem = (unsigned)floorf((float)size->size * (float)cell_w / adv_px);
+			if (x_ppem < 1)
+				x_ppem = 1;
+			if (!FT_Set_Pixel_Sizes(font->font, x_ppem, size->size)) {
+				font->current_size = 0;
+				FT_Load_Char(font->font, code, FT_LOAD_RENDER);
+			}
+		}
 	}
 	if (weight != FONT_WEIGHT_NORMAL) {
 		int bold_weight = weight == FONT_WEIGHT_HEAVY ? 128 : 64;
@@ -247,19 +269,67 @@ static uint8_t *load_asset_chunked(const char *path, size_t *size_out)
 }
 #endif
 
+static bool is_sc_face_name(const char *family)
+{
+	if (!family)
+		return false;
+	return strstr(family, " SC") != NULL || strstr(family, "CN") != NULL;
+}
+
+static void select_gbk_ttc_face(const char *path, const FT_Byte *mem, FT_Long mem_size, FT_Face *face_io)
+{
+	FT_Face cur = *face_io;
+	if (!sys4_text_is_gbk || !cur || cur->num_faces <= 1)
+		return;
+	if (is_sc_face_name(cur->family_name) && strstr(cur->family_name, "Mono") != NULL)
+		return;
+
+	FT_Long num_faces = cur->num_faces;
+	FT_Face fallback_sc = NULL;
+	for (FT_Long i = 1; i < num_faces; i++) {
+		FT_Face cand = NULL;
+		FT_Error err = mem
+			? FT_New_Memory_Face(ft_lib, mem, mem_size, i, &cand)
+			: FT_New_Face(ft_lib, path, i, &cand);
+		if (err || !cand)
+			continue;
+		if (cand->charmap && is_sc_face_name(cand->family_name)) {
+			// Prefer the Mono SC face (0.5em half-width ASCII + full-width SC CJK,
+			// matching Windows SimHei / MS Gothic fixed-cell metrics).
+			if (strstr(cand->family_name, "Mono") != NULL) {
+				if (fallback_sc)
+					FT_Done_Face(fallback_sc);
+				FT_Done_Face(cur);
+				*face_io = cand;
+				return;
+			}
+			if (!fallback_sc) {
+				fallback_sc = cand;
+				continue;
+			}
+		}
+		FT_Done_Face(cand);
+	}
+	if (fallback_sc) {
+		FT_Done_Face(cur);
+		*face_io = fallback_sc;
+	}
+}
+
 struct font *ft_font_load(const char *path)
 {
 	if (!path || !path[0])
 		return NULL;
+	if (path[0] == '/' && !file_exists(path))
+		return NULL;
 #ifdef __ANDROID__
 	if (path[0] == '/') {
-		if (!file_exists(path))
-			return NULL;
 		struct font_ft *font = xcalloc(1, sizeof(struct font_ft));
 		if (FT_New_Face(ft_lib, path, 0, &font->font)) {
 			free(font);
 			return NULL;
 		}
+		select_gbk_ttc_face(path, NULL, 0, &font->font);
 		if (!font->font->charmap) {
 			FT_Done_Face(font->font);
 			free(font);
@@ -291,11 +361,17 @@ struct font *ft_font_load(const char *path)
 		free(font);
 		return NULL;
 	}
+	select_gbk_ttc_face(path, buf, (FT_Long)size, &font->font);
 #else
+	if (!file_exists(path)) {
+		free(font);
+		return NULL;
+	}
 	if (FT_New_Face(ft_lib, path, 0, &font->font)) {
 		free(font);
 		return NULL;
 	}
+	select_gbk_ttc_face(path, NULL, 0, &font->font);
 #endif
 
 	if (!font->font->charmap) {

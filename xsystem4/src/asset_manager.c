@@ -119,7 +119,7 @@ bool asset_exists(enum asset_type type, int id)
 
 bool asset_exists_by_name(enum asset_type type, const char *name, int *id_out)
 {
-	if (!assets[type])
+	if (!assets[type] || !name || !name[0])
 		return false;
 	if (!assets[type]->exists_by_name)
 		ERROR("exists_by_name not supported on this archive type");
@@ -135,7 +135,7 @@ struct archive_data *asset_get(enum asset_type type, int id)
 
 struct archive_data *asset_get_by_name(enum asset_type type, const char *name, int *id_out)
 {
-	if (!assets[type])
+	if (!assets[type] || !name || !name[0])
 		return NULL;
 	if (!assets[type]->get_by_name)
 		ERROR("get_by_name not supported on this archive type");

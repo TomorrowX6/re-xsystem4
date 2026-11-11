@@ -59,6 +59,8 @@ static enum asset_type get_asset_type(int type)
 
 static bool AFAFactory_IsExistArchive(struct string *name)
 {
+	if (!name || !name->size || !name->text[0])
+		return false;
 	char *path = gamedir_path_icase(name->text);
 	bool exists = path && file_exists(path);
 	free(path);
@@ -79,6 +81,8 @@ bool AFAFactory_LoadArchive(int type, struct string *archive_name)
 		WARNING("Unknown asset type: %d", type);
 		return false;
 	}
+	if (!archive_name || !archive_name->size || !archive_name->text[0])
+		return false;
 	bool loaded = asset_manager_load_archive(t, archive_name->text);
 	if (loaded) clear_index(&indices[t]);
 	return loaded;
@@ -106,7 +110,13 @@ static void collect_title(struct archive_data *data, void *user)
 
 static int compare_title(const void *a, const void *b)
 {
-	return strcmp(*(char *const *)b, *(char *const *)a);
+	const signed char *pa = *(const signed char *const *)a;
+	const signed char *pb = *(const signed char *const *)b;
+	while (*pa && *pa == *pb) {
+		pa++;
+		pb++;
+	}
+	return (int)*pb - (int)*pa;
 }
 
 static struct title_index *title_index(int type)
@@ -144,9 +154,10 @@ static int AFAFactory_SearchTitle(int type, struct string *name)
 {
 	struct title_index *index = title_index(type);
 	if (!index) return 0;
+	index->match_count = 0;
+	if (!name) return 0;
 	char *query = normalize_title(name->text);
 	index->matches = xrealloc(index->matches, max(1, index->count) * sizeof(*index->matches));
-	index->match_count = 0;
 	// v12 uses substring matching for all three search entry points,
 	// including PrefixSearchTitle and SuffixSearchTitle (reference verified).
 	for (int i = 0; i < index->count; i++)
