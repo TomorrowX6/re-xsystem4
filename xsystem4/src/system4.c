@@ -881,6 +881,14 @@ static void error_handler(const char *msg)
 
 int main(int argc, char *argv[])
 {
+#ifdef __ANDROID__
+	static bool sdl_main_entered = false;
+	if (sdl_main_entered) {
+		WARNING("Prevented duplicate SDL_main re-entry in :game process");
+		return 0;
+	}
+	sdl_main_entered = true;
+#endif
 	sys_error_handler = error_handler;
 	sys_warning_handler = warning_handler;
 #ifndef _WIN32

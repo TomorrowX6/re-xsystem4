@@ -1,4 +1,5 @@
 /* PACT v6 / parts v34 layouts and activity ownership, GPL-2.0-or-later. */
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,9 +17,11 @@
 #include "parts_widgets.h"
 #include "parts_scrollbar.h"
 #include "parts_message_window.h"
+#include "vm/heap.h"
 #include "vm/page.h"
 #include "xsystem4.h"
 #include "parts_internal.h"
+#include "../hll/iarray.h"
 
 struct activity_part {
 	struct string *name;
@@ -119,7 +122,7 @@ bool PE_ReleaseActivity(struct string *name, struct page **erased)
 			free_string(p->name);
 			free(p);
 		}
-		mainex_v12_unregister(a->ex_id);
+		mainex_v12_unregister_activity(a->ex_id);
 		free_string(a->name);
 		free_string(a->background);
 		free_string(a->ex_text);
@@ -196,7 +199,7 @@ void PE_SetActivityEXText(struct string *name, struct string *text)
 	if (text->size) VM_ERROR("Nonempty PACT EX text is not yet supported");
 	free_string(a->ex_text);
 	a->ex_text = string_dup(text);
-	mainex_v12_unregister(a->ex_id);
+	mainex_v12_unregister_activity(a->ex_id);
 	a->ex_id = mainex_v12_register(xcalloc(1, sizeof(struct ex)));
 }
 
@@ -539,6 +542,7 @@ static void load_part(struct activity *a, struct ex_tree *tree, int parent, bool
 	PE_SetClickable(no, number(tree, "点击許可", 0));
 	PE_SetPassCursor(no, number(tree, "光标选中透過", 0));
 	PE_SetDrag(no, number(tree, "ドラッグ", 0));
+	p->swipe_type = number(tree, "滑动", 0);
 	PE_SetComment(no, str(tree, "批注"));
 	PE_SetPartsMessageWindowShowLink(no, number(tree, "消息窗口表示連動", 0));
 	PE_SetComponentMargin(no, item(tree, "边距", 0, 0), item(tree, "边距", 1, 0), item(tree, "边距", 2, 0), item(tree, "边距", 3, 0));
@@ -797,4 +801,236 @@ bool PE_ReadActivityFile(struct string *name, struct string *file, bool edit)
 	PE_UpdateComponent(0);
 	ex_free(ex);
 	return true;
+}
+
+static void free_activity_metadata(struct activity *a)
+{
+	while (a->parts) {
+		struct activity_part *p = a->parts;
+		a->parts = p->next;
+		free_string(p->name);
+		free(p);
+	}
+	mainex_v12_unregister_activity(a->ex_id);
+	free_string(a->name);
+	free_string(a->background);
+	free_string(a->ex_text);
+	free(a->keys);
+	free(a);
+}
+
+static void clear_activities_metadata(void)
+{
+	while (activities) {
+		struct activity *a = activities;
+		activities = a->next;
+		free_activity_metadata(a);
+	}
+}
+
+void parts_activities_save(struct iarray_writer *w)
+{
+	int nr_activities = 0;
+	for (struct activity *a = activities; a; a = a->next)
+		nr_activities++;
+	iarray_write(w, nr_activities);
+	for (struct activity *a = activities; a; a = a->next) {
+		iarray_write_string(w, a->name);
+		iarray_write_string(w, a->background);
+		iarray_write_string(w, a->ex_text);
+		iarray_write(w, a->ex_id);
+		iarray_write(w, a->nr_keys);
+		for (int i = 0; i < a->nr_keys; i++)
+			iarray_write(w, a->keys[i]);
+		int nr_parts = 0;
+		for (struct activity_part *p = a->parts; p; p = p->next) {
+			if (parts_try_get(p->no))
+				nr_parts++;
+		}
+		iarray_write(w, nr_parts);
+		for (struct activity_part *p = a->parts; p; p = p->next) {
+			if (!parts_try_get(p->no))
+				continue;
+			iarray_write_string(w, p->name);
+			iarray_write(w, p->no);
+			iarray_write(w, p->closed);
+			iarray_write(w, p->locked);
+		}
+	}
+}
+
+void parts_activities_load(struct iarray_reader *r)
+{
+	clear_activities_metadata();
+	int nr_activities = iarray_read(r);
+	if (nr_activities < 0)
+		return;
+	struct activity **tail = &activities;
+	for (int i = 0; i < nr_activities; i++) {
+		struct activity *a = xcalloc(1, sizeof(*a));
+		a->name = iarray_read_string(r);
+		a->background = iarray_read_string(r);
+		a->ex_text = iarray_read_string(r);
+		int saved_ex_id = iarray_read(r);
+		a->ex_id = saved_ex_id >= 2
+			? mainex_v12_register_at(saved_ex_id, xcalloc(1, sizeof(struct ex)))
+			: -1;
+		a->nr_keys = iarray_read(r);
+		a->keys = a->nr_keys > 0 ? xmalloc(a->nr_keys * sizeof(int)) : NULL;
+		for (int k = 0; k < a->nr_keys; k++)
+			a->keys[k] = iarray_read(r);
+		int nr_parts = iarray_read(r);
+		struct activity_part **ptail = &a->parts;
+		for (int j = 0; j < nr_parts; j++) {
+			struct string *pname = iarray_read_string(r);
+			int no = iarray_read(r);
+			bool closed = iarray_read(r);
+			bool locked = iarray_read(r);
+			if (parts_try_get(no)) {
+				struct activity_part *p = xcalloc(1, sizeof(*p));
+				p->name = pname;
+				p->no = no;
+				p->closed = closed;
+				p->locked = locked;
+				*ptail = p;
+				ptail = &p->next;
+			} else {
+				free_string(pname);
+			}
+		}
+		*tail = a;
+		tail = &a->next;
+	}
+}
+
+static void bind_legacy_tree(struct activity *a, struct ex_tree *tree, struct parts *part)
+{
+	if (!part)
+		return;
+	if (!find_part(a, tree->name)) {
+		struct activity_part **at = &a->parts;
+		while (*at && strcmp((*at)->name->text, tree->name->text) < 0)
+			at = &(*at)->next;
+		struct activity_part *bp = xcalloc(1, sizeof(*bp));
+		bp->name = string_dup(tree->name);
+		bp->no = part->no;
+		bp->closed = number(tree, "閉じている", 0);
+		bp->locked = number(tree, "ロックしている", 0);
+		bp->next = *at;
+		*at = bp;
+	}
+	struct ex_tree *children = node(tree, "子パーツ列表");
+	if (!children)
+		return;
+	struct parts *child_part = TAILQ_FIRST(&part->children);
+	for (unsigned i = 0; i < children->nr_children && child_part; i++) {
+		if (!number(&children->children[i], "エディタ上表示", 1))
+			continue;
+		bind_legacy_tree(a, &children->children[i], child_part);
+		child_part = TAILQ_NEXT(child_part, child_list_entry);
+	}
+}
+
+static void recover_legacy_activity_from_pact(struct string *handle, struct parts *root_part)
+{
+	struct string *file = string_dup(handle);
+	if (!PE_IsExistActivityFile(file)) {
+		const char *colon = strrchr(handle->text, ':');
+		if (colon && colon > handle->text && colon[1] != '\0') {
+			bool all_digits = true;
+			for (const char *c = colon + 1; *c; c++) {
+				if (!isdigit((unsigned char)*c)) {
+					all_digits = false;
+					break;
+				}
+			}
+			if (all_digits) {
+				free_string(file);
+				file = make_string(handle->text, colon - handle->text);
+			}
+		}
+	}
+	struct archive_data *data = asset_get_by_name(ASSET_PACT, file->text, NULL);
+	struct ex *ex = NULL;
+	if (data) {
+		ex = ex_read(data->data, data->size);
+		archive_free_data(data);
+	} else {
+		char *path = activity_file_path(file);
+		ex = path ? ex_read_file(path) : NULL;
+		free(path);
+	}
+	free_string(file);
+	if (!ex)
+		return;
+	struct ex_value *layout = block(ex, "アクティビティ");
+	if (!layout || layout->type != EX_TREE || layout->tree->is_leaf || !PE_CreateActivity(handle)) {
+		ex_free(ex);
+		return;
+	}
+	struct activity *a = find_activity(handle);
+	struct ex_value *v = block(ex, "扩大");
+	PE_SetActivityEXText(handle, v && v->type == EX_STRING ? v->s : &EMPTY_STRING);
+	v = block(ex, "背景图片");
+	if (v && v->type == EX_STRING)
+		PE_SetActivityBG(handle, v->s);
+	for (unsigned i = 0; i < layout->tree->nr_children; i++) {
+		if (!number(&layout->tree->children[i], "エディタ上表示", 1))
+			continue;
+		bind_legacy_tree(a, &layout->tree->children[i], root_part);
+		break;
+	}
+	ex_free(ex);
+}
+
+void parts_activities_reconcile_legacy(void)
+{
+	for (struct activity **at = &activities; *at; ) {
+		struct activity *a = *at;
+		for (struct activity_part **pt = &a->parts; *pt; ) {
+			struct activity_part *p = *pt;
+			if (!parts_try_get(p->no)) {
+				*pt = p->next;
+				free_string(p->name);
+				free(p);
+			} else {
+				pt = &p->next;
+			}
+		}
+		if (!a->parts) {
+			*at = a->next;
+			free_activity_metadata(a);
+		} else {
+			if (a->ex_id >= 2)
+				a->ex_id = mainex_v12_register_at(a->ex_id, xcalloc(1, sizeof(struct ex)));
+			at = &a->next;
+		}
+	}
+	if (!ain || ain->version < 12 || !heap)
+		return;
+	int cwrap_s = ain_get_struct(ain, "activity::detail::CActivityWrap");
+	int cparts_s = ain_get_struct(ain, "parts::detail::CParts");
+	if (cwrap_s < 0 || cparts_s < 0)
+		return;
+	for (size_t i = 1; i < heap_size; i++) {
+		struct page *pg = heap[i].page;
+		if (!pg || pg->type != STRUCT_PAGE || pg->index != cwrap_s || pg->nr_vars < 4)
+			continue;
+		int h_slot = pg->values[2].i;
+		if (h_slot <= 0 || (size_t)h_slot >= heap_size || !heap[h_slot].s || heap[h_slot].s->size <= 0)
+			continue;
+		struct string *handle = heap[h_slot].s;
+		if (find_activity(handle))
+			continue;
+		int r_slot = pg->values[3].i;
+		if (r_slot <= 0 || (size_t)r_slot >= heap_size || !heap[r_slot].page)
+			continue;
+		struct page *rpg = heap[r_slot].page;
+		if (rpg->type != STRUCT_PAGE || rpg->index != cparts_s || rpg->nr_vars < 2)
+			continue;
+		struct parts *root_part = rpg->values[1].i > 0 ? parts_try_get(rpg->values[1].i) : NULL;
+		if (!root_part)
+			continue;
+		recover_legacy_activity_from_pact(handle, root_part);
+	}
 }

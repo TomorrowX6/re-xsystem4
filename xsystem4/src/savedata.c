@@ -120,6 +120,105 @@ static bool is_critical_global_save(const char *path)
 #endif
 }
 
+#define MAX_TRACKED_GLOBAL_SAVES 8
+struct tracked_global_save {
+	char *keyname;
+	char *filename;
+	char *group_name;
+};
+static struct tracked_global_save tracked_global_saves[MAX_TRACKED_GLOBAL_SAVES];
+static int nr_tracked_global_saves = 0;
+static bool flushing_background_saves = false;
+
+static const char *save_basename(const char *path)
+{
+	if (!path)
+		return "";
+	const char *slash1 = strrchr(path, '/');
+	const char *slash2 = strrchr(path, '\\');
+	const char *base = slash1;
+	if (slash2 && (!base || slash2 > base))
+		base = slash2;
+	return base ? base + 1 : path;
+}
+
+static bool is_background_flush_save(const char *path)
+{
+	const char *base = save_basename(path);
+	if (!base[0])
+		return false;
+#ifdef _WIN32
+	return !_stricmp(base, "GlobalSave.asd") ||
+	       !_stricmp(base, "Collection.asd") ||
+	       !_stricmp(base, "GameConfig.asd") ||
+	       !_stricmp(base, "GameEnquete.asd") ||
+	       !_stricmp(base, "AFCommon.asd") ||
+	       !_stricmp(base, "AFConfig.asd") ||
+	       !_stricmp(base, "AFInfo.asd");
+#else
+	return !strcasecmp(base, "GlobalSave.asd") ||
+	       !strcasecmp(base, "Collection.asd") ||
+	       !strcasecmp(base, "GameConfig.asd") ||
+	       !strcasecmp(base, "GameEnquete.asd") ||
+	       !strcasecmp(base, "AFCommon.asd") ||
+	       !strcasecmp(base, "AFConfig.asd") ||
+	       !strcasecmp(base, "AFInfo.asd");
+#endif
+}
+
+static void track_global_save(const char *keyname, const char *filename, const char *group_name)
+{
+	if (flushing_background_saves || !keyname || !filename || !group_name || !group_name[0])
+		return;
+	if (!is_background_flush_save(filename))
+		return;
+	for (int i = 0; i < nr_tracked_global_saves; i++) {
+		if (!strcmp(tracked_global_saves[i].filename, filename)) {
+			free(tracked_global_saves[i].keyname);
+			free(tracked_global_saves[i].group_name);
+			tracked_global_saves[i].keyname = xstrdup(keyname);
+			tracked_global_saves[i].group_name = xstrdup(group_name);
+			return;
+		}
+	}
+	if (nr_tracked_global_saves >= MAX_TRACKED_GLOBAL_SAVES)
+		return;
+	tracked_global_saves[nr_tracked_global_saves].keyname = xstrdup(keyname);
+	tracked_global_saves[nr_tracked_global_saves].filename = xstrdup(filename);
+	tracked_global_saves[nr_tracked_global_saves].group_name = xstrdup(group_name);
+	nr_tracked_global_saves++;
+}
+
+static void untrack_global_save(const char *filename)
+{
+	if (!filename)
+		return;
+	for (int i = 0; i < nr_tracked_global_saves; i++) {
+		if (!strcmp(tracked_global_saves[i].filename, filename)) {
+			free(tracked_global_saves[i].keyname);
+			free(tracked_global_saves[i].filename);
+			free(tracked_global_saves[i].group_name);
+			for (int j = i; j + 1 < nr_tracked_global_saves; j++)
+				tracked_global_saves[j] = tracked_global_saves[j + 1];
+			nr_tracked_global_saves--;
+			return;
+		}
+	}
+}
+
+void savedata_reset(void)
+{
+	for (int i = 0; i < nr_tracked_global_saves; i++) {
+		free(tracked_global_saves[i].keyname);
+		free(tracked_global_saves[i].filename);
+		free(tracked_global_saves[i].group_name);
+		tracked_global_saves[i].keyname = NULL;
+		tracked_global_saves[i].filename = NULL;
+		tracked_global_saves[i].group_name = NULL;
+	}
+	nr_tracked_global_saves = 0;
+}
+
 FILE *atomic_save_open(const char *path, const char *mode, char **tmp_path_out)
 {
 	char *tmp = make_atomic_tmp_path(path);
@@ -427,8 +526,11 @@ int save_globals(const char *keyname, const char *filename, const char *group_na
 	}
 	bool ok = atomic_save_commit(fp, path, tmp_path, is_critical_global_save(filename));
 	free(path);
-	if (ok && n_out)
-		*n_out = nr_vars;
+	if (ok) {
+		track_global_save(keyname, filename, group_name);
+		if (n_out)
+			*n_out = nr_vars;
+	}
 	return ok ? 1 : 0;
 }
 
@@ -831,6 +933,8 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		free(path);
 		retval = load_globals_from_gsave(save, keyname, group_name, n);
 		gsave_free(save);
+		if (retval)
+			track_global_save(keyname, filename, group_name);
 		return retval;
 	}
 	if (error == SAVEFILE_INVALID_SIGNATURE) {
@@ -838,6 +942,7 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		retval = load_globals_from_json(path, keyname, group_name, n);
 		if (retval) {
 			free(path);
+			track_global_save(keyname, filename, group_name);
 			return retval;
 		}
 	} else {
@@ -846,6 +951,7 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 
 	// Fall back to .bak if a backup exists (e.g. GlobalSave.asd.bak / Collection.asd.bak).
 	char *bak_path = make_backup_path(path);
+	bool had_any_file = file_exists(path) || file_exists(bak_path);
 	if (file_exists(bak_path)) {
 		enum savefile_error bak_err;
 		struct gsave *bak_save = gsave_read(bak_path, &bak_err);
@@ -856,16 +962,21 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 			free(path);
 			retval = load_globals_from_gsave(bak_save, keyname, group_name, n);
 			gsave_free(bak_save);
+			if (retval)
+				track_global_save(keyname, filename, group_name);
 			return retval;
 		}
 	}
 	free(bak_path);
 	free(path);
+	if (!had_any_file)
+		track_global_save(keyname, filename, group_name);
 	return 0;
 }
 
 int delete_save_file(const char *filename)
 {
+	untrack_global_save(filename);
 	char *path = savedir_path(filename);
 	char *bak_path = make_backup_path(path);
 	if (file_exists(bak_path))
@@ -882,4 +993,20 @@ int delete_save_file(const char *filename)
 	}
 	free(path);
 	return 1;
+}
+
+void savedata_flush_on_background(void)
+{
+	if (flushing_background_saves || !ain || !heap || heap_size <= 0)
+		return;
+	flushing_background_saves = true;
+	for (int i = 0; i < nr_tracked_global_saves; i++) {
+		const struct tracked_global_save *entry = &tracked_global_saves[i];
+		if (!entry->keyname || !entry->filename || !entry->group_name)
+			continue;
+		if (get_group_index(entry->group_name) < 0)
+			continue;
+		save_globals(entry->keyname, entry->filename, entry->group_name, NULL);
+	}
+	flushing_background_saves = false;
 }

@@ -1,5 +1,6 @@
 package io.github.kichikuou.xsystem4
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.Process
 import android.graphics.Color
@@ -51,6 +52,15 @@ class XSystem4Activity : SDLActivity() {
     private fun ensureModifierOverlayAttached() {
         if (isFinishing || isDestroyed || modifierOverlay != null) return
         modifierOverlay = FloatingModifierOverlay(this).also { it.attach() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        try {
+            GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onResume() {

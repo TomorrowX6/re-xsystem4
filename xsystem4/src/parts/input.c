@@ -18,6 +18,8 @@
 #include "system4/ain.h"
 #include <limits.h>
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
 #include "system4/string.h"
 
 #include "asset_manager.h"
@@ -25,9 +27,11 @@
 #include "input.h"
 #include "kiwi.h"
 #include "parts.h"
+#define VM_PRIVATE
 #include "vm.h"
 #include "xsystem4.h"
 #include "parts_internal.h"
+#include "../hll/iarray.h"
 
 // true between calls to BeginClick and EndClick
 bool parts_began_click = false;
@@ -54,6 +58,19 @@ static SDL_FPoint drag_initial_pos;
 static Point drag_start_cursor;
 static struct parts *drop_target = NULL;
 static struct string *click_miss_sound_name;
+
+// gesture disambiguation & swipe state
+static Point press_start_pos = {0};
+static int press_hold_ms = 0;
+static bool click_fired_this_frame = false;
+static struct parts *swipe_candidate = NULL;
+static struct parts *swipe_parts = NULL;
+static bool is_swiping = false;
+static bool swipe_inertia = false;
+static Point swipe_begin_pos = {0};
+static SDL_FPoint swipe_cur_posf = {0};
+static SDL_FPoint swipe_vel = {0};
+static int swipe_idle_ms = 0;
 
 static void parts_set_focus(struct parts *parts, bool focus)
 {
@@ -208,12 +225,66 @@ static void drag_state_reset(void)
 	drop_target = NULL;
 }
 
-void parts_input_reset_drag(struct parts *parts)
+static void swipe_state_reset(void)
+{
+	swipe_candidate = NULL;
+	swipe_parts = NULL;
+	is_swiping = false;
+	swipe_inertia = false;
+	swipe_vel = (SDL_FPoint) {0};
+	swipe_idle_ms = 0;
+}
+
+void PE_Parts_StopSwipe(void)
+{
+	if (is_swiping && swipe_parts)
+		parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_END, "");
+	swipe_state_reset();
+}
+
+void PE_Parts_SetSwipeType(int parts_no, int swipe_type)
+{
+	struct parts *parts = parts_get(parts_no);
+	parts->swipe_type = swipe_type;
+	if (swipe_type == 0 || swipe_type == 4) {
+		if (swipe_parts == parts)
+			PE_Parts_StopSwipe();
+		if (swipe_candidate == parts)
+			swipe_candidate = NULL;
+	}
+}
+
+int PE_Parts_GetSwipeType(int parts_no)
+{
+	return parts_get(parts_no)->swipe_type;
+}
+
+void parts_input_reset_part(struct parts *parts)
 {
 	if (parts == drag_parts)
 		drag_state_reset();
 	else if (parts == drop_target)
 		drop_target = NULL;
+	if (parts == swipe_parts || parts == swipe_candidate)
+		swipe_state_reset();
+	if (click_down_parts == parts->no)
+		click_down_parts = 0;
+}
+
+static void reset_transient_pointer_state(void)
+{
+	prev_clicking = false;
+	prev_rclicking = false;
+	prev_mclicking = false;
+	whole_lclick_down = false;
+	whole_rclick_down = false;
+	whole_mclick_down = false;
+	clicked_parts = 0;
+	click_down_parts = 0;
+	press_hold_ms = 0;
+	click_fired_this_frame = false;
+	drag_state_reset();
+	swipe_state_reset();
 }
 
 void parts_input_reset(void)
@@ -221,21 +292,88 @@ void parts_input_reset(void)
 	PE_EndInput();
 	input_depth = 0;
 	parts_began_click = false;
-	prev_clicking = false;
-	prev_rclicking = false;
-	prev_mclicking = false;
-	whole_lclick_down = false;
-	whole_rclick_down = false;
-	whole_mclick_down = false;
-	click_down_parts = 0;
+	reset_transient_pointer_state();
 	parts_prev_pos = (Point) {0};
 	if (click_miss_sound_name) free_string(click_miss_sound_name);
 	click_miss_sound_name = NULL;
 }
 
+void parts_input_save_state(struct iarray_writer *w)
+{
+	iarray_write(w, input_depth);
+	iarray_write(w, parts_began_click);
+}
+
+void parts_input_load_state(struct iarray_reader *r)
+{
+	input_depth = iarray_read(r);
+	if (input_depth < 0)
+		input_depth = 0;
+	parts_began_click = iarray_read(r);
+	reset_transient_pointer_state();
+}
+
+void parts_input_load_legacy_state(void)
+{
+	if (ain && ain->version >= 12) {
+		int depth = 0;
+		for (int i = 0; i < call_stack_ptr; i++) {
+			int fno = call_stack[i].fno;
+			if (fno < 0 || fno >= ain->nr_functions || !ain->functions[fno].name)
+				continue;
+			const char *fname = ain->functions[fno].name;
+			if (!strcmp(fname, "parts::detail::WaitForClick")
+					|| !strcmp(fname, "parts::WaitForClick")
+					|| strstr(fname, "@UpdateActivity")
+					|| strstr(fname, "::UpdateActivity")
+					|| !strcmp(fname, "activityeditor::detail::CActivityEditor@Run")
+					|| !strcmp(fname, "elkeditor::detail::CBezier2DEditor@Run")
+					|| !strcmp(fname, "elkeditor::detail::CRandTypeSelecter@Run")) {
+				depth++;
+			}
+		}
+		if (depth == 0 && input_depth > 0)
+			depth = 1;
+		input_depth = depth;
+		parts_began_click = input_depth > 0;
+	}
+	reset_transient_pointer_state();
+}
+
+static bool parts_is_descendant_of(struct parts *child, struct parts *ancestor)
+{
+	for (struct parts *p = child; p; p = p->parent) {
+		if (p == ancestor)
+			return true;
+	}
+	return false;
+}
+
+static struct parts *find_swipe_target(Point pos)
+{
+	if (ain->version < 12 || !parts_began_click)
+		return NULL;
+	struct parts *first_opaque = NULL;
+	struct parts *p;
+	PARTS_LIST_FOREACH_REVERSE(p) {
+		if (p->controller_no != ctrl_stack.active || !parts_is_visible(p))
+			continue;
+		if (p->enable_input && !first_opaque && !p->pass_cursor && parts_hittest(p, PARTS_STATE_DEFAULT, pos))
+			first_opaque = p;
+		if (p->swipe_type > 0 && parts_hittest(p, PARTS_STATE_DEFAULT, pos)) {
+			if (p->swipe_type == 4)
+				return NULL;
+			if (first_opaque && first_opaque != p && !parts_is_descendant_of(first_opaque, p))
+				return NULL;
+			return (p->swipe_type >= 1 && p->swipe_type <= 3) ? p : NULL;
+		}
+	}
+	return NULL;
+}
+
 static bool parts_needs_mouse_hittest(struct parts *parts)
 {
-	if (!parts->pass_cursor || parts->clickable || parts->draggable || parts->wheelable)
+	if (!parts->pass_cursor || parts->clickable || parts->draggable || parts->wheelable || parts->swipe_type > 0)
 		return true;
 	if (parts->delegate_index >= 0 || parts->widget || parts->scrollbar)
 		return true;
@@ -258,9 +396,7 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 		parts->is_hovered = false;
 		parts->hover_time = 0;
 		parts_set_state(parts, PARTS_STATE_DEFAULT);
-		parts_input_reset_drag(parts);
-		if (click_down_parts == parts->no)
-			click_down_parts = 0;
+		parts_input_reset_part(parts);
 		return;
 	}
 	// Visibility affects automatic routing, not Parts_IsCursorIn's geometry query.
@@ -268,9 +404,7 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 		parts->is_hovered = false;
 		parts->hover_time = 0;
 		parts_set_state(parts, PARTS_STATE_DEFAULT);
-		parts_input_reset_drag(parts);
-		if (click_down_parts == parts->no)
-			click_down_parts = 0;
+		parts_input_reset_part(parts);
 		return;
 	}
 
@@ -372,6 +506,7 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 			&& click_down_parts == parts->no) {
 		parts_play_sound(parts, PARTS_STATE_CLICKED);
 		clicked_parts = parts->no;
+		click_fired_this_frame = true;
 		if (parts->component_type == 1 && parts->widget)
 			parts_widget_check(parts, !parts->widget->checked);
 
@@ -381,9 +516,40 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 	}
 }
 
+static void update_drop_target(Point cur_pos)
+{
+	struct parts *new_drop = NULL;
+	struct parts *parts;
+	PARTS_LIST_FOREACH_REVERSE(parts) {
+		if (parts == drag_parts || !parts->enable_input
+				|| (ain->version >= 12 && (parts->controller_no != ctrl_stack.active || !parts_is_visible(parts))))
+			continue;
+		if (parts_hittest(parts, PARTS_STATE_DEFAULT, cur_pos)) {
+			new_drop = parts;
+			if (!parts->pass_cursor)
+				break;
+		}
+	}
+	if (new_drop != drop_target) {
+		if (drop_target) {
+			parts_msg_push(drop_target, PARTS_MSG_DROP_LEAVE,
+					"i", drag_parts->no);
+		}
+		if (new_drop) {
+			parts_msg_push(new_drop, PARTS_MSG_DROP_ENTER,
+					"i", drag_parts->no);
+		}
+		drop_target = new_drop;
+	} else if (drop_target) {
+		parts_msg_push(drop_target, PARTS_MSG_DROP_ON,
+				"iii", drag_parts->no, cur_pos.x, cur_pos.y);
+	}
+}
+
 void PE_UpdateInputState(int passed_time)
 {
 	Point cur_pos;
+	click_fired_this_frame = false;
 	input_parts_poll_begin(parts_began_click);
 	mouse_get_pos(&cur_pos.x, &cur_pos.y);
 	bool cur_clicking = key_is_down(VK_LBUTTON);
@@ -394,8 +560,16 @@ void PE_UpdateInputState(int passed_time)
 
 	bool hover_consumed = false;
 	bool click_consumed = false;
-	if (ain->version >= 12 && parts_began_click && cur_clicking && !prev_clicking)
+	if (ain->version >= 12 && parts_began_click && cur_clicking && !prev_clicking) {
+		if (swipe_inertia && swipe_parts) {
+			parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_END, "");
+			swipe_state_reset();
+		}
+		press_start_pos = cur_pos;
+		press_hold_ms = 0;
+		swipe_candidate = find_swipe_target(cur_pos);
 		parts_clear_focus(ctrl_stack.active);
+	}
 	struct parts *parts;
 	// Iterate front-to-back (highest z first) for proper cursor consumption
 	PARTS_LIST_FOREACH_REVERSE(parts) {
@@ -426,72 +600,222 @@ void PE_UpdateInputState(int passed_time)
 		}
 	}
 
-	// Drag movement processing
-	if (drag_parts && cur_clicking) {
-		bool cursor_moved = (cur_pos.x != parts_prev_pos.x ||
-				cur_pos.y != parts_prev_pos.y);
-		if (cursor_moved && drag_parts->draggable) {
-			SDL_FPoint new_pos = {
-				drag_initial_pos.x + (cur_pos.x - drag_start_cursor.x),
-				drag_initial_pos.y + (cur_pos.y - drag_start_cursor.y)
-			};
-			parts_set_posf(drag_parts, new_pos);
-			if (!is_dragging) {
-				parts_msg_push(drag_parts, PARTS_MSG_DRAG_BEGIN, "");
-			}
-			parts_msg_push(drag_parts, PARTS_MSG_DRAGGING, "iiii",
-					drag_start_cursor.x, drag_start_cursor.y, cur_pos.x, cur_pos.y);
-			is_dragging = true;
-		}
+	int step_ms = passed_time < 0 ? 0 : (passed_time > 50 ? 50 : passed_time);
+	int dt_ms = passed_time < 1 ? 1 : (passed_time > 100 ? 100 : passed_time);
 
-		// Drop target tracking
-		if (cursor_moved && is_dragging) {
-			struct parts *new_drop = NULL;
-			PARTS_LIST_FOREACH_REVERSE(parts) {
-				if (parts == drag_parts || !parts->enable_input
-						|| (ain->version >= 12 && !parts_is_visible(parts)))
-					continue;
-				if (parts_hittest(parts, PARTS_STATE_DEFAULT, cur_pos)) {
-					new_drop = parts;
-					if (!parts->pass_cursor)
-						break;
+	// Gesture disambiguation, Swipe, and Drag movement processing
+	if (cur_clicking && parts_began_click) {
+		bool cursor_moved = (cur_pos.x != parts_prev_pos.x || cur_pos.y != parts_prev_pos.y);
+		if (prev_clicking)
+			press_hold_ms += step_ms;
+
+		if (!is_dragging && !is_swiping) {
+			if (swipe_candidate && (swipe_candidate->controller_no != ctrl_stack.active
+					|| !parts_is_visible(swipe_candidate)
+					|| swipe_candidate->swipe_type < 1 || swipe_candidate->swipe_type > 3)) {
+				swipe_candidate = NULL;
+			}
+			int dx = cur_pos.x - press_start_pos.x;
+			int dy = cur_pos.y - press_start_pos.y;
+			int adx = abs(dx), ady = abs(dy);
+
+			bool swipe_axis_match = false;
+			if (swipe_candidate) {
+				if (swipe_candidate->swipe_type == 1)
+					swipe_axis_match = (adx >= 8 || ady >= 8);
+				else if (swipe_candidate->swipe_type == 2)
+					swipe_axis_match = (ady >= 8 && ady >= adx);
+				else if (swipe_candidate->swipe_type == 3)
+					swipe_axis_match = (adx >= 8 && adx >= ady);
+			}
+
+			bool can_drag_part = drag_parts && (drag_parts->draggable
+					|| (ain->version >= 12 && (drag_parts->clickable || !drag_parts->pass_cursor)));
+			if (swipe_axis_match && (!can_drag_part || press_hold_ms < 180)) {
+				if (click_down_parts > 0) {
+					struct parts *cdp = parts_try_get(click_down_parts);
+					if (cdp)
+						parts_set_state(cdp, cdp->is_hovered ? PARTS_STATE_HOVERED : PARTS_STATE_DEFAULT);
+					click_down_parts = 0;
+				}
+				drag_state_reset();
+				input_cancel_long_touch();
+				swipe_parts = swipe_candidate;
+				swipe_candidate = NULL;
+				is_swiping = true;
+				swipe_inertia = false;
+				swipe_begin_pos = press_start_pos;
+				swipe_cur_posf = (SDL_FPoint) { (float)cur_pos.x, (float)cur_pos.y };
+				float ivx = (swipe_parts->swipe_type == 2) ? 0.0f : (float)dx / (float)(press_hold_ms > 0 ? press_hold_ms : dt_ms);
+				float ivy = (swipe_parts->swipe_type == 3) ? 0.0f : (float)dy / (float)(press_hold_ms > 0 ? press_hold_ms : dt_ms);
+				swipe_vel = (SDL_FPoint) { ivx, ivy };
+				swipe_idle_ms = 0;
+				int mx = (swipe_parts->swipe_type == 2) ? swipe_begin_pos.x : cur_pos.x;
+				int my = (swipe_parts->swipe_type == 3) ? swipe_begin_pos.y : cur_pos.y;
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_BEGIN, "");
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPING, "iiiib",
+						swipe_begin_pos.x, swipe_begin_pos.y, mx, my, false);
+			} else if (can_drag_part) {
+				if (ain->version < 12) {
+					if (cursor_moved && drag_parts->draggable) {
+						SDL_FPoint new_pos = {
+							drag_initial_pos.x + (cur_pos.x - drag_start_cursor.x),
+							drag_initial_pos.y + (cur_pos.y - drag_start_cursor.y)
+						};
+						parts_set_posf(drag_parts, new_pos);
+						parts_msg_push(drag_parts, PARTS_MSG_DRAG_BEGIN, "");
+						parts_msg_push(drag_parts, PARTS_MSG_DRAGGING, "iiii",
+								drag_start_cursor.x, drag_start_cursor.y, cur_pos.x, cur_pos.y);
+						is_dragging = true;
+						input_cancel_long_touch();
+						update_drop_target(cur_pos);
+					}
+				} else {
+					bool start_drag = false;
+					if (!swipe_candidate) {
+						start_drag = drag_parts->draggable ? cursor_moved : (adx >= 4 || ady >= 4);
+					} else {
+						bool ortho_drag = (swipe_candidate->swipe_type == 2 && adx >= 10 && adx > ady * 2)
+								|| (swipe_candidate->swipe_type == 3 && ady >= 10 && ady > adx * 2);
+						start_drag = (press_hold_ms >= 180) || ortho_drag;
+					}
+					if (start_drag) {
+						swipe_candidate = NULL;
+						is_dragging = true;
+						input_cancel_long_touch();
+						parts_msg_push(drag_parts, PARTS_MSG_DRAG_BEGIN, "i", VK_LBUTTON);
+						if (drag_parts->draggable) {
+							SDL_FPoint new_pos = {
+								drag_initial_pos.x + (cur_pos.x - drag_start_cursor.x),
+								drag_initial_pos.y + (cur_pos.y - drag_start_cursor.y)
+							};
+							parts_set_posf(drag_parts, new_pos);
+						}
+						if (cur_pos.x != drag_start_cursor.x || cur_pos.y != drag_start_cursor.y) {
+							parts_msg_push(drag_parts, PARTS_MSG_DRAGGING, "iiiii",
+									drag_start_cursor.x, drag_start_cursor.y,
+									cur_pos.x, cur_pos.y, VK_LBUTTON);
+							update_drop_target(cur_pos);
+						}
+					}
 				}
 			}
-			if (new_drop != drop_target) {
-				if (drop_target) {
-					parts_msg_push(drop_target, PARTS_MSG_DROP_LEAVE,
-							"i", drag_parts->no);
-				}
-				if (new_drop) {
-					parts_msg_push(new_drop, PARTS_MSG_DROP_ENTER,
-							"i", drag_parts->no);
-				}
-				drop_target = new_drop;
-			} else if (drop_target) {
-				parts_msg_push(drop_target, PARTS_MSG_DROP_ON,
-						"iii", drag_parts->no, cur_pos.x, cur_pos.y);
+		} else if (is_swiping && !swipe_inertia && swipe_parts) {
+			int sdx = cur_pos.x - parts_prev_pos.x;
+			int sdy = cur_pos.y - parts_prev_pos.y;
+			if (sdx != 0 || sdy != 0) {
+				float inst_vx = (swipe_parts->swipe_type == 2) ? 0.0f : (float)sdx / (float)dt_ms;
+				float inst_vy = (swipe_parts->swipe_type == 3) ? 0.0f : (float)sdy / (float)dt_ms;
+				swipe_vel.x = swipe_vel.x * 0.4f + inst_vx * 0.6f;
+				swipe_vel.y = swipe_vel.y * 0.4f + inst_vy * 0.6f;
+				swipe_idle_ms = 0;
+				swipe_cur_posf = (SDL_FPoint) { (float)cur_pos.x, (float)cur_pos.y };
+				int mx = (swipe_parts->swipe_type == 2) ? swipe_begin_pos.x : cur_pos.x;
+				int my = (swipe_parts->swipe_type == 3) ? swipe_begin_pos.y : cur_pos.y;
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPING, "iiiib",
+						swipe_begin_pos.x, swipe_begin_pos.y, mx, my, false);
+			} else {
+				swipe_idle_ms += dt_ms;
+				if (swipe_idle_ms > 80)
+					swipe_vel = (SDL_FPoint) { 0.0f, 0.0f };
 			}
+		} else if (is_dragging && drag_parts && cursor_moved) {
+			if (drag_parts->draggable) {
+				SDL_FPoint new_pos = {
+					drag_initial_pos.x + (cur_pos.x - drag_start_cursor.x),
+					drag_initial_pos.y + (cur_pos.y - drag_start_cursor.y)
+				};
+				parts_set_posf(drag_parts, new_pos);
+			}
+			if (ain->version >= 12) {
+				parts_msg_push(drag_parts, PARTS_MSG_DRAGGING, "iiiii",
+						drag_start_cursor.x, drag_start_cursor.y,
+						cur_pos.x, cur_pos.y, VK_LBUTTON);
+			} else if (drag_parts->draggable) {
+				parts_msg_push(drag_parts, PARTS_MSG_DRAGGING, "iiii",
+						drag_start_cursor.x, drag_start_cursor.y, cur_pos.x, cur_pos.y);
+			}
+			update_drop_target(cur_pos);
 		}
 	}
 
 	// Release handling
 	if (prev_clicking && !cur_clicking) {
-		if (is_dragging && drag_parts && drag_parts->draggable) {
-			parts_msg_push(drag_parts, PARTS_MSG_DRAG_END, "");
-		}
-		if (drop_target && drag_parts) {
-			parts_msg_push(drop_target, PARTS_MSG_DROPPED,
-					"iii", drag_parts->no, cur_pos.x, cur_pos.y);
-			parts_msg_push(drop_target, PARTS_MSG_DROP_LEAVE, "i", drag_parts->no);
-		}
-		drag_state_reset();
+		swipe_candidate = NULL;
+		if (is_swiping && !swipe_inertia && swipe_parts) {
+			float speed = hypotf(swipe_vel.x, swipe_vel.y);
+			if (speed >= 0.15f) {
+				if (speed > 4.5f) {
+					swipe_vel.x *= 4.5f / speed;
+					swipe_vel.y *= 4.5f / speed;
+				}
+				swipe_inertia = true;
+			} else {
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_END, "");
+				swipe_state_reset();
+			}
+		} else {
+			if (is_dragging && drag_parts) {
+				if (ain->version >= 12 && drag_parts->clickable
+						&& click_down_parts == drag_parts->no && !click_fired_this_frame
+						&& (drag_parts->local.pos.x != drag_initial_pos.x || drag_parts->local.pos.y != drag_initial_pos.y)
+						&& parts_hittest(drag_parts, PARTS_STATE_DEFAULT, cur_pos)) {
+					parts_msg_push(drag_parts, PARTS_MSG_MOUSE_CLICK,
+							"iii", cur_pos.x, cur_pos.y, VK_LBUTTON);
+					parts_msg_push(drag_parts, PARTS_MSG_KEY_UP, "i", VK_LBUTTON);
+				}
+				if (drop_target) {
+					parts_msg_push(drop_target, PARTS_MSG_DROPPED,
+							"iii", drag_parts->no, cur_pos.x, cur_pos.y);
+					parts_msg_push(drop_target, PARTS_MSG_DROP_LEAVE, "i", drag_parts->no);
+				}
+				if (ain->version >= 12) {
+					parts_msg_push(drag_parts, PARTS_MSG_DRAG_END, "ib", VK_LBUTTON, false);
+				} else if (drag_parts->draggable) {
+					parts_msg_push(drag_parts, PARTS_MSG_DRAG_END, "");
+				}
+			}
+			drag_state_reset();
 
-		if (!click_down_parts) {
-			if (parts_began_click && click_miss_sound_name && click_miss_sound_name->size)
-				kiwi_play_system_sound(click_miss_sound_name);
+			if (!click_down_parts) {
+				if (parts_began_click && click_miss_sound_name && click_miss_sound_name->size)
+					kiwi_play_system_sound(click_miss_sound_name);
+			}
+			click_down_parts = 0;
 		}
-		click_down_parts = 0;
 	}
+
+	// Inertia coasting update
+	if (swipe_inertia && swipe_parts && !cur_clicking) {
+		if (!parts_began_click
+				|| swipe_parts->controller_no != ctrl_stack.active
+				|| !parts_is_visible(swipe_parts)
+				|| swipe_parts->swipe_type < 1 || swipe_parts->swipe_type > 3) {
+			parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_END, "");
+			swipe_state_reset();
+		} else {
+			int prev_ix = (int)lroundf(swipe_cur_posf.x);
+			int prev_iy = (int)lroundf(swipe_cur_posf.y);
+			swipe_cur_posf.x += swipe_vel.x * (float)dt_ms;
+			swipe_cur_posf.y += swipe_vel.y * (float)dt_ms;
+			float decay = powf(0.92f, (float)dt_ms / 16.0f);
+			swipe_vel.x *= decay;
+			swipe_vel.y *= decay;
+			int new_ix = (swipe_parts->swipe_type == 2) ? swipe_begin_pos.x : (int)lroundf(swipe_cur_posf.x);
+			int new_iy = (swipe_parts->swipe_type == 3) ? swipe_begin_pos.y : (int)lroundf(swipe_cur_posf.y);
+			if (new_ix != prev_ix || new_iy != prev_iy) {
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPING, "iiiib",
+						swipe_begin_pos.x, swipe_begin_pos.y, new_ix, new_iy, true);
+			}
+			if (hypotf(swipe_vel.x, swipe_vel.y) < 0.04f) {
+				parts_msg_push(swipe_parts, PARTS_MSG_SWIPE_END, "");
+				swipe_state_reset();
+			}
+		}
+	}
+
+	if (is_dragging || is_swiping)
+		input_cancel_long_touch();
 
 	if (parts_began_click) {
 		prev_clicking = cur_clicking;
@@ -563,11 +887,9 @@ void PE_SetEnableInputProcess(int parts_no, bool enable)
 	parts->enable_input = enable;
 	if (!enable) {
 		parts_set_focus(parts, false);
-		parts_input_reset_drag(parts);
+		parts_input_reset_part(parts);
 		parts->is_hovered = false;
 		parts->hover_time = 0;
-		if (click_down_parts == parts_no)
-			click_down_parts = 0;
 	}
 }
 
@@ -677,6 +999,7 @@ void PE_EndInput(void)
 		whole_rclick_down = false;
 		whole_mclick_down = false;
 		click_down_parts = 0;
+		swipe_state_reset();
 	}
 	clicked_parts = 0;
 	drag_state_reset();

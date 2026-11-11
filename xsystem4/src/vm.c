@@ -2661,6 +2661,7 @@ static void vm_free(void)
 	if (heap_size > 0 && heap[0].ref > 0)
 		exit_unref(0);
 
+	savedata_reset();
 	vm_reset_once = true;
 }
 

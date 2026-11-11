@@ -214,10 +214,16 @@ enum window_settings_id {
 	WINDOW_SETTINGS_CLOSE_GAME_CONFIRM = 6,
 };
 
+#ifdef __ANDROID__
+#define WAIT_VSYNC_JSON_KEY "wait_vsync_v2"
+#else
+#define WAIT_VSYNC_JSON_KEY "wait_vsync"
+#endif
+
 static void save_window_settings(void)
 {
 	cJSON *root = cJSON_CreateObject();
-	cJSON_AddBoolToObject(root, "wait_vsync", window_settings.wait_vsync);
+	cJSON_AddBoolToObject(root, WAIT_VSYNC_JSON_KEY, window_settings.wait_vsync);
 	save_json("WindowSetting.json", root);
 	cJSON_Delete(root);
 }
@@ -228,7 +234,7 @@ static void load_window_settings(void)
 	if (!root)
 		return;
 	cJSON *v;
-	if ((v = cJSON_GetObjectItem(root, "wait_vsync"))) {
+	if ((v = cJSON_GetObjectItem(root, WAIT_VSYNC_JSON_KEY))) {
 		window_settings.wait_vsync = cJSON_IsTrue(v);
 		gfx_set_wait_vsync(window_settings.wait_vsync);
 	}

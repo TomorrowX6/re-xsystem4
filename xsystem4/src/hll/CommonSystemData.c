@@ -34,6 +34,17 @@
 
 static struct string *save_path = NULL;
 static struct hash_table *table = NULL;
+static uint8_t *last_saved_raw = NULL;
+static size_t last_saved_raw_size = 0;
+static bool has_last_saved_raw = false;
+
+static void csd_clear_saved_cache(void)
+{
+	free(last_saved_raw);
+	last_saved_raw = NULL;
+	last_saved_raw_size = 0;
+	has_last_saved_raw = false;
+}
 
 enum csd_type {
 	CSD_INT = 1,
@@ -71,6 +82,7 @@ static void csd_free_entry(void *p)
 
 static void csd_clear_table(void)
 {
+	csd_clear_saved_cache();
 	if (!table)
 		return;
 	ht_foreach_value(table, csd_free_entry);
@@ -109,7 +121,7 @@ static int csd_cmp_slots(const void *a, const void *b)
 	return strcmp(sa->key, sb->key);
 }
 
-static bool csd_save(void)
+static uint8_t *csd_serialize_raw(size_t *size_out)
 {
 	struct csd_collect_ctx ctx = { 0 };
 	if (table) {
@@ -142,29 +154,54 @@ static bool csd_save(void)
 		}
 	}
 	free(ctx.slots);
+	*size_out = w.index;
+	return w.buf;
+}
 
-	size_t comp_bound = zlib_compress_bound(w.index);
+static void csd_update_saved_cache(uint8_t *raw, size_t raw_size)
+{
+	free(last_saved_raw);
+	last_saved_raw = raw;
+	last_saved_raw_size = raw_size;
+	has_last_saved_raw = true;
+}
+
+static bool csd_save(void)
+{
+	size_t raw_size = 0;
+	uint8_t *raw_buf = csd_serialize_raw(&raw_size);
+
+	char *path = csd_save_path();
+	if (has_last_saved_raw && raw_size == last_saved_raw_size &&
+	    (raw_size == 0 || memcmp(raw_buf, last_saved_raw, raw_size) == 0) &&
+	    file_exists(path)) {
+		free(path);
+		free(raw_buf);
+		return true;
+	}
+
+	size_t comp_bound = zlib_compress_bound(raw_size);
 	uint8_t *comp_buf = xmalloc(comp_bound);
-	size_t comp_size = zlib_compress(comp_buf, comp_bound, w.buf, w.index, ZLIB_DEFAULT_COMPRESSION);
+	size_t comp_size = zlib_compress(comp_buf, comp_bound, raw_buf, raw_size, ZLIB_DEFAULT_COMPRESSION);
 	if (!comp_size) {
+		free(path);
 		free(comp_buf);
-		free(w.buf);
+		free(raw_buf);
 		return false;
 	}
 
 	uint8_t header[16] = { 'C', 'S', 'D', 0 };
 	LittleEndian_putDW(header, 4, 0);
-	LittleEndian_putDW(header, 8, (uint32_t)w.index);
+	LittleEndian_putDW(header, 8, (uint32_t)raw_size);
 	LittleEndian_putDW(header, 12, (uint32_t)comp_size);
-	free(w.buf);
 
-	char *path = csd_save_path();
 	char *tmp_path = NULL;
 	FILE *fp = atomic_save_open(path, "wb", &tmp_path);
 	if (!fp) {
 		WARNING("Failed to open CommonSystemData file '%s': %s", display_utf0(path), strerror(errno));
 		free(path);
 		free(comp_buf);
+		free(raw_buf);
 		return false;
 	}
 
@@ -174,10 +211,15 @@ static bool csd_save(void)
 	if (!ok) {
 		atomic_save_abort(fp, tmp_path);
 		free(path);
+		free(raw_buf);
 		return false;
 	}
 	ok = atomic_save_commit(fp, path, tmp_path, false);
 	free(path);
+	if (ok)
+		csd_update_saved_cache(raw_buf, raw_size);
+	else
+		free(raw_buf);
 	return ok;
 }
 
@@ -210,6 +252,7 @@ static void CommonSystemData_SetFullPathSaveFileName(struct string *filename)
 	if (save_path)
 		free_string(save_path);
 	save_path = string_dup(filename);
+	csd_clear_saved_cache();
 	NOTICE("SetFullPathSaveFileName(%s)", filename->text);
 }
 
@@ -293,6 +336,9 @@ static bool CommonSystemData_LoadAtStartup(void)
 		}
 	}
 	free(raw_buf);
+	size_t cached_size = 0;
+	uint8_t *cached_raw = csd_serialize_raw(&cached_size);
+	csd_update_saved_cache(cached_raw, cached_size);
 	return true;
 }
 

@@ -33,5 +33,7 @@ cJSON *load_json(const char *filename);
 int save_globals(const char *keyname, const char *filename, const char *group_name, int *n);
 int load_globals(const char *keyname, const char *filename, const char *group_name, int *n);
 int delete_save_file(const char *filename);
+void savedata_flush_on_background(void);
+void savedata_reset(void);
 
 #endif /* SYSTEM4_SAVEDATA_H */

@@ -139,6 +139,7 @@ extern bool keyboard_focus;
 
 void input_parts_poll_begin(bool allow_press);
 void input_notify_parts_poll(bool allow_press, bool clicking);
+void input_cancel_long_touch(void);
 
 void handle_window_events(void);
 void handle_events(void);

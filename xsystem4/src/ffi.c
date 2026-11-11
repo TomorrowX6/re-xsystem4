@@ -403,9 +403,29 @@ void hll_call(int libno, int fno)
 
 	union vm_value r = { .i = 0 };
 	if (unimplemented) {
-		if (!fun || !fun->warned_unimplemented) {
-			if (fun)
+		bool should_warn = false;
+		if (fun) {
+			if (!fun->warned_unimplemented) {
 				fun->warned_unimplemented = true;
+				should_warn = true;
+			}
+		} else {
+			static uint64_t warned_null_pairs[128];
+			static size_t nr_warned_null_pairs = 0;
+			uint64_t key = ((uint64_t)(uint32_t)libno << 32) | (uint32_t)fno;
+			bool seen = false;
+			for (size_t i = 0; i < nr_warned_null_pairs; i++) {
+				if (warned_null_pairs[i] == key) {
+					seen = true;
+					break;
+				}
+			}
+			if (!seen && nr_warned_null_pairs < sizeof(warned_null_pairs) / sizeof(warned_null_pairs[0])) {
+				warned_null_pairs[nr_warned_null_pairs++] = key;
+				should_warn = true;
+			}
+		}
+		if (should_warn) {
 			WARNING("Unimplemented HLL function: %s.%s", ain->libraries[libno].name, f->name);
 		}
 		switch (f->return_type.data) {
@@ -417,7 +437,7 @@ void hll_call(int libno, int fno)
 			r.ref = NULL;
 			break;
 		case AIN_STRUCT:
-			r.i = heap_alloc_page(alloc_page(STRUCT_PAGE, f->return_type.struc, true));
+			r.i = alloc_struct(f->return_type.struc);
 			break;
 		case AIN_FLOAT:
 			r.f = 0.0f;

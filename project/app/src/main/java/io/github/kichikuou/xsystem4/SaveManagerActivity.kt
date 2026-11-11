@@ -151,6 +151,14 @@ internal fun ensureGameNotRunning(activity: Activity, onProceed: () -> Unit) {
                 Process.killProcess(gameProc.pid)
             } catch (_: Throwable) {
             }
+            for (attempt in 0 until 20) {
+                if (!isGameProcessRunning(activity)) break
+                try {
+                    Thread.sleep(25)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
             onProceed()
         }
         .setNegativeButton(R.string.cancel, null)

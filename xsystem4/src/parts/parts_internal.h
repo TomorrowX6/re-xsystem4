@@ -752,8 +752,13 @@ void parts_add_motion(struct parts *parts, struct parts_motion *motion);
 
 // input.c
 extern bool parts_began_click;
-void parts_input_reset_drag(struct parts *parts);
+void parts_input_reset_part(struct parts *parts);
 void parts_input_reset(void);
+struct iarray_writer;
+struct iarray_reader;
+void parts_input_save_state(struct iarray_writer *w);
+void parts_input_load_state(struct iarray_reader *r);
+void parts_input_load_legacy_state(void);
 
 // message.c
 enum parts_message_type {
@@ -778,6 +783,9 @@ enum parts_message_type {
 	PARTS_MSG_CHECK_CHANGED  = 20,
 	PARTS_MSG_SCROLL         = 21,
 	PARTS_MSG_RADIO_BUTTON_BOX = 22,
+	PARTS_MSG_SWIPE_BEGIN    = 23,
+	PARTS_MSG_SWIPING        = 24,
+	PARTS_MSG_SWIPE_END      = 25,
 };
 
 void parts_msg_push(struct parts* parts, int type, const char *fmt, ...);

@@ -320,6 +320,7 @@ class LauncherActivity : Activity(), GameListObserver {
         }
         val i = Intent()
         i.setClass(applicationContext, XSystem4Activity::class.java)
+        i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         i.putExtra(XSystem4Activity.EXTRA_GAME_ROOT, item.path.path)
         i.putExtra(XSystem4Activity.EXTRA_SAVE_DIR, item.savedir!!.path)
         startActivity(i)

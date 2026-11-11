@@ -39,4 +39,9 @@ int PE_GetSpecialComponentType(int no);
 struct string *PE_GetUserComponentName(int no);
 void PE_SetUserComponentData(int no, struct string *key, struct string *value);
 struct string *PE_GetUserComponentData(int no, struct string *key);
+struct iarray_writer;
+struct iarray_reader;
+void parts_activities_save(struct iarray_writer *w);
+void parts_activities_load(struct iarray_reader *r);
+void parts_activities_reconcile_legacy(void);
 #endif

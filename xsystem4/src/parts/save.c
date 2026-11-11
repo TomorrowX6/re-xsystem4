@@ -22,10 +22,11 @@
 #include "vm/page.h"
 #include "asset_manager.h"
 #include "parts.h"
+#include "parts_activity.h"
 #include "parts_internal.h"
 #include "../hll/iarray.h"
 
-#define CURRENT_SAVE_VERSION 26
+#define CURRENT_SAVE_VERSION 27
 
 static struct parts_context *back_scene;
 
@@ -490,7 +491,8 @@ static void load_parts_flash(struct iarray_reader *r, struct parts *parts,
 {
 	struct string *name = iarray_read_string_or_null(r);
 	parts_flash_load(parts, flash, name);
-	free_string(name);
+	if (name)
+		free_string(name);
 	flash->stopped = !!iarray_read(r);
 	parts_flash_seek(flash, iarray_read(r));
 }
@@ -678,7 +680,8 @@ static void load_parts_flat(struct iarray_reader *r, struct parts *parts,
 {
 	struct string *name = iarray_read_string_or_null(r);
 	parts_flat_load(parts, flat, name);
-	free_string(name);
+	if (name)
+		free_string(name);
 	flat->needs_advance = true;
 	flat->fps_rate = version >= 14 ? iarray_read_float(r) : 1.0f;
 	if (version >= 26) {
@@ -1073,6 +1076,7 @@ static void save_parts(struct iarray_writer *w, struct parts *parts)
 		iarray_write(w, parts->radio_children[i]);
 	iarray_write_string_or_null(w, parts->text_box_text);
 	iarray_write(w, parts->enable_speed_up);
+	iarray_write(w, parts->swipe_type);
 	motion_count_pos = iarray_writer_pos(w);
 	iarray_write(w, 0); // size of motion list
 
@@ -1214,6 +1218,9 @@ static void load_parts(struct iarray_reader *r, int version)
 			parts->text_box_text = string_ref(&EMPTY_STRING);
 		parts->enable_speed_up = iarray_read(r);
 	}
+	if (version >= 27) {
+		parts->swipe_type = iarray_read(r);
+	}
 	int motion_count = iarray_read(r);
 	for (int i = 0; i < motion_count; i++) {
 		struct parts_motion *motion = load_parts_motion(r);
@@ -1299,6 +1306,11 @@ static bool parts_engine_save(struct page **buffer, bool save_hidden, bool backs
 	}
 
 	iarray_write_at(&w, count_pos, count);
+	iarray_write(&w, !backscene);
+	if (!backscene) {
+		parts_activities_save(&w);
+		parts_input_save_state(&w);
+	}
 
 	if (*buffer) {
 		delete_page_vars(*buffer);
@@ -1343,6 +1355,8 @@ bool PE_Load(struct page **buffer)
 		return false;
 	}
 
+	if (!parts_current->background)
+		PE_ReleaseMessage();
 	parts_release_all();
 
 	if (version > 1)
@@ -1386,6 +1400,18 @@ bool PE_Load(struct page **buffer)
 			parts->parent = parent;
 			if (parent) TAILQ_INSERT_TAIL(&parent->children, parts, child_list_entry);
 			parts->pending_parent = -1;
+		}
+	}
+
+	if (!parts_current->background) {
+		if (version >= 27) {
+			if (iarray_read(&r)) {
+				parts_activities_load(&r);
+				parts_input_load_state(&r);
+			}
+		} else {
+			parts_activities_reconcile_legacy();
+			parts_input_load_legacy_state();
 		}
 	}
 

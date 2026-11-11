@@ -227,6 +227,19 @@ int mainex_v12_register(struct ex *ex)
 	return id;
 }
 
+int mainex_v12_register_at(int preferred_id, struct ex *ex)
+{
+	if (!ex) return -1;
+	if (preferred_id >= 2) {
+		ensure_reader_capacity(preferred_id + 1);
+		if (!readers[preferred_id]) {
+			readers[preferred_id] = ex;
+			return preferred_id;
+		}
+	}
+	return mainex_v12_register(ex);
+}
+
 static int mainex_add_reader(struct string *file)
 {
 	int id = mainex_v12_register(read_ex(file));
@@ -244,6 +257,13 @@ void mainex_v12_unregister(int id)
 	readers[id] = NULL;
 	free(reader_paths[id]);
 	reader_paths[id] = NULL;
+}
+
+void mainex_v12_unregister_activity(int id)
+{
+	if (id < 2 || id >= nr_readers || !readers[id] || reader_paths[id]) return;
+	ex_free(readers[id]);
+	readers[id] = NULL;
 }
 
 static void mainex_erase_reader(int id) { mainex_v12_unregister(id); }

@@ -1331,7 +1331,7 @@ void parts_release(int parts_no)
 	struct parts *root = parts;
 	while (root->parent) root = root->parent;
 	if (root->active_part == parts_no) root->active_part = 0;
-	parts_input_reset_drag(parts);
+	parts_input_reset_part(parts);
 	parts_widget_free(parts);
 	parts_panel_free(parts);
 	parts_scrollbar_free(parts);

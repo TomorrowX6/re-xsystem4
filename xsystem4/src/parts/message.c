@@ -26,7 +26,7 @@
 #include "parts.h"
 #include "parts_internal.h"
 
-#define PARTS_MSG_MAX_VARS 4
+#define PARTS_MSG_MAX_VARS 6
 
 struct parts_message {
 	STAILQ_ENTRY(parts_message) entry;
@@ -69,6 +69,9 @@ static int message_type_v12(int type)
 	case PARTS_MSG_CHECK_CHANGED: return 23;
 	case PARTS_MSG_SCROLL: return 21;
 	case PARTS_MSG_RADIO_BUTTON_BOX: return 22;
+	case PARTS_MSG_SWIPE_BEGIN: return 27;
+	case PARTS_MSG_SWIPING: return 28;
+	case PARTS_MSG_SWIPE_END: return 29;
 	default: VM_ERROR("Invalid internal Parts message type %d", type);
 	}
 }

@@ -619,6 +619,8 @@ static void parts_list_print(struct parts *parts, int indent)
 			case PARTS_CP_GRAY_FILTER:
 				sys_message(" gray-filter");
 				break;
+			default:
+				break;
 			}
 		}
 		sys_message(")");

@@ -451,7 +451,44 @@ void gfx_swap(void)
 	};
 	gfx_render(&job);
 
+#ifdef __ANDROID__
+	static uint64_t last_swap_tick = 0;
+	uint64_t perf_freq = wait_vsync ? SDL_GetPerformanceFrequency() : 0;
+	if (wait_vsync && perf_freq > 0 && last_swap_tick != 0) {
+		// On 120Hz panels that ignore Surface.setFrameRate(60f), waiting past
+		// the 8.33ms VSync (~12ms) before SwapWindow aligns cleanly to every
+		// second 120Hz VSync (16.67ms = 60fps) without missing 60Hz VSync.
+		uint64_t pre_target = last_swap_tick + (perf_freq * 12ULL) / 1000ULL;
+		uint64_t now = SDL_GetPerformanceCounter();
+		if (now < pre_target) {
+			uint32_t delay_ms = (uint32_t)(((pre_target - now) * 1000ULL) / perf_freq);
+			if (delay_ms > 0)
+				SDL_Delay(delay_ms);
+		}
+	}
+#endif
+
 	SDL_GL_SwapWindow(sdl.window);
+
+#ifdef __ANDROID__
+	if (wait_vsync && perf_freq > 0) {
+		uint64_t after_swap = SDL_GetPerformanceCounter();
+		uint64_t min_frame = last_swap_tick + (perf_freq * 15ULL) / 1000ULL;
+		if (last_swap_tick != 0 && after_swap < min_frame) {
+			uint64_t full_frame = last_swap_tick + perf_freq / 60ULL;
+			if (after_swap < full_frame) {
+				uint32_t delay_ms = (uint32_t)(((full_frame - after_swap) * 1000ULL) / perf_freq);
+				if (delay_ms > 0)
+					SDL_Delay(delay_ms);
+				after_swap = SDL_GetPerformanceCounter();
+			}
+		}
+		last_swap_tick = after_swap;
+	} else {
+		last_swap_tick = 0;
+	}
+#endif
+
 	glBindFramebuffer(GL_FRAMEBUFFER, main_surface_fb);
 	glViewport(0, 0, sdl.w, sdl.h);
 

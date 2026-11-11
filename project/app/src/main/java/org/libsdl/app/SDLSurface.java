@@ -80,10 +80,23 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         return getHolder().getSurface();
     }
 
+    private static void applyPreferredFrameRate(SurfaceHolder holder) {
+        if (Build.VERSION.SDK_INT >= 30 && holder != null) {
+            try {
+                Surface surface = holder.getSurface();
+                if (surface != null && surface.isValid()) {
+                    surface.setFrameRate(60.0f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     // Called when we have a valid drawing surface
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         Log.v("SDL", "surfaceCreated()");
+        applyPreferredFrameRate(holder);
         SDLActivity.onNativeSurfaceCreated();
     }
 
@@ -105,6 +118,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     public void surfaceChanged(SurfaceHolder holder,
                                int format, int width, int height) {
         Log.v("SDL", "surfaceChanged()");
+        applyPreferredFrameRate(holder);
 
         if (SDLActivity.mSingleton == null) {
             return;

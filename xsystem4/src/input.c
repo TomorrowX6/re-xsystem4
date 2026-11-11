@@ -23,6 +23,7 @@
 #include "gfx/private.h"
 #include "input.h"
 #include "parts.h"
+#include "savedata.h"
 #include "scene.h"
 #include "mixer.h"
 #include "vm.h"
@@ -245,6 +246,11 @@ static uint32_t long_touch_start_timestamp;
 static SDL_FRect long_touch_finger_rect;
 #define LONG_TOUCH_DURATION 1000
 
+void input_cancel_long_touch(void)
+{
+	long_touch_start_timestamp = 0;
+}
+
 static float scroll_gesture_y;
 #define SCROLL_GESTURE_SENSITIVITY 0.02f  // 2% of screen height
 
@@ -263,7 +269,10 @@ bool key_is_down(enum sact_keycode code)
 	if (code < 0 || code >= VK_NR_KEYCODES) {
 		return false;
 	}
-	if (!in_parts_poll && key_state[code]) {
+	bool is_mouse_btn = (code == VK_LBUTTON || code == VK_RBUTTON || code == VK_MBUTTON);
+	bool parts_polling = last_parts_poll_timestamp != 0 &&
+		(SDL_GetTicks() - last_parts_poll_timestamp) < 250;
+	if (!in_parts_poll && !(is_mouse_btn && parts_polling) && key_state[code]) {
 		mouse_down_unobserved[code] = false;
 	}
 	return key_state[code];
@@ -790,6 +799,9 @@ void handle_window_events(void)
 		case SDL_WINDOWEVENT:
 			handle_window_event(&e);
 			break;
+		case SDL_APP_WILLENTERBACKGROUND:
+			savedata_flush_on_background();
+			break;
 		}
 	}
 }
@@ -821,6 +833,9 @@ void handle_events(void)
 			break;
 		case SDL_APP_LOWMEMORY:
 			PE_FlushCGCache();
+			break;
+		case SDL_APP_WILLENTERBACKGROUND:
+			savedata_flush_on_background();
 			break;
 		case SDL_APP_DIDENTERFOREGROUND:
 			gfx_swap();

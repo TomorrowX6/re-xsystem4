@@ -557,16 +557,17 @@ static bool PartsEngine_Parts_GetPartsDrag(int parts_no)
 
 static void PartsEngine_Parts_SetSwipeType(int parts_no, int swipe_type)
 {
-	parts_get(parts_no)->swipe_type = swipe_type;
+	PE_Parts_SetSwipeType(parts_no, swipe_type);
 }
 
 static int PartsEngine_Parts_GetSwipeType(int parts_no)
 {
-	return parts_get(parts_no)->swipe_type;
+	return PE_Parts_GetSwipeType(parts_no);
 }
 
 static void PartsEngine_Parts_StopSwipe(void)
 {
+	PE_Parts_StopSwipe();
 }
 
 static bool PartsEngine_Parts_IsPartsPixelDecide(int parts_no)
