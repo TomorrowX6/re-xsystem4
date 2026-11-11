@@ -2,12 +2,14 @@ package io.github.kichikuou.xsystem4
 
 import android.content.Context
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import java.util.zip.ZipInputStream
 
 object GameModifierBridge {
     private const val TAG = "GameModifierBridge"
     private const val PREFS_NAME = "game_modifier_prefs"
+    private const val CONFIG_FILE_NAME = "modifier_config.json"
     private const val KEY_FLOATING_ENABLED = "floating_enabled"
     private const val KEY_LOCK_MASK = "lock_mask"
     private const val FULL_UNLOCK_ASSET = "full_unlock_saves.zip"
@@ -25,6 +27,7 @@ object GameModifierBridge {
     const val LOCK_INFINITE_ZIPPO = 1 shl 8
     const val LOCK_MAX_RESOURCES = 1 shl 9
     const val LOCK_TREASURE_100 = 1 shl 10
+    const val LOCK_DISABLE_STREAMER_MODE = 1 shl 11
 
     @Volatile
     private var loaded = false
@@ -47,30 +50,103 @@ object GameModifierBridge {
         }
     }
 
-    fun isFloatingEnabled(context: Context): Boolean {
+    private fun readConfigJson(context: Context): JSONObject {
+        val cfgFile = File(context.filesDir, CONFIG_FILE_NAME)
+        if (cfgFile.isFile) {
+            try {
+                return JSONObject(cfgFile.readText())
+            } catch (_: Throwable) {
+            }
+        }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_FLOATING_ENABLED, false)
+        return JSONObject().apply {
+            put(KEY_FLOATING_ENABLED, prefs.getBoolean(KEY_FLOATING_ENABLED, false))
+            put(KEY_LOCK_MASK, prefs.getInt(KEY_LOCK_MASK, 0))
+        }
+    }
+
+    private fun writeConfigJson(context: Context, json: JSONObject) {
+        try {
+            val cfgFile = File(context.filesDir, CONFIG_FILE_NAME)
+            val tmpFile = File(context.filesDir, "$CONFIG_FILE_NAME.tmp")
+            tmpFile.writeText(json.toString())
+            if (!tmpFile.renameTo(cfgFile)) {
+                cfgFile.writeText(json.toString())
+                tmpFile.delete()
+            }
+        } catch (_: Throwable) {
+        }
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean(KEY_FLOATING_ENABLED, json.optBoolean(KEY_FLOATING_ENABLED, false))
+            .putInt(KEY_LOCK_MASK, json.optInt(KEY_LOCK_MASK, 0))
+            .commit()
+    }
+
+    fun isFloatingEnabled(context: Context): Boolean {
+        return readConfigJson(context).optBoolean(KEY_FLOATING_ENABLED, false)
     }
 
     fun setFloatingEnabled(context: Context, enabled: Boolean) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(KEY_FLOATING_ENABLED, enabled).apply()
+        val json = readConfigJson(context)
+        json.put(KEY_FLOATING_ENABLED, enabled)
+        writeConfigJson(context, json)
     }
 
     fun getSavedLockMask(context: Context): Int {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getInt(KEY_LOCK_MASK, 0)
+        return readConfigJson(context).optInt(KEY_LOCK_MASK, 0)
     }
 
     fun setSavedLockMask(context: Context, mask: Int) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putInt(KEY_LOCK_MASK, mask).apply()
+        val json = readConfigJson(context)
+        json.put(KEY_LOCK_MASK, mask)
+        writeConfigJson(context, json)
         if (loaded) {
             try {
                 nativeSetLiveLocks(mask)
             } catch (_: Throwable) {
             }
         }
+    }
+
+    fun isDisableStreamerModeEnabled(context: Context): Boolean {
+        return (getSavedLockMask(context) and LOCK_DISABLE_STREAMER_MODE) != 0
+    }
+
+    fun setDisableStreamerModeEnabled(context: Context, enabled: Boolean) {
+        val cur = getSavedLockMask(context)
+        val next = if (enabled) (cur or LOCK_DISABLE_STREAMER_MODE) else (cur and LOCK_DISABLE_STREAMER_MODE.inv())
+        setSavedLockMask(context, next)
+    }
+
+    fun readStreamerModeForDir(saveDir: File): Int {
+        val f1 = File(saveDir, "GameConfig.asd")
+        val f2 = File(File(saveDir, "SaveData"), "GameConfig.asd")
+        val target = if (f1.isFile) f1 else if (f2.isFile) f2 else return -1
+        if (!ensureLoaded()) return -1
+        return try {
+            nativeReadStreamerMode(target.absolutePath)
+        } catch (_: Throwable) {
+            -1
+        }
+    }
+
+    fun writeStreamerModeForDir(saveDir: File, streamerModeEnabled: Boolean): Boolean {
+        val f1 = File(saveDir, "GameConfig.asd")
+        val f2 = File(File(saveDir, "SaveData"), "GameConfig.asd")
+        if (!f1.isFile && !f2.isFile) return false
+        if (!ensureLoaded()) return false
+        var anyOk = false
+        try {
+            if (f1.isFile && nativeWriteStreamerMode(f1.absolutePath, streamerModeEnabled)) {
+                anyOk = true
+            }
+            if (f2.isFile && nativeWriteStreamerMode(f2.absolutePath, streamerModeEnabled)) {
+                anyOk = true
+            }
+        } catch (_: Throwable) {
+        }
+        return anyOk
     }
 
     fun installFullUnlockSaves(context: Context, saveDir: File): Int {
@@ -200,4 +276,10 @@ object GameModifierBridge {
 
     @JvmStatic
     external fun nativeApplyLiveAction(actionSpec: String)
+
+    @JvmStatic
+    external fun nativeReadStreamerMode(configPath: String): Int
+
+    @JvmStatic
+    external fun nativeWriteStreamerMode(configPath: String, enabled: Boolean): Boolean
 }

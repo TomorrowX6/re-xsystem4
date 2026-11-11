@@ -41,12 +41,24 @@ class XSystem4Activity : SDLActivity() {
         addContentView(label, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
         GameModifierBridge.markAlreadyLoaded()
+        try {
+            GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+        } catch (_: Throwable) {
+        }
         window.decorView.postDelayed({ ensureModifierOverlayAttached() }, 3500L)
     }
 
     private fun ensureModifierOverlayAttached() {
         if (isFinishing || isDestroyed || modifierOverlay != null) return
         modifierOverlay = FloatingModifierOverlay(this).also { it.attach() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        try {
+            GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+        } catch (_: Throwable) {
+        }
     }
 
     override fun getLibraries(): Array<String> {

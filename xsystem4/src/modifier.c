@@ -40,12 +40,15 @@ static int s_pulse_key0_frames = 0;
 #define LOCK_INFINITE_ZIPPO     (1 << 8)
 #define LOCK_MAX_RESOURCES      (1 << 9)
 #define LOCK_TREASURE_100       (1 << 10)
+#define LOCK_DISABLE_STREAMER_MODE (1 << 11)
 
 /* GBK / SJIS names for special Rance 10 globals */
 #define GBK_BATTLE_COUNT  "\xa1\xf4\xd5\xbd\xb6\xb7\xbb\xd8\xca\xfd"
 #define SJIS_BATTLE_COUNT "\x81\x9f\x90\xed\x93\xac\x89\xf1\x90\x94"
 #define GBK_DIFFICULTY    "\xa1\xf4\xc4\xd1\xb6\xc8"
 #define SJIS_DIFFICULTY   "\x81\x9f\x93\xef\x88\xd5\x93\x78"
+/* GBK for "灌注Eins陈谢谢喵" (MOD streamer-mode unlock passphrase) */
+#define GBK_STREAMER_PASSPHRASE "\xb9\xe0\xd7\xa2\x45\x69\x6e\x73\xb3\xc2\xd0\xbb\xd0\xbb\xdf\xf7"
 
 static pthread_mutex_t g_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_live_lock_mask = 0;
@@ -244,6 +247,7 @@ static char *read_local_save_summary_str(const char *path)
 		return out;
 	}
 	cJSON_AddBoolToObject(root, "valid", true);
+	cJSON_AddBoolToObject(root, "ok", true);
 	if (gs->nr_comments > 0 && gs->comments[0] && gs->comments[0]->size > 0) {
 		char *utf = sjis2utf(gs->comments[0]->text, gs->comments[0]->size);
 		cJSON_AddStringToObject(root, "comment", utf ? utf : "");
@@ -635,6 +639,50 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
 	return any_ok;
 }
 
+static int read_game_config_streamer_mode(const char *config_path)
+{
+	if (!config_path || !config_path[0]) return -1;
+	sys4_set_text_gbk(true);
+	enum savefile_error serr;
+	struct gsave *gs = gsave_read(config_path, &serr);
+	if (!gs) return -1;
+	struct gsave_global *g_cfg = gs_find_global(gs, "g_gameConfig", NULL);
+	int32_t cfg_rec = g_cfg ? g_cfg->value : -1;
+	int32_t val = gs_get_field_int(gs, cfg_rec, "m_isSummaryMode", NULL, -1);
+	gsave_free(gs);
+	if (val < 0) return -1;
+	return val != 0 ? 1 : 0;
+}
+
+static bool write_game_config_streamer_mode(const char *config_path, bool streamer_mode_enabled)
+{
+	if (!config_path || !config_path[0]) return false;
+	sys4_set_text_gbk(true);
+	enum savefile_error serr;
+	struct gsave *gs = gsave_read(config_path, &serr);
+	if (!gs) return false;
+	struct gsave_global *g_cfg = gs_find_global(gs, "g_gameConfig", NULL);
+	int32_t cfg_rec = g_cfg ? g_cfg->value : -1;
+	if (cfg_rec < 0 || !gs_get_record_kv(gs, cfg_rec, "m_isSummaryMode", NULL)) {
+		gsave_free(gs);
+		return false;
+	}
+	gs_set_field_int(gs, cfg_rec, "m_isSummaryMode", NULL, streamer_mode_enabled ? 1 : 0);
+
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(config_path, "wb", &tmp_path);
+	bool ok = false;
+	if (fp) {
+		if (gsave_write(gs, fp, false, 1) == SAVEFILE_SUCCESS &&
+		    atomic_save_commit(fp, config_path, tmp_path, true))
+			ok = true;
+		else
+			atomic_save_abort(fp, tmp_path);
+	}
+	gsave_free(gs);
+	return ok;
+}
+
 #endif /* __ANDROID__ */
 
 /* =========================================================================
@@ -709,6 +757,12 @@ static struct page *vm_get_field_page(struct page *page, const char *name1, cons
 	union vm_value *v = vm_get_struct_member(page, name1, name2);
 	if (!v) return NULL;
 	return vm_safe_get_page(v->i);
+}
+
+static void vm_set_string_slot(int slot, const char *cstr)
+{
+	if (!cstr || slot <= 0 || !string_index_valid(slot)) return;
+	heap_string_assign(slot, make_string(cstr, strlen(cstr)));
 }
 
 static int32_t vm_get_tt(int idx, int32_t def_val)
@@ -845,6 +899,7 @@ static void vm_execute_pending_action(const char *json_str)
 	if (!act) return;
 
 	struct page *gc    = vm_get_global_page("g_gameContext", NULL);
+	struct page *cfg   = vm_get_global_page("g_gameConfig", NULL);
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *pb    = vm_get_global_page("g_partyBonus", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
@@ -1035,6 +1090,19 @@ static void vm_execute_pending_action(const char *json_str)
 		vm_process_all_characters(set_char_star, set_char_exp);
 	}
 
+	if ((it = cJSON_GetObjectItem(act, "streamerMode")) && cJSON_IsNumber(it)) {
+		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, it->valueint != 0 ? 1 : 0);
+	}
+	if ((it = cJSON_GetObjectItem(act, "fillStreamerPassphrase")) &&
+	    (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
+		struct page *c2p = vm_get_field_page(gc, "m_chapter2PlayerInfo", "<Chapter2PlayerInfo>");
+		if (c2p && c2p->type == STRUCT_PAGE) {
+			union vm_value *nv = vm_get_struct_member(c2p, "<Name>", "m_name");
+			if (!nv && c2p->nr_vars > 0) nv = &c2p->values[0];
+			if (nv) vm_set_string_slot(nv->i, GBK_STREAMER_PASSPHRASE);
+		}
+	}
 	if ((it = cJSON_GetObjectItem(act, "triggerKey0")) && (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
 		s_pulse_key0_frames = 8;
 		key_state[VK_0] = true;
@@ -1051,6 +1119,13 @@ static void vm_execute_pending_action(const char *json_str)
 static void vm_enforce_locks(int mask)
 {
 	if (!mask || !ain) return;
+
+	if (mask & LOCK_DISABLE_STREAMER_MODE) {
+		struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
+		if (cfg && vm_get_field_int(cfg, "m_isSummaryMode", NULL, 0) != 0) {
+			vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
+		}
+	}
 
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
@@ -1141,6 +1216,7 @@ static char *vm_build_live_state_json(int lock_mask)
 	cJSON_AddNumberToObject(root, "lockMask", lock_mask);
 
 	struct page *gc    = vm_get_global_page("g_gameContext", NULL);
+	struct page *cfg   = vm_get_global_page("g_gameConfig", NULL);
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *pb    = vm_get_global_page("g_partyBonus", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
@@ -1148,6 +1224,10 @@ static char *vm_build_live_state_json(int lock_mask)
 	struct page *cs    = vm_get_field_page(ps, "m_status", NULL);
 	struct page *bc    = vm_get_global_page("g_battleContext", NULL);
 	struct page *enemy = vm_get_global_page("g_enemy", NULL);
+
+	if (cfg) {
+		cJSON_AddNumberToObject(root, "streamerMode", vm_get_field_int(cfg, "m_isSummaryMode", NULL, 0));
+	}
 
 	if (!ain || !gc || !pcp) {
 		cJSON_AddBoolToObject(root, "inGame", false);
@@ -1395,6 +1475,28 @@ Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeApplyLiveAction(
 	g_pending_action_json = strdup(act);
 	pthread_mutex_unlock(&g_mod_mutex);
 	(*env)->ReleaseStringUTFChars(env, jaction, act);
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeReadStreamerMode(
+	JNIEnv *env, jclass clazz, jstring jpath)
+{
+	if (!jpath) return -1;
+	const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+	int res = read_game_config_streamer_mode(path);
+	(*env)->ReleaseStringUTFChars(env, jpath, path);
+	return (jint)res;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeWriteStreamerMode(
+	JNIEnv *env, jclass clazz, jstring jpath, jboolean jenabled)
+{
+	if (!jpath) return JNI_FALSE;
+	const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+	bool ok = write_game_config_streamer_mode(path, jenabled == JNI_TRUE);
+	(*env)->ReleaseStringUTFChars(env, jpath, path);
+	return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 #endif /* __ANDROID__ */

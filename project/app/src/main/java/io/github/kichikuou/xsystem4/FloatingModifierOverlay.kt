@@ -2,6 +2,9 @@ package io.github.kichikuou.xsystem4
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import android.view.Gravity
@@ -169,7 +172,11 @@ class FloatingModifierOverlay(private val activity: Activity) {
         val j = readLiveJson()
         val inGame = j.optBoolean("inGame", false)
         val inBattle = j.optBoolean("inBattle", false)
-        val lockCount = Integer.bitCount(GameModifierBridge.getSavedLockMask(activity))
+        val savedMask = GameModifierBridge.getSavedLockMask(activity)
+        val lockCount = Integer.bitCount(savedMask)
+        val streamerLockOff = (savedMask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0
+        val liveStreamerMode = j.optInt("streamerMode", if (streamerLockOff) 0 else 1)
+        val isStreamerDisabled = streamerLockOff || (j.has("streamerMode") && liveStreamerMode == 0)
 
         val titleText = if (!inGame) {
             tr("悬浮窗修改器", "ゲーム改造", "Floating Modifier")
@@ -185,8 +192,15 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("悬浮窗修改器 [回合:$turn · 食券:$food · HP:$pHp]", "改造 [T:$turn · 食券:$food · HP:$pHp]", "Modifier [Turn:$turn · HP:$pHp]")
         }
 
+        val streamerItemLabel = if (isStreamerDisabled) {
+            tr("关闭主播模式：已开启 [点击恢复主播模式]", "配信者モード無効：ON", "Disable Streamer Mode: ON")
+        } else {
+            tr("关闭主播模式：未开启 [点击关闭主播模式]", "配信者モード無効：OFF", "Disable Streamer Mode: OFF")
+        }
+
         val items = arrayOf(
             tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…"),
+            streamerItemLabel,
             tr("战斗快捷指令…", "戦闘クイック操作…", "Battle Quick Actions…"),
             tr("一键全局强化…", "一括強化プリセット…", "One-Click Boosts…"),
             tr("修改资源与回合…", "リソース・ターン編集…", "Edit Resources & Turn…"),
@@ -201,13 +215,22 @@ class FloatingModifierOverlay(private val activity: Activity) {
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> showLocksDialog()
-                    1 -> showBattleQuickDialog()
-                    2 -> showOneClickBoostDialog()
-                    3 -> showEditResourcesDialog(j)
-                    4 -> showEditPartyDialog(j)
-                    5 -> showEditWorldDialog(j)
-                    6 -> showEditCardsDialog()
-                    7 -> {
+                    1 -> {
+                        val turnOffStreamer = !isStreamerDisabled
+                        GameModifierBridge.setDisableStreamerModeEnabled(activity, turnOffStreamer)
+                        sendAction(
+                            JSONObject().put("streamerMode", if (turnOffStreamer) 0 else 1),
+                            if (turnOffStreamer) tr("已关闭主播模式（若卡面已缓存，返回标题重进即可刷新）", "配信者モードを無効化しました", "Streamer Mode disabled")
+                            else tr("已重新开启主播模式", "配信者モードを有効化しました", "Streamer Mode enabled")
+                        )
+                    }
+                    2 -> showBattleQuickDialog()
+                    3 -> showOneClickBoostDialog()
+                    4 -> showEditResourcesDialog(j)
+                    5 -> showEditPartyDialog(j)
+                    6 -> showEditWorldDialog(j)
+                    7 -> showEditCardsDialog()
+                    8 -> {
                         floatingBtn?.visibility = View.GONE
                         Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
                     }
@@ -219,6 +242,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showLocksDialog() {
         val lockDefs = listOf(
+            GameModifierBridge.LOCK_DISABLE_STREAMER_MODE to tr("关闭主播模式 (日不落MOD)", "配信者モード無効化 (MOD)", "Disable Streamer Mode (MOD)"),
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
             GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
@@ -243,6 +267,12 @@ class FloatingModifierOverlay(private val activity: Activity) {
             }
             .setPositiveButton(R.string.ok) { _, _ ->
                 GameModifierBridge.setSavedLockMask(activity, mask)
+                if ((mask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0) {
+                    try {
+                        GameModifierBridge.nativeApplyLiveAction(JSONObject().put("streamerMode", 0).toString())
+                    } catch (_: Throwable) {
+                    }
+                }
                 Toast.makeText(activity, tr("已更新锁定项", "ロックを更新しました", "Locks updated"), Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton(tr("全部关闭", "全解除", "Clear All")) { _, _ ->
@@ -300,6 +330,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("一键部队满血与全属性+999%", "部隊HP99万＋全ステータス+999%", "Max Party HP & +999% Multipliers"),
             tr("一键全卡牌99叠卡 + 全角色5星", "全カード99枚＋全キャラ★5", "All Cards x99 & All Chars 5★"),
             tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties"),
+            tr("一键关闭主播模式并填入MOD口令 (灌注Eins陈谢谢喵)", "配信者モード解除パス自動入力 (キー0)", "Auto-Fill Unlock Passphrase & Key 0"),
             tr("打开MOD内置作弊器 (按键0)", "MOD内蔵チートを開く (キー0)", "Open MOD Cheat Console (Key 0)")
         )
         AlertDialog.Builder(activity)
@@ -382,7 +413,23 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         },
                         tr("已生效：四国满兵力与人类零伤亡", "四国兵力最大を適用", "World & armies maxed")
                     )
-                    5 -> sendAction(
+                    5 -> {
+                        val pass = "灌注Eins陈谢谢喵"
+                        try {
+                            val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            cm?.setPrimaryClip(ClipData.newPlainText("mod_pass", pass))
+                        } catch (_: Throwable) {
+                        }
+                        GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
+                        sendAction(
+                            JSONObject()
+                                .put("streamerMode", 0)
+                                .put("fillStreamerPassphrase", true)
+                                .put("triggerKey0", true),
+                            tr("已关闭主播模式并自动填入“灌注Eins陈谢谢喵”（同时已复制剪贴板）", "パスフレーズを自動入力してキー0を送信しました", "Passphrase filled & Key 0 sent")
+                        )
+                    }
+                    6 -> sendAction(
                         JSONObject().put("triggerKey0", true),
                         tr("已发送按键0", "キー0を送信しました", "Sent Key 0")
                     )

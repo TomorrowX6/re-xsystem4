@@ -105,6 +105,16 @@ private fun formatFileSize(bytes: Long): String {
     }
 }
 
+internal fun isGameProcessRunning(context: Context): Boolean {
+    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    val targetProcName = "${context.packageName}:game"
+    return try {
+        am?.runningAppProcesses?.any { it.processName == targetProcName } == true
+    } catch (_: Throwable) {
+        false
+    }
+}
+
 internal fun ensureGameNotRunning(activity: Activity, onProceed: () -> Unit) {
     val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
     val targetProcName = "${activity.packageName}:game"
