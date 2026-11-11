@@ -36,6 +36,7 @@ static struct id_pool bgm;
 // periodically to clean up channels that have finished playing.
 #define NR_ANONYMOUS_CHANNELS 64
 static int anonymous_channels[NR_ANONYMOUS_CHANNELS];
+static bool anonymous_is_system[NR_ANONYMOUS_CHANNELS];
 
 void audio_init(void)
 {
@@ -48,6 +49,7 @@ void audio_init(void)
 
 	for (int i = 0; i < NR_ANONYMOUS_CHANNELS; i++) {
 		anonymous_channels[i] = -1;
+		anonymous_is_system[i] = false;
 	}
 
 	mixer_init();
@@ -64,6 +66,7 @@ void audio_reset(void)
 	}
 	for (int i = 0; i < NR_ANONYMOUS_CHANNELS; i++) {
 		anonymous_channels[i] = -1;
+		anonymous_is_system[i] = false;
 	}
 }
 
@@ -74,12 +77,13 @@ void audio_update(void)
 			if (!wav_is_playing(anonymous_channels[i])) {
 				wav_unprepare(anonymous_channels[i]);
 				anonymous_channels[i] = -1;
+				anonymous_is_system[i] = false;
 			}
 		}
 	}
 }
 
-bool audio_play_sound(int sound_no)
+static bool audio_play_sound_ex(int sound_no, bool is_system)
 {
 	for (int i = 0; i < NR_ANONYMOUS_CHANNELS; i++) {
 		if (anonymous_channels[i] == -1) {
@@ -91,11 +95,22 @@ bool audio_play_sound(int sound_no)
 				return false;
 			}
 			anonymous_channels[i] = ch;
+			anonymous_is_system[i] = is_system;
 			return true;
 		}
 	}
 	WARNING("Failed to allocate anonymous audio channel");
 	return false;
+}
+
+bool audio_play_sound(int sound_no)
+{
+	return audio_play_sound_ex(sound_no, false);
+}
+
+bool audio_play_system_sound(int sound_no)
+{
+	return audio_play_sound_ex(sound_no, true);
 }
 
 bool audio_play_archive_data(struct archive_data *dfile)
@@ -110,11 +125,22 @@ bool audio_play_archive_data(struct archive_data *dfile)
 				return false;
 			}
 			anonymous_channels[i] = ch;
+			anonymous_is_system[i] = false;
 			return true;
 		}
 	}
 	WARNING("Failed to allocate anonymous audio channel");
 	return false;
+}
+
+void audio_stop_non_system_channels(void)
+{
+	for (int i = 0; i < NR_ANONYMOUS_CHANNELS; i++) {
+		if (anonymous_channels[i] >= 0 && !anonymous_is_system[i]) {
+			wav_unprepare(anonymous_channels[i]);
+			anonymous_channels[i] = -1;
+		}
+	}
 }
 
 bool wav_exists(int no) { return asset_exists(ASSET_SOUND, no); }

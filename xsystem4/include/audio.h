@@ -27,8 +27,10 @@ void audio_init(void);
 void audio_reset(void);
 void audio_update(void);
 bool audio_play_sound(int sound_no);
+bool audio_play_system_sound(int sound_no);
 // Takes ownership of dfile.
 bool audio_play_archive_data(struct archive_data *dfile);
+void audio_stop_non_system_channels(void);
 
 bool wav_exists(int no);
 bool bgm_exists(int no);

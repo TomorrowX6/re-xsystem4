@@ -24,6 +24,7 @@
 
 #include "vm/heap.h"
 #include "vm/page.h"
+#include "audio.h"
 #include "id_pool.h"
 #include "kiwi.h"
 #include "movie.h"
@@ -2132,7 +2133,7 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_SetThumbnailReductionSize, PE_SetThumbnailReductionSize),
 	    HLL_EXPORT(Parts_SetThumbnailMode, PE_SetThumbnailMode),
 	    HLL_EXPORT(GetClickNumber, PE_GetClickPartsNumber),
-	    HLL_EXPORT(StopSoundWithoutSystemSound, kiwi_stop_non_system_sound),
+	    HLL_EXPORT(StopSoundWithoutSystemSound, audio_stop_non_system_channels),
 	    HLL_EXPORT(ReleaseActivity, PE_ReleaseActivity),
 	    HLL_TODO_EXPORT(CrateActivityBinary, PartsEngine_CrateActivityBinary),
 	    HLL_TODO_EXPORT(ReadActivityBinary, PartsEngine_ReadActivityBinary),

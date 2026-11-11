@@ -43,6 +43,31 @@
 
 static int current_global;
 
+// Preserve static EX-database caches initialized at startup (such as Rance 10's
+// g_questCollection and g_quest) that were placed in the local save group, so
+// loading pre-MOD / older saves does not overwrite active MOD quest tables.
+static bool should_preserve_static_global(int global_index)
+{
+	if (global_index < 0 || global_index >= ain->nr_globals)
+		return false;
+	const char *name = ain->globals[global_index].name;
+	if (!name)
+		return false;
+	if (!strcmp(name, "g_questCollection")) {
+		struct page *p = heap_get_page(global_get(global_index).i);
+		if (p && p->type == STRUCT_PAGE && p->nr_vars >= 2) {
+			struct page *quests = heap_get_page(p->values[0].i);
+			if (quests && quests->type == ARRAY_PAGE && quests->nr_vars > 0)
+				return true;
+		}
+	} else if (!strcmp(name, "g_quest")) {
+		struct page *arr = heap_get_page(global_get(global_index).i);
+		if (arr && arr->type == ARRAY_PAGE && arr->nr_vars > 0)
+			return true;
+	}
+	return false;
+}
+
 #define invalid_save_data(msg, data) {					\
 		char *str = data ? cJSON_Print(data) : strdup("NULL");	\
 		if (!str) str = strdup("PRINTING FAILED");		\
@@ -580,6 +605,11 @@ static int load_globals_from_json(const char *path, const char *keyname, const c
 		}
 		current_global = i;
 
+		if (should_preserve_static_global(i)) {
+			if (n)
+				(*n)++;
+			continue;
+		}
 		bool call_dtors = false; // Destructors for old objects are not called.
 		global_set(i, json_to_vm_value(ain->globals[i].type.data, ain->globals[i].type.struc, ain->globals[i].type.rank, value), call_dtors);
 		if (n)
@@ -772,6 +802,11 @@ int load_globals_from_gsave(struct gsave *save, const char *keyname, const char 
 		if (type->data != g->type) {
 			WARNING("%s: type mismatch", display_sjis0(g->name));
 			return 0;
+		}
+		if (should_preserve_static_global(global_index)) {
+			if (n)
+				(*n)++;
+			continue;
 		}
 		bool call_dtors = false; // Destructors for old objects should not be called.
 		global_set(global_index, gsave_to_vm_value_typed(save, type, g->value), call_dtors);

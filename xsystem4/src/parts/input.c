@@ -119,9 +119,9 @@ static void parts_play_sound(struct parts *parts, int state)
 	if (parts->sound_names[state]->size)
 		kiwi_play_system_sound(parts->sound_names[state]);
 	else if (state == PARTS_STATE_HOVERED && parts->on_cursor_sound >= 0)
-		audio_play_sound(parts->on_cursor_sound);
+		audio_play_system_sound(parts->on_cursor_sound);
 	else if (state == PARTS_STATE_CLICKED && parts->on_click_sound >= 0)
-		audio_play_sound(parts->on_click_sound);
+		audio_play_system_sound(parts->on_click_sound);
 }
 
 static bool parts_hittest(struct parts *parts, int state, Point pos)

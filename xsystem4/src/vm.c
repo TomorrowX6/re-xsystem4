@@ -404,6 +404,24 @@ static void scenario_call(int slot)
 
 static int *lambda_parents;
 
+static bool is_callback_binding_op(unsigned op, size_t address)
+{
+	if (op == DG_NEW_FROM_METHOD || op == DG_SET || op == DG_ADD ||
+	    op == DG_EXIST || op == DG_ERASE || op == CALLFUNC2)
+		return true;
+	if (op == CALLHLL) {
+		int lib = LittleEndian_getDW(ain->code, address + 2);
+		int fn = LittleEndian_getDW(ain->code, address + 6);
+		if (lib >= 0 && lib < ain->nr_libraries &&
+		    fn >= 0 && fn < ain->libraries[lib].nr_functions) {
+			struct ain_hll_function *hf = &ain->libraries[lib].functions[fn];
+			return hf->nr_arguments > 0 &&
+			       hf->arguments[hf->nr_arguments - 1].type.data == AIN_HLL_FUNC;
+		}
+	}
+	return false;
+}
+
 static void init_lambda_parents(void)
 {
 	free(lambda_parents);
@@ -413,6 +431,8 @@ static void init_lambda_parents(void)
 	for (int i = 0; i < ain->nr_functions; i++) lambda_parents[i] = -1;
 	int *nesting = xmalloc(ain->nr_functions * sizeof(int));
 	int depth = 0;
+	unsigned prev_op = 0;
+	int prev_arg = -1;
 	for (size_t address = 0; address < ain->code_size;) {
 		unsigned op = LittleEndian_getW(ain->code, address) & ~OPTYPE_MASK;
 		if (op >= NR_OPCODES || address + instruction_width(op) > ain->code_size)
@@ -421,12 +441,22 @@ static void init_lambda_parents(void)
 			int fno = LittleEndian_getDW(ain->code, address + 2);
 			if (fno < 0 || fno >= ain->nr_functions || depth >= ain->nr_functions)
 				VM_ERROR("Invalid function scope at 0x%zx", address);
-			if (ain->functions[fno].is_lambda && depth)
+			if (ain->functions[fno].is_lambda && depth && lambda_parents[fno] < 0)
 				lambda_parents[fno] = nesting[depth - 1];
 			nesting[depth++] = fno;
 		} else if (op == ENDFUNC && depth) {
 			depth--;
+		} else if (prev_op == PUSH && depth > 0 &&
+			   prev_arg >= 0 && prev_arg < ain->nr_functions &&
+			   ain->functions[prev_arg].is_lambda &&
+			   is_callback_binding_op(op, address)) {
+			// Nested expression lambdas may be emitted before their enclosing
+			// outer lambda's FUNC opcode; bind them to the scope that creates
+			// the delegate/callback reference.
+			lambda_parents[prev_arg] = nesting[depth - 1];
 		}
+		prev_op = op;
+		prev_arg = (op == PUSH) ? LittleEndian_getDW(ain->code, address + 2) : -1;
 		address += instruction_width(op);
 	}
 	free(nesting);
