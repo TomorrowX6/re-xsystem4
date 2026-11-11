@@ -57,10 +57,6 @@ data class Item(val name: String, val path: File, val homedir: File, val savedir
             }
             val savedir = File(context.filesDir, "saves/${dir.name}")
             savedir.mkdirs()
-            File(dir, "crash.log").delete()
-            File(dir, "crash_history.log").delete()
-            File(savedir, "crash.log").delete()
-            File(savedir, "crash_history.log").delete()
             val hasModMarker = File(dir, ".mod_installed_files.txt").exists() ||
                 File(dir, "Rance10MODCG.afa").exists() ||
                 (dir.listFiles()?.any { it.name.endsWith(".vanilla.bak") } == true)

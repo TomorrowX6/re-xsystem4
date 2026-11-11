@@ -120,8 +120,8 @@ void dungeon_map_init(struct dungeon_context *ctx)
 	map->textures = xcalloc(dgn->size_y, sizeof(struct texture));
 	map->nr_textures = dgn->size_y;
 
-	int map_width;
-	int map_height;
+	int map_width = 0;
+	int map_height = 0;
 	switch (ctx->version) {
 	case DRAW_DUNGEON_1: {
 			// Calculate the bounding box on the XZ plane so that map is drawn in the

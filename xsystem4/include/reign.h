@@ -279,6 +279,8 @@ const vec3 *RE_instance_get_path_line(struct RE_instance *instance, int *nr_path
 bool RE_instance_optimize_path_line(struct RE_instance *instance);
 bool RE_instance_calc_path_finder_intersect_eye_vec(struct RE_instance *instance, int mouse_x, int mouse_y, vec3 out);
 bool RE_plugin_transform_pos_to_view_pos(struct RE_plugin *plugin, float x, float y, float z, int *view_x, int *view_y);
+bool RE_plugin_get_camera_x_vector(struct RE_plugin *plugin, vec3 out);
+bool RE_plugin_get_camera_y_vector(struct RE_plugin *plugin, vec3 out);
 bool RE_plugin_get_camera_z_vector(struct RE_plugin *plugin, vec3 out);
 void RE_plugin_reset_light_param(struct RE_plugin *plugin);
 bool RE_plugin_set_fog_type(struct RE_plugin *plugin, int type);

@@ -768,23 +768,28 @@ static int save_rsave_image(const char *key, const char *path)
 	if (!save)
 		return 0;
 	char *full_path = savedir_path(path);
-	FILE *fp = file_open_utf8(full_path, "wb");
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(full_path, "wb", &tmp_path);
 	if (!fp) {
 		WARNING("Failed to open save file %s: %s", display_utf0(full_path), strerror(errno));
 		free(full_path);
 		rsave_free(save);
 		return 0;
 	}
-	free(full_path);
 
 	bool encrypt = true;
 	int compression_level = 1;
 	enum savefile_error error = rsave_write(save, fp, encrypt, compression_level);
-	if (error != SAVEFILE_SUCCESS)
-		WARNING("Failed to write save file: %s", savefile_strerror(error));
-	fclose(fp);
 	rsave_free(save);
-	return 1;
+	if (error != SAVEFILE_SUCCESS) {
+		WARNING("Failed to write save file: %s", savefile_strerror(error));
+		atomic_save_abort(fp, tmp_path);
+		free(full_path);
+		return 0;
+	}
+	bool ok = atomic_save_commit(fp, full_path, tmp_path, false);
+	free(full_path);
+	return ok ? 1 : 0;
 }
 
 static int save_json_image(const char *key, const char *path)
@@ -1476,23 +1481,28 @@ static int write_rsave_image_comments(const char *key, const char *path, struct 
 		save->comments[i] = xstrdup(heap_get_string(comments->values[i].i)->text);
 	}
 
-	FILE *fp = file_open_utf8(full_path, "wb");
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(full_path, "wb", &tmp_path);
 	if (!fp) {
 		WARNING("Failed to open save file %s: %s", display_utf0(full_path), strerror(errno));
 		free(full_path);
 		rsave_free(save);
 		return 0;
 	}
-	free(full_path);
 
 	bool encrypt = true;
 	int compression_level = 1;
 	error = rsave_write(save, fp, encrypt, compression_level);
-	if (error != SAVEFILE_SUCCESS)
-		WARNING("Failed to write save file: %s", savefile_strerror(error));
-	fclose(fp);
 	rsave_free(save);
-	return 1;
+	if (error != SAVEFILE_SUCCESS) {
+		WARNING("Failed to write save file: %s", savefile_strerror(error));
+		atomic_save_abort(fp, tmp_path);
+		free(full_path);
+		return 0;
+	}
+	bool ok = atomic_save_commit(fp, full_path, tmp_path, false);
+	free(full_path);
+	return ok ? 1 : 0;
 }
 
 static int write_json_image_comments(const char *key, const char *path, struct page *comments)

@@ -22,6 +22,7 @@
 #include "gfx/gfx.h"
 #include "gfx/private.h"
 #include "input.h"
+#include "parts.h"
 #include "scene.h"
 #include "mixer.h"
 #include "vm.h"
@@ -198,6 +199,11 @@ static int synthetic_mouse_y = 0;
 static bool has_last_touch_down_pos = false;
 static SDL_Point last_touch_down_pos = {0, 0};
 static uint32_t last_parts_poll_timestamp = 0;
+static bool in_parts_poll = false;
+static bool mouse_down_unobserved[VK_NR_KEYCODES];
+static uint32_t mouse_down_timestamp[VK_NR_KEYCODES];
+static bool deferred_mouse_release[VK_NR_KEYCODES];
+#define DEFERRED_MOUSE_RELEASE_MAX_DELAY 100
 #define SYNTHETIC_MOUSE_EVENT_DELAY 50
 #define SYNTHETIC_MOUSE_RELEASE_FALLBACK_DELAY 250
 
@@ -205,17 +211,25 @@ static void fire_deferred_events(bool from_parts_poll, bool allow_press);
 
 void input_parts_poll_begin(bool allow_press)
 {
-	handle_events();
+	in_parts_poll = true;
 	if (allow_press)
 		last_parts_poll_timestamp = SDL_GetTicks();
+	handle_events();
 	fire_deferred_events(true, allow_press);
 }
 
 void input_notify_parts_poll(bool allow_press, bool clicking)
 {
-	if (clicking) {
+	in_parts_poll = false;
+	if (allow_press && clicking) {
 		synthetic_mouse_down_observed = true;
-	} else {
+		if (key_state[VK_LBUTTON])
+			mouse_down_unobserved[VK_LBUTTON] = false;
+		if (key_state[VK_RBUTTON])
+			mouse_down_unobserved[VK_RBUTTON] = false;
+		if (key_state[VK_MBUTTON])
+			mouse_down_unobserved[VK_MBUTTON] = false;
+	} else if (!clicking) {
 		synthetic_mouse_up_observed = true;
 		if (allow_press && nr_deferred_synthetic_mouse_events > 0 &&
 		    deferred_synthetic_mouse_events[0].state == SDL_PRESSED) {
@@ -249,6 +263,9 @@ bool key_is_down(enum sact_keycode code)
 	if (code < 0 || code >= VK_NR_KEYCODES) {
 		return false;
 	}
+	if (!in_parts_poll && key_state[code]) {
+		mouse_down_unobserved[code] = false;
+	}
 	return key_state[code];
 }
 
@@ -258,6 +275,8 @@ void key_clear_flag(bool no_ctrl)
 		if (no_ctrl && i == VK_CONTROL)
 			continue;
 		key_state[i] = false;
+		mouse_down_unobserved[i] = false;
+		deferred_mouse_release[i] = false;
 	}
 }
 
@@ -324,8 +343,20 @@ static void key_event(SDL_KeyboardEvent *e, bool pressed)
 static void mouse_event(SDL_MouseButtonEvent *e)
 {
 	enum sact_keycode code = sdl_to_sact_button(e->button);
-	if (code)
-		key_state[code] = e->state == SDL_PRESSED;
+	if (code) {
+		if (e->state == SDL_PRESSED) {
+			deferred_mouse_release[code] = false;
+			key_state[code] = true;
+			mouse_down_unobserved[code] = true;
+			mouse_down_timestamp[code] = SDL_GetTicks();
+		} else if (key_state[code] && mouse_down_unobserved[code]) {
+			deferred_mouse_release[code] = true;
+		} else {
+			key_state[code] = false;
+			deferred_mouse_release[code] = false;
+			mouse_down_unobserved[code] = false;
+		}
+	}
 #ifdef DEBUGGER_ENABLED
 	if (e->button == SDL_BUTTON_MIDDLE && e->state == SDL_PRESSED
 			&& (dbg_start_in_debugger || dbg_dap))
@@ -633,7 +664,7 @@ static void pop_deferred_synthetic_mouse_event(uint32_t now)
 static void fire_deferred_events(bool from_parts_poll, bool allow_press)
 {
 	uint32_t now = SDL_GetTicks();
-	bool parts_active = last_parts_poll_timestamp != 0 && (now - last_parts_poll_timestamp) < 200;
+	bool parts_active = last_parts_poll_timestamp != 0 && (now - last_parts_poll_timestamp) < 500;
 
 	// Flush the next deferred synthetic mouse button event once the game
 	// has observed the preceding hover/press/release phase (or after the timeout).
@@ -681,9 +712,7 @@ static void fire_deferred_events(bool from_parts_poll, bool allow_press)
 			if (ready) {
 				bool was_pressed = ev->state == SDL_PRESSED;
 				pop_deferred_synthetic_mouse_event(now);
-				if (was_pressed)
-					synthetic_mouse_down_observed = true;
-				else
+				if (!was_pressed)
 					synthetic_mouse_up_observed = true;
 			}
 		}
@@ -767,6 +796,18 @@ void handle_window_events(void)
 
 void handle_events(void)
 {
+	static const enum sact_keycode mouse_btns[] = { VK_LBUTTON, VK_RBUTTON, VK_MBUTTON };
+	uint32_t poll_now = SDL_GetTicks();
+	for (size_t i = 0; i < sizeof(mouse_btns) / sizeof(mouse_btns[0]); i++) {
+		enum sact_keycode code = mouse_btns[i];
+		if (deferred_mouse_release[code] &&
+		    (!mouse_down_unobserved[code] || (poll_now - mouse_down_timestamp[code]) >= DEFERRED_MOUSE_RELEASE_MAX_DELAY)) {
+			key_state[code] = false;
+			deferred_mouse_release[code] = false;
+			mouse_down_unobserved[code] = false;
+		}
+	}
+
 	fire_deferred_events(false, false);
 
 	SDL_Event e;
@@ -778,8 +819,15 @@ void handle_events(void)
 		case SDL_WINDOWEVENT:
 			handle_window_event(&e);
 			break;
+		case SDL_APP_LOWMEMORY:
+			PE_FlushCGCache();
+			break;
 		case SDL_APP_DIDENTERFOREGROUND:
 			gfx_swap();
+			break;
+		case SDL_AUDIODEVICEREMOVED:
+			if (!e.adevice.iscapture)
+				mixer_handle_device_removed(e.adevice.which);
 			break;
 		case SDL_KEYDOWN:
 			if (e.key.keysym.scancode == SDL_SCANCODE_F9) {

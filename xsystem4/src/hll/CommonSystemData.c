@@ -29,6 +29,7 @@
 #include "system4/zlib.h"
 
 #include "hll.h"
+#include "savedata.h"
 #include "xsystem4.h"
 
 static struct string *save_path = NULL;
@@ -158,19 +159,25 @@ static bool csd_save(void)
 	free(w.buf);
 
 	char *path = csd_save_path();
-	FILE *fp = file_open_utf8(path, "wb");
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(path, "wb", &tmp_path);
 	if (!fp) {
 		WARNING("Failed to open CommonSystemData file '%s': %s", display_utf0(path), strerror(errno));
 		free(path);
 		free(comp_buf);
 		return false;
 	}
-	free(path);
 
 	bool ok = fwrite(header, sizeof(header), 1, fp) == 1 &&
-		fwrite(comp_buf, comp_size, 1, fp) == 1;
-	fclose(fp);
+		(comp_size == 0 || fwrite(comp_buf, comp_size, 1, fp) == 1);
 	free(comp_buf);
+	if (!ok) {
+		atomic_save_abort(fp, tmp_path);
+		free(path);
+		return false;
+	}
+	ok = atomic_save_commit(fp, path, tmp_path, false);
+	free(path);
 	return ok;
 }
 

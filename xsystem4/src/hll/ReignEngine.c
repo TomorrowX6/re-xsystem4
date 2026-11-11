@@ -2458,8 +2458,31 @@ static bool SealEngine_SetInstanceVertexUV(int plugin, int instance, int index, 
 	return RE_instance_set_vertex_uv(get_instance(plugin, instance), index, u, v);
 }
 
-//bool SealEngine_GetInstanceDiffuse(int PluginNumber, int InstanceNumber, float *pR, float *pG, float *pB);
-//bool SealEngine_GetInstanceAmbient(int PluginNumber, int InstanceNumber, float *pR, float *pG, float *pB);
+static bool SealEngine_GetInstanceDiffuse(int plugin, int instance, float *r, float *g, float *b)
+{
+	struct RE_instance *ri = get_instance(plugin, instance);
+	if (!ri) {
+		*r = *g = *b = 0.0f;
+		return false;
+	}
+	*r = ri->diffuse[0];
+	*g = ri->diffuse[1];
+	*b = ri->diffuse[2];
+	return true;
+}
+
+static bool SealEngine_GetInstanceAmbient(int plugin, int instance, float *r, float *g, float *b)
+{
+	struct RE_instance *ri = get_instance(plugin, instance);
+	if (!ri) {
+		*r = *g = *b = 0.0f;
+		return false;
+	}
+	*r = ri->ambient[0];
+	*g = ri->ambient[1];
+	*b = ri->ambient[2];
+	return true;
+}
 
 static bool SealEngine_GetInstanceAlpha(int plugin, int instance, float *alpha)
 {
@@ -2618,8 +2641,31 @@ static bool SealEngine_GetCameraAngleB(int plugin, float *angle_b)
 	*angle_b = p->camera.roll;
 	return true;
 }
-//bool SealEngine_GetCameraXVector(int PluginNumber, float *X, float *Y, float *Z);
-//bool SealEngine_GetCameraYVector(int PluginNumber, float *X, float *Y, float *Z);
+static bool SealEngine_GetCameraXVector(int plugin, float *x, float *y, float *z)
+{
+	vec3 result;
+	if (!RE_plugin_get_camera_x_vector(RE_get_plugin(plugin), result)) {
+		*x = *y = *z = 0.0f;
+		return false;
+	}
+	*x = result[0];
+	*y = result[1];
+	*z = -result[2];
+	return true;
+}
+
+static bool SealEngine_GetCameraYVector(int plugin, float *x, float *y, float *z)
+{
+	vec3 result;
+	if (!RE_plugin_get_camera_y_vector(RE_get_plugin(plugin), result)) {
+		*x = *y = *z = 0.0f;
+		return false;
+	}
+	*x = result[0];
+	*y = result[1];
+	*z = -result[2];
+	return true;
+}
 
 static bool SealEngine_GetCameraZVector(int plugin, float *x, float *y, float *z)
 {
@@ -2735,7 +2781,11 @@ static float SealEngine_GetLightParam(int plugin, int type)
 	return rp->light_params[type];
 }
 HLL_QUIET_UNIMPLEMENTED(false, bool, SealEngine, IsThreadLoadingMode, int PluginNumber);
-//bool SealEngine_ClearCache(int PluginNumber);
+HLL_QUIET_UNIMPLEMENTED(false, bool, SealEngine, IsInstanceLoading, int PluginNumber, int InstanceNumber);
+static bool SealEngine_ClearCache(int PluginNumber)
+{
+	return RE_get_plugin(PluginNumber) != NULL;
+}
 //bool SealEngine_GetHistogram(int PluginNumber, struct page **HistogramList);
 
 #define SEAL_EXPORTS \
@@ -2748,8 +2798,8 @@ HLL_QUIET_UNIMPLEMENTED(false, bool, SealEngine, IsThreadLoadingMode, int Plugin
 	    HLL_EXPORT(GetInstanceAngleP, SealEngine_GetInstanceAngleP), \
 	    HLL_EXPORT(GetInstanceAngleB, SealEngine_GetInstanceAngleB), \
 	    HLL_EXPORT(SetInstanceVertexUV, SealEngine_SetInstanceVertexUV), \
-	    HLL_TODO_EXPORT(GetInstanceDiffuse, SealEngine_GetInstanceDiffuse), \
-	    HLL_TODO_EXPORT(GetInstanceAmbient, SealEngine_GetInstanceAmbient), \
+	    HLL_EXPORT(GetInstanceDiffuse, SealEngine_GetInstanceDiffuse), \
+	    HLL_EXPORT(GetInstanceAmbient, SealEngine_GetInstanceAmbient), \
 	    HLL_EXPORT(GetInstanceAlpha, SealEngine_GetInstanceAlpha), \
 	    HLL_EXPORT(SetInstanceGrayscaleRate, SealEngine_SetInstanceGrayscaleRate), \
 	    HLL_EXPORT(GetInstanceGrayscaleRate, SealEngine_GetInstanceGrayscaleRate), \
@@ -2806,8 +2856,8 @@ HLL_QUIET_UNIMPLEMENTED(false, bool, SealEngine, IsThreadLoadingMode, int Plugin
 	    HLL_EXPORT(GetCameraAngle, SealEngine_GetCameraAngle), \
 	    HLL_EXPORT(GetCameraAngleP, SealEngine_GetCameraAngleP), \
 	    HLL_EXPORT(GetCameraAngleB, SealEngine_GetCameraAngleB), \
-	    HLL_TODO_EXPORT(GetCameraXVector, SealEngine_GetCameraXVector), \
-	    HLL_TODO_EXPORT(GetCameraYVector, SealEngine_GetCameraYVector), \
+	    HLL_EXPORT(GetCameraXVector, SealEngine_GetCameraXVector), \
+	    HLL_EXPORT(GetCameraYVector, SealEngine_GetCameraYVector), \
 	    HLL_EXPORT(GetCameraZVector, SealEngine_GetCameraZVector), \
 	    HLL_EXPORT(SetDrawDOF, SealEngine_SetDrawDOF), \
 	    HLL_EXPORT(SetDOF_L, SealEngine_SetDOF_L), \
@@ -2840,7 +2890,8 @@ HLL_QUIET_UNIMPLEMENTED(false, bool, SealEngine, IsThreadLoadingMode, int Plugin
 	    HLL_EXPORT(SetLightParam, SealEngine_SetLightParam), \
 	    HLL_EXPORT(GetLightParam, SealEngine_GetLightParam), \
 	    HLL_EXPORT(IsThreadLoadingMode, SealEngine_IsThreadLoadingMode), \
-	    HLL_TODO_EXPORT(ClearCache, SealEngine_ClearCache), \
+	    HLL_EXPORT(IsInstanceLoading, SealEngine_IsInstanceLoading), \
+	    HLL_EXPORT(ClearCache, SealEngine_ClearCache), \
 	    HLL_TODO_EXPORT(GetHistogram, SealEngine_GetHistogram)
 
 HLL_LIBRARY(SealEngine, REIGN_EXPORTS, TAPIR_EXPORTS, SEAL_EXPORTS);

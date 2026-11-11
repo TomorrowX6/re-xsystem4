@@ -1477,7 +1477,7 @@ static bool PastelChime2_Field_CalcMove(
 
 	// Find the closest collision.
 	float closest_hit_dist_sq = FLT_MAX;
-	struct line_segment closest_slide_line;
+	struct line_segment closest_slide_line = {0};
 	struct line_segment move_seg = {{old_x, old_y}, {*new_x, *new_y}};
 
 	for (int i = 0; i < nr_segments; i++) {

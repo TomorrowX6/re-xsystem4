@@ -1,11 +1,14 @@
 package io.github.kichikuou.xsystem4
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
 import android.app.Dialog
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Process
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.InputType
@@ -102,6 +105,48 @@ private fun formatFileSize(bytes: Long): String {
     }
 }
 
+internal fun ensureGameNotRunning(activity: Activity, onProceed: () -> Unit) {
+    val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    val targetProcName = "${activity.packageName}:game"
+    val gameProc = try {
+        am?.runningAppProcesses?.firstOrNull { it.processName == targetProcName }
+    } catch (_: Throwable) {
+        null
+    }
+    if (gameProc == null) {
+        onProceed()
+        return
+    }
+    val lang = Locale.getDefault().language
+    val title = when {
+        lang.startsWith("zh") -> "游戏正在后台运行"
+        lang.startsWith("ja") -> "ゲームが実行中です"
+        else -> "Game Is Running"
+    }
+    val message = when {
+        lang.startsWith("zh") -> "检测到游戏进程正在后台运行。直接导入、删除或离线修改存档可能会与后台游戏冲突或被覆盖。\n是否先结束后台游戏进程再继续？"
+        lang.startsWith("ja") -> "バックグラウンドでゲームが実行中です。セーブデータの競合を防ぐため、ゲームを終了してから続行しますか？"
+        else -> "The game is running in the background and may conflict with offline save changes.\nClose the background game process and continue?"
+    }
+    val confirmLabel = when {
+        lang.startsWith("zh") -> "结束游戏并继续"
+        lang.startsWith("ja") -> "終了して続行"
+        else -> "Close & Continue"
+    }
+    AlertDialog.Builder(activity)
+        .setTitle(title)
+        .setMessage(message)
+        .setPositiveButton(confirmLabel) { _, _ ->
+            try {
+                Process.killProcess(gameProc.pid)
+            } catch (_: Throwable) {
+            }
+            onProceed()
+        }
+        .setNegativeButton(R.string.cancel, null)
+        .show()
+}
+
 class SaveManagerActivity : Activity() {
     companion object {
         const val EXTRA_DIR_NAME = "EXTRA_DIR_NAME"
@@ -129,13 +174,17 @@ class SaveManagerActivity : Activity() {
         discoverSaveTargets(intent.getStringExtra(EXTRA_DIR_NAME))
 
         findViewById<View>(R.id.btn_switch_game).setOnClickListener { showSwitchTargetDialog() }
-        findViewById<View>(R.id.btn_import_saves).setOnClickListener { showImportDialog() }
+        findViewById<View>(R.id.btn_import_saves).setOnClickListener {
+            ensureGameNotRunning(this) { showImportDialog() }
+        }
         findViewById<View>(R.id.btn_export_saves).setOnClickListener { showExportDialog() }
         findViewById<View>(R.id.btn_refresh_saves).setOnClickListener {
             refreshFileList()
             Toast.makeText(this, R.string.save_manager_refreshed, Toast.LENGTH_SHORT).show()
         }
-        findViewById<View>(R.id.btn_clear_saves).setOnClickListener { showClearSavesDialog() }
+        findViewById<View>(R.id.btn_clear_saves).setOnClickListener {
+            ensureGameNotRunning(this) { showClearSavesDialog() }
+        }
 
         listView.setOnItemClickListener { _, _, pos, _ ->
             val entry = adapter.getItem(pos)
@@ -209,12 +258,6 @@ class SaveManagerActivity : Activity() {
     private fun refreshFileList() {
         val saveDir = currentTarget.saveDir
         saveDir.mkdirs()
-        File(saveDir, "crash.log").delete()
-        File(saveDir, "crash_history.log").delete()
-        currentTarget.externalGameDir?.let { gameDir ->
-            File(gameDir, "crash.log").delete()
-            File(gameDir, "crash_history.log").delete()
-        }
 
         val list = mutableListOf<SaveFileEntry>()
         collectSaveFiles(saveDir, saveDir, list)
@@ -840,8 +883,8 @@ class SaveManagerActivity : Activity() {
                         startActivityForResult(intent, REQ_EXPORT_SINGLE_FILE)
                     }
                     1 -> showDuplicateFileDialog(entry)
-                    2 -> showRenameFileDialog(entry)
-                    3 -> showDeleteSingleFileDialog(entry)
+                    2 -> ensureGameNotRunning(this) { showRenameFileDialog(entry) }
+                    3 -> ensureGameNotRunning(this) { showDeleteSingleFileDialog(entry) }
                 }
             }
             .setNegativeButton(R.string.cancel, null)

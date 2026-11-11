@@ -23,6 +23,7 @@
 #include "vm/page.h"
 #include "input.h"
 #include "modifier.h"
+#include "savedata.h"
 
 extern bool key_state[VK_NR_KEYCODES];
 static int s_pulse_key0_frames = 0;
@@ -54,6 +55,7 @@ static char *g_cached_live_state_json = NULL;
 /* =========================================================================
  * Out-of-Game gsave (.asd) Helpers
  * ========================================================================= */
+#ifdef __ANDROID__
 
 static struct gsave_global *gs_find_global(struct gsave *gs, const char *name1, const char *name2)
 {
@@ -482,11 +484,14 @@ static bool write_local_save_mod_str(const char *path, const char *mod_json_str)
 		gs_process_all_characters(gs, set_char_star, set_char_exp);
 	}
 
-	FILE *fp = file_open_utf8(path, "wb");
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(path, "wb", &tmp_path);
 	bool ok = false;
 	if (fp) {
-		ok = (gsave_write(gs, fp, false, 1) == SAVEFILE_SUCCESS);
-		fclose(fp);
+		if (gsave_write(gs, fp, false, 1) == SAVEFILE_SUCCESS)
+			ok = atomic_save_commit(fp, path, tmp_path, false);
+		else
+			atomic_save_abort(fp, tmp_path);
 	}
 	gsave_free(gs);
 	cJSON_Delete(mod);
@@ -586,10 +591,14 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
 					}
 				}
 			}
-			FILE *fp = file_open_utf8(global_path, "wb");
+			char *tmp_path = NULL;
+			FILE *fp = atomic_save_open(global_path, "wb", &tmp_path);
 			if (fp) {
-				if (gsave_write(gs_g, fp, false, 1) == SAVEFILE_SUCCESS) any_ok = true;
-				fclose(fp);
+				if (gsave_write(gs_g, fp, false, 1) == SAVEFILE_SUCCESS &&
+				    atomic_save_commit(fp, global_path, tmp_path, true))
+					any_ok = true;
+				else
+					atomic_save_abort(fp, tmp_path);
 			}
 			gsave_free(gs_g);
 		}
@@ -609,10 +618,14 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
 			int32_t cs_rec = gs_get_field_int(gs_c, ct_rec, "m_status", NULL, -1);
 			json_write_int_if_present(mod, "trophyExpBonus", gs_c, cs_rec, "m_PerExpUp", NULL);
 			json_write_int_if_present(mod, "trophyStatusMaxPer", gs_c, cs_rec, "StatusMaxPer", NULL);
-			FILE *fp = file_open_utf8(collection_path, "wb");
+			char *tmp_path = NULL;
+			FILE *fp = atomic_save_open(collection_path, "wb", &tmp_path);
 			if (fp) {
-				if (gsave_write(gs_c, fp, false, 1) == SAVEFILE_SUCCESS) any_ok = true;
-				fclose(fp);
+				if (gsave_write(gs_c, fp, false, 1) == SAVEFILE_SUCCESS &&
+				    atomic_save_commit(fp, collection_path, tmp_path, true))
+					any_ok = true;
+				else
+					atomic_save_abort(fp, tmp_path);
 			}
 			gsave_free(gs_c);
 		}
@@ -621,6 +634,8 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
 	cJSON_Delete(mod);
 	return any_ok;
 }
+
+#endif /* __ANDROID__ */
 
 /* =========================================================================
  * Live In-Game VM Memory Helpers (Executed on VM Thread in modifier_on_frame)

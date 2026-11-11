@@ -298,6 +298,7 @@ void PE_BeginInput(void);
 void PE_EndInput(void);
 int PE_GetClickPartsNumber(void);
 bool PE_IsCursorIn(int parts_no, int mouse_x, int mouse_y, int state);
+void PE_FlushCGCache(void);
 
 // message.c
 void PE_ReleaseMessage(void);

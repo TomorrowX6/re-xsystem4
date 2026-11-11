@@ -346,7 +346,7 @@ static void config_init_with_ain(const char *ain_path)
 
 static void ain_audit(FILE *f, struct ain *ain)
 {
-	init_libraries();
+	link_libraries_for_audit();
 
 	for (size_t addr = 0; addr < ain->code_size;) {
 		uint16_t opcode = LittleEndian_getW(ain->code, addr);
@@ -401,7 +401,7 @@ static void usage(void)
 	puts("    -j, --joypad         Enable joypad");
 	puts("        --msgskip-delay  Specify the delay in ms to add when skipping messages with CTRL");
 	puts("        --save-folder    Override save folder location");
-	puts("        --save-format    Specify the resume save file format. json (default) or rsm");
+	puts("        --save-format    Specify the resume save file format. rsm (default) or json");
 #ifdef DEBUGGER_ENABLED
 	puts("        --nodebug        Disable debugger");
 	puts("        --debug          Start in debugger");
@@ -543,6 +543,69 @@ static const char *signal_name_str(int sig)
 }
 #endif
 
+#ifndef _WIN32
+static const char *cached_env_crash_log = NULL;
+#endif
+
+static void cbuf_puts(char *buf, size_t cap, size_t *off, const char *s)
+{
+	if (!s || *off + 1 >= cap)
+		return;
+	while (*s && *off + 1 < cap)
+		buf[(*off)++] = *s++;
+	buf[*off] = '\0';
+}
+
+static void cbuf_put_hex(char *buf, size_t cap, size_t *off, uint64_t val, int width)
+{
+	static const char hex[] = "0123456789abcdef";
+	char tmp[16];
+	int i = 0;
+	do {
+		tmp[i++] = hex[val & 0xf];
+		val >>= 4;
+	} while (val && i < 16);
+	while (i < width && i < 16)
+		tmp[i++] = '0';
+	while (i > 0 && *off + 1 < cap)
+		buf[(*off)++] = tmp[--i];
+	if (cap > 0)
+		buf[*off] = '\0';
+}
+
+static void cbuf_put_i64(char *buf, size_t cap, size_t *off, int64_t val)
+{
+	char tmp[24];
+	uint64_t u;
+	if (val < 0) {
+		cbuf_puts(buf, cap, off, "-");
+		u = (uint64_t)(-(val + 1)) + 1;
+	} else {
+		u = (uint64_t)val;
+	}
+	int i = 0;
+	do {
+		tmp[i++] = (char)('0' + (u % 10));
+		u /= 10;
+	} while (u && i < 24);
+	while (i > 0 && *off + 1 < cap)
+		buf[(*off)++] = tmp[--i];
+	if (cap > 0)
+		buf[*off] = '\0';
+}
+
+static void build_dir_file_path(char *dst, size_t cap, const char *dir, const char *file)
+{
+	size_t off = 0;
+	if (cap == 0)
+		return;
+	dst[0] = '\0';
+	cbuf_puts(dst, cap, &off, dir);
+	if (off > 0 && dst[off - 1] != '/')
+		cbuf_puts(dst, cap, &off, "/");
+	cbuf_puts(dst, cap, &off, file);
+}
+
 static void write_crash_report(const char *kind, const char *msg, int sig,
 	void *siginfo_ptr, void *ucontext_ptr, bool safe_signal,
 	char *out_primary_path, size_t out_primary_size)
@@ -555,177 +618,185 @@ static void write_crash_report(const char *kind, const char *msg, int sig,
 
 	size_t off = 0;
 	size_t cap = sizeof(crash_report_buf);
-	int n;
+	crash_report_buf[0] = '\0';
 
-	time_t now = time(NULL);
-	struct tm tm_buf;
-	char time_str[64] = "unknown";
-#ifndef _WIN32
-	if (!safe_signal && localtime_r(&now, &tm_buf)) {
-		strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
-	} else {
-		snprintf(time_str, sizeof(time_str), "epoch:%lld", (long long)now);
-	}
-#endif
-
-	n = snprintf(crash_report_buf + off, cap - off,
+	cbuf_puts(crash_report_buf, cap, &off,
 		"============================================================\n"
 		"XSystem4 Crash Report\n"
 		"============================================================\n"
-		"Timestamp   : %s\n"
-		"Engine      : xsystem4 %s\n"
+		"Timestamp   : ");
+#ifndef _WIN32
+	if (!safe_signal) {
+		time_t now = time(NULL);
+		struct tm tm_buf;
+		char time_str[64];
+		if (localtime_r(&now, &tm_buf) &&
+		    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf) > 0) {
+			cbuf_puts(crash_report_buf, cap, &off, time_str);
+		} else {
+			cbuf_puts(crash_report_buf, cap, &off, "epoch:");
+			cbuf_put_i64(crash_report_buf, cap, &off, (int64_t)now);
+		}
+	} else {
+		struct timespec ts = {0, 0};
+		clock_gettime(CLOCK_REALTIME, &ts);
+		cbuf_puts(crash_report_buf, cap, &off, "epoch:");
+		cbuf_put_i64(crash_report_buf, cap, &off, (int64_t)ts.tv_sec);
+	}
+#else
+	cbuf_puts(crash_report_buf, cap, &off, "unknown");
+#endif
+	cbuf_puts(crash_report_buf, cap, &off, "\nEngine      : xsystem4 " XSYSTEM4_VERSION "\n");
 #ifdef __ANDROID__
-		"Platform    : Android (%s)\n"
+	cbuf_puts(crash_report_buf, cap, &off, "Platform    : Android (");
 #else
-		"Platform    : Host (%s)\n"
+	cbuf_puts(crash_report_buf, cap, &off, "Platform    : Host (");
 #endif
-#ifndef _WIN32
-		"PID         : %d\n"
-#endif
-		"Crash Type  : %s\n",
-		time_str,
-		XSYSTEM4_VERSION,
 #if defined(__aarch64__)
-		"arm64-v8a / aarch64",
+	cbuf_puts(crash_report_buf, cap, &off, "arm64-v8a / aarch64)\n");
 #elif defined(__x86_64__)
-		"x86_64",
+	cbuf_puts(crash_report_buf, cap, &off, "x86_64)\n");
 #else
-		"unknown-arch",
+	cbuf_puts(crash_report_buf, cap, &off, "unknown-arch)\n");
 #endif
 #ifndef _WIN32
-		(int)getpid(),
+	cbuf_puts(crash_report_buf, cap, &off, "PID         : ");
+	cbuf_put_i64(crash_report_buf, cap, &off, (int64_t)getpid());
+	cbuf_puts(crash_report_buf, cap, &off, "\n");
 #endif
-		kind ? kind : "UNKNOWN");
-	if (n > 0)
-		off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+	cbuf_puts(crash_report_buf, cap, &off, "Crash Type  : ");
+	cbuf_puts(crash_report_buf, cap, &off, kind ? kind : "UNKNOWN");
+	cbuf_puts(crash_report_buf, cap, &off, "\n");
 
 #ifndef _WIN32
 	if (sig != 0) {
 		siginfo_t *si = (siginfo_t *)siginfo_ptr;
-		n = snprintf(crash_report_buf + off, cap - off,
-			"Signal      : %d - %s\n"
-			"Signal Code : %d\n"
-			"Fault Addr  : %p\n",
-			sig, signal_name_str(sig),
-			si ? si->si_code : 0,
-			si ? si->si_addr : NULL);
-		if (n > 0)
-			off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+		cbuf_puts(crash_report_buf, cap, &off, "Signal      : ");
+		cbuf_put_i64(crash_report_buf, cap, &off, sig);
+		cbuf_puts(crash_report_buf, cap, &off, " - ");
+		cbuf_puts(crash_report_buf, cap, &off, signal_name_str(sig));
+		cbuf_puts(crash_report_buf, cap, &off, "\nSignal Code : ");
+		cbuf_put_i64(crash_report_buf, cap, &off, si ? si->si_code : 0);
+		cbuf_puts(crash_report_buf, cap, &off, "\nFault Addr  : 0x");
+		cbuf_put_hex(crash_report_buf, cap, &off, si ? (uint64_t)(uintptr_t)si->si_addr : 0, 16);
+		cbuf_puts(crash_report_buf, cap, &off, "\n");
 
 		ucontext_t *uc = (ucontext_t *)ucontext_ptr;
 		if (uc) {
 #if defined(__aarch64__)
-			n = snprintf(crash_report_buf + off, cap - off,
-				"Registers   : PC=0x%016llx LR=0x%016llx SP=0x%016llx FP=0x%016llx\n",
-				(unsigned long long)uc->uc_mcontext.pc,
-				(unsigned long long)uc->uc_mcontext.regs[30],
-				(unsigned long long)uc->uc_mcontext.sp,
-				(unsigned long long)uc->uc_mcontext.regs[29]);
-			if (n > 0)
-				off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+			cbuf_puts(crash_report_buf, cap, &off, "Registers   : PC=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.pc, 16);
+			cbuf_puts(crash_report_buf, cap, &off, " LR=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.regs[30], 16);
+			cbuf_puts(crash_report_buf, cap, &off, " SP=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.sp, 16);
+			cbuf_puts(crash_report_buf, cap, &off, " FP=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.regs[29], 16);
+			cbuf_puts(crash_report_buf, cap, &off, "\n");
 #elif defined(__x86_64__)
-			n = snprintf(crash_report_buf + off, cap - off,
-				"Registers   : RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx\n",
-				(unsigned long long)uc->uc_mcontext.gregs[REG_RIP],
-				(unsigned long long)uc->uc_mcontext.gregs[REG_RSP],
-				(unsigned long long)uc->uc_mcontext.gregs[REG_RBP]);
-			if (n > 0)
-				off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+			cbuf_puts(crash_report_buf, cap, &off, "Registers   : RIP=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.gregs[REG_RIP], 16);
+			cbuf_puts(crash_report_buf, cap, &off, " RSP=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.gregs[REG_RSP], 16);
+			cbuf_puts(crash_report_buf, cap, &off, " RBP=0x");
+			cbuf_put_hex(crash_report_buf, cap, &off, (uint64_t)uc->uc_mcontext.gregs[REG_RBP], 16);
+			cbuf_puts(crash_report_buf, cap, &off, "\n");
 #endif
 		}
 	}
 #endif
 
 	if (msg && *msg) {
-		n = snprintf(crash_report_buf + off, cap - off,
-			"Message     : %s%s",
-			msg, (msg[strlen(msg) - 1] == '\n') ? "" : "\n");
-		if (n > 0)
-			off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+		cbuf_puts(crash_report_buf, cap, &off, "Message     : ");
+		cbuf_puts(crash_report_buf, cap, &off, msg);
+		if (off > 0 && crash_report_buf[off - 1] != '\n')
+			cbuf_puts(crash_report_buf, cap, &off, "\n");
 	}
 
-	n = snprintf(crash_report_buf + off, cap - off,
-		"\n[Game Context]\n"
-		"  ain_file  : %s\n"
-		"  game_dir  : %s\n"
-		"  save_dir  : %s\n"
-		"  viewport  : %dx%d\n"
-		"\n[AIN VM State & Call Stack]\n",
-		config.ain_filename ? config.ain_filename : "(unset)",
-		config.game_dir ? config.game_dir : "(unset)",
-		config.save_dir ? config.save_dir : "(unset)",
-		config.view_width, config.view_height);
-	if (n > 0)
-		off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+	cbuf_puts(crash_report_buf, cap, &off, "\n[Game Context]\n  ain_file  : ");
+	cbuf_puts(crash_report_buf, cap, &off, config.ain_filename ? config.ain_filename : "(unset)");
+	cbuf_puts(crash_report_buf, cap, &off, "\n  game_dir  : ");
+	cbuf_puts(crash_report_buf, cap, &off, config.game_dir ? config.game_dir : "(unset)");
+	cbuf_puts(crash_report_buf, cap, &off, "\n  save_dir  : ");
+	cbuf_puts(crash_report_buf, cap, &off, config.save_dir ? config.save_dir : "(unset)");
+	cbuf_puts(crash_report_buf, cap, &off, "\n  viewport  : ");
+	cbuf_put_i64(crash_report_buf, cap, &off, config.view_width);
+	cbuf_puts(crash_report_buf, cap, &off, "x");
+	cbuf_put_i64(crash_report_buf, cap, &off, config.view_height);
+	cbuf_puts(crash_report_buf, cap, &off, "\n\n[AIN VM State & Call Stack]\n");
 
 	off += vm_format_stack_trace(crash_report_buf + off, cap - off, safe_signal);
 
 #ifndef _WIN32
-	n = snprintf(crash_report_buf + off, cap - off, "\n[Native C Backtrace]\n");
-	if (n > 0)
-		off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
-	off += format_native_backtrace(crash_report_buf + off, cap - off);
+	if (!safe_signal) {
+		cbuf_puts(crash_report_buf, cap, &off, "\n[Native C Backtrace]\n");
+		off += format_native_backtrace(crash_report_buf + off, cap - off);
+	}
 #endif
 
-	n = snprintf(crash_report_buf + off, cap - off, "\n[Recent Engine Warnings (%u total)]\n", recent_warning_count);
-	if (n > 0)
-		off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+	cbuf_puts(crash_report_buf, cap, &off, "\n[Recent Engine Warnings (");
+	cbuf_put_i64(crash_report_buf, cap, &off, recent_warning_count);
+	cbuf_puts(crash_report_buf, cap, &off, " total)]\n");
 	unsigned int count = recent_warning_count < CRASH_RING_SIZE ? recent_warning_count : CRASH_RING_SIZE;
 	unsigned int start = recent_warning_count >= CRASH_RING_SIZE ? (recent_warning_count - CRASH_RING_SIZE) : 0;
 	for (unsigned int i = 0; i < count && off + 1 < cap; i++) {
 		const char *w = recent_warnings[(start + i) % CRASH_RING_SIZE];
-		n = snprintf(crash_report_buf + off, cap - off, "  - %s\n", w);
-		if (n > 0)
-			off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
+		cbuf_puts(crash_report_buf, cap, &off, "  - ");
+		cbuf_puts(crash_report_buf, cap, &off, w);
+		cbuf_puts(crash_report_buf, cap, &off, "\n");
 	}
 
-	if (off + 64 < cap) {
-		n = snprintf(crash_report_buf + off, cap - off,
-			"============================================================\n\n");
-		if (n > 0)
-			off += (size_t)n < (cap - off) ? (size_t)n : (cap - off - 1);
-	}
+	cbuf_puts(crash_report_buf, cap, &off,
+		"============================================================\n\n");
 
 #ifndef _WIN32
+	char path_buf[PATH_MAX];
 #ifdef __ANDROID__
 	{
 		const char *ext_crash = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash.log";
 		const char *ext_hist  = "/storage/emulated/0/Android/data/io.github.rance10.nativeport/files/crash_history.log";
 		if (write_file_raw(ext_crash, crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "%s", ext_crash);
+			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0]) {
+				size_t p_off = 0;
+				cbuf_puts(out_primary_path, out_primary_size, &p_off, ext_crash);
+			}
 		}
 		write_file_raw(ext_hist, crash_report_buf, off, true);
 	}
-	__android_log_write(ANDROID_LOG_FATAL, "XSystem4Crash", crash_report_buf);
-#else
-	char path_buf[PATH_MAX];
-	const char *env_crash_log = getenv("XSYSTEM4_CRASH_LOG");
+	if (!safe_signal)
+		__android_log_write(ANDROID_LOG_FATAL, "XSystem4Crash", crash_report_buf);
+#endif
+	const char *env_crash_log = safe_signal ? cached_env_crash_log : getenv("XSYSTEM4_CRASH_LOG");
 	if (env_crash_log && *env_crash_log) {
 		if (write_file_raw(env_crash_log, crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "%s", env_crash_log);
+			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0]) {
+				size_t p_off = 0;
+				cbuf_puts(out_primary_path, out_primary_size, &p_off, env_crash_log);
+			}
 		}
 	}
 	if (config.game_dir && *config.game_dir) {
-		snprintf(path_buf, sizeof(path_buf), "%s/crash.log", config.game_dir);
+		build_dir_file_path(path_buf, sizeof(path_buf), config.game_dir, "crash.log");
 		if (write_file_raw(path_buf, crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "%s", path_buf);
+			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0]) {
+				size_t p_off = 0;
+				cbuf_puts(out_primary_path, out_primary_size, &p_off, path_buf);
+			}
 		}
-		snprintf(path_buf, sizeof(path_buf), "%s/crash_history.log", config.game_dir);
+		build_dir_file_path(path_buf, sizeof(path_buf), config.game_dir, "crash_history.log");
 		write_file_raw(path_buf, crash_report_buf, off, true);
 	}
 	if (config.save_dir && *config.save_dir) {
-		snprintf(path_buf, sizeof(path_buf), "%s/crash.log", config.save_dir);
+		build_dir_file_path(path_buf, sizeof(path_buf), config.save_dir, "crash.log");
 		if (write_file_raw(path_buf, crash_report_buf, off, false)) {
-			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0])
-				snprintf(out_primary_path, out_primary_size, "%s", path_buf);
+			if (out_primary_path && out_primary_size > 0 && !out_primary_path[0]) {
+				size_t p_off = 0;
+				cbuf_puts(out_primary_path, out_primary_size, &p_off, path_buf);
+			}
 		}
-		snprintf(path_buf, sizeof(path_buf), "%s/crash_history.log", config.save_dir);
+		build_dir_file_path(path_buf, sizeof(path_buf), config.save_dir, "crash_history.log");
 		write_file_raw(path_buf, crash_report_buf, off, true);
 	}
-#endif
 	ssize_t unused_r = write(STDERR_FILENO, crash_report_buf, off);
 	(void)unused_r;
 #endif
@@ -745,6 +816,8 @@ static void crash_signal_handler(int sig, siginfo_t *info, void *ucontext)
 
 static void install_crash_signal_handlers(void)
 {
+	cached_env_crash_log = getenv("XSYSTEM4_CRASH_LOG");
+
 	stack_t ss;
 	ss.ss_sp = crash_alt_stack_mem;
 	ss.ss_size = sizeof(crash_alt_stack_mem);
@@ -784,8 +857,26 @@ static void error_handler(const char *msg)
 	}
 	vm_format_stack_trace(dialog_msg + off, sizeof(dialog_msg) - off, false);
 	const char *no_box = getenv("XSYSTEM4_NO_ERROR_BOX");
-	if (!no_box || !*no_box || !strcmp(no_box, "0"))
+	bool show_box = !no_box || !*no_box || !strcmp(no_box, "0");
+#if !defined(__ANDROID__) && !defined(_WIN32)
+	if (show_box) {
+		const char *disp = getenv("DISPLAY");
+		const char *wayland = getenv("WAYLAND_DISPLAY");
+		const char *ci = getenv("CI");
+		if (!SDL_WasInit(SDL_INIT_VIDEO) ||
+		    ((!disp || !*disp) && (!wayland || !*wayland)) ||
+		    (ci && *ci && strcmp(ci, "0") != 0)) {
+			show_box = false;
+		}
+	}
+#endif
+	if (show_box) {
+#ifndef _WIN32
+		signal(SIGTERM, SIG_DFL);
+		signal(SIGINT, SIG_DFL);
+#endif
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "xsystem4", dialog_msg, NULL);
+	}
 }
 
 int main(int argc, char *argv[])
@@ -806,6 +897,7 @@ int main(int argc, char *argv[])
 	char *joypad = NULL;
 	char *savedir = NULL;
 	char *debug_info_path = NULL;
+	(void)debug_info_path;
 
 	while (1) {
 		static struct option long_options[] = {

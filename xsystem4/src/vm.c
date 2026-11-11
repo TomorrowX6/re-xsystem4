@@ -2711,6 +2711,54 @@ void vm_stack_trace(void)
 	}
 }
 
+static void sbuf_puts(char *buf, size_t size, size_t *off, const char *s)
+{
+	if (!s || *off + 1 >= size)
+		return;
+	while (*s && *off + 1 < size) {
+		buf[(*off)++] = *s++;
+	}
+	buf[*off] = '\0';
+}
+
+static void sbuf_put_hex(char *buf, size_t size, size_t *off, uint64_t val, int width)
+{
+	static const char hex[] = "0123456789abcdef";
+	char tmp[16];
+	int i = 0;
+	do {
+		tmp[i++] = hex[val & 0xf];
+		val >>= 4;
+	} while (val && i < 16);
+	while (i < width && i < 16)
+		tmp[i++] = '0';
+	while (i > 0 && *off + 1 < size)
+		buf[(*off)++] = tmp[--i];
+	if (size > 0)
+		buf[*off] = '\0';
+}
+
+static void sbuf_put_i64(char *buf, size_t size, size_t *off, int64_t val)
+{
+	char tmp[24];
+	uint64_t u;
+	if (val < 0) {
+		sbuf_puts(buf, size, off, "-");
+		u = (uint64_t)(-(val + 1)) + 1;
+	} else {
+		u = (uint64_t)val;
+	}
+	int i = 0;
+	do {
+		tmp[i++] = (char)('0' + (u % 10));
+		u /= 10;
+	} while (u && i < 24);
+	while (i > 0 && *off + 1 < size)
+		buf[(*off)++] = tmp[--i];
+	if (size > 0)
+		buf[*off] = '\0';
+}
+
 size_t vm_format_stack_trace(char *buf, size_t size, bool safe_signal)
 {
 	if (!buf || size == 0)
@@ -2719,9 +2767,7 @@ size_t vm_format_stack_trace(char *buf, size_t size, bool safe_signal)
 	buf[0] = '\0';
 
 	if (!ain) {
-		int n = snprintf(buf + off, size - off, "  (AIN VM not initialized)\n");
-		if (n > 0)
-			off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+		sbuf_puts(buf, size, &off, "  (AIN VM not initialized)\n");
 		return off;
 	}
 
@@ -2735,18 +2781,21 @@ size_t vm_format_stack_trace(char *buf, size_t size, bool safe_signal)
 	const char *hll_func = NULL;
 	vm_get_last_hll_call(&hll_lib, &hll_func);
 
-	int n = snprintf(buf + off, size - off,
-		"  instr_ptr      : 0x%08zx (opcode=0x%04x %s)\n"
-		"  stack_ptr      : %d\n"
-		"  call_stack_ptr : %d\n"
-		"  last_hll_call  : %s.%s\n"
-		"  call_stack     :\n",
-		instr_ptr, (unsigned)(uint16_t)opcode, op_name,
-		stack_ptr, call_stack_ptr,
-		hll_lib ? hll_lib : "(none)",
-		hll_func ? hll_func : "(none)");
-	if (n > 0)
-		off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+	sbuf_puts(buf, size, &off, "  instr_ptr      : 0x");
+	sbuf_put_hex(buf, size, &off, (uint64_t)instr_ptr, 8);
+	sbuf_puts(buf, size, &off, " (opcode=0x");
+	sbuf_put_hex(buf, size, &off, (uint64_t)(uint16_t)opcode, 4);
+	sbuf_puts(buf, size, &off, " ");
+	sbuf_puts(buf, size, &off, op_name ? op_name : "?");
+	sbuf_puts(buf, size, &off, ")\n  stack_ptr      : ");
+	sbuf_put_i64(buf, size, &off, stack_ptr);
+	sbuf_puts(buf, size, &off, "\n  call_stack_ptr : ");
+	sbuf_put_i64(buf, size, &off, call_stack_ptr);
+	sbuf_puts(buf, size, &off, "\n  last_hll_call  : ");
+	sbuf_puts(buf, size, &off, hll_lib ? hll_lib : "(none)");
+	sbuf_puts(buf, size, &off, ".");
+	sbuf_puts(buf, size, &off, hll_func ? hll_func : "(none)");
+	sbuf_puts(buf, size, &off, "\n  call_stack     :\n");
 
 	int max_frames = call_stack_ptr;
 	if (max_frames > 64)
@@ -2761,11 +2810,21 @@ size_t vm_format_stack_trace(char *buf, size_t size, bool safe_signal)
 		if (ain->functions && fno >= 0 && fno < ain->nr_functions && ain->functions[fno].name) {
 			fname = safe_signal ? ain->functions[fno].name : display_sjis0(ain->functions[fno].name);
 		}
-		n = snprintf(buf + off, size - off,
-			"    #%02d 0x%08x in %s (fno=%d, page=%d, struct_page=%d)\n",
-			idx, addr, fname, fno, call_stack[i].page_slot, call_stack[i].struct_page);
-		if (n > 0)
-			off += (size_t)n < (size - off) ? (size_t)n : (size - off - 1);
+		sbuf_puts(buf, size, &off, "    #");
+		if (idx < 10)
+			sbuf_puts(buf, size, &off, "0");
+		sbuf_put_i64(buf, size, &off, idx);
+		sbuf_puts(buf, size, &off, " 0x");
+		sbuf_put_hex(buf, size, &off, addr, 8);
+		sbuf_puts(buf, size, &off, " in ");
+		sbuf_puts(buf, size, &off, fname);
+		sbuf_puts(buf, size, &off, " (fno=");
+		sbuf_put_i64(buf, size, &off, fno);
+		sbuf_puts(buf, size, &off, ", page=");
+		sbuf_put_i64(buf, size, &off, call_stack[i].page_slot);
+		sbuf_puts(buf, size, &off, ", struct_page=");
+		sbuf_put_i64(buf, size, &off, call_stack[i].struct_page);
+		sbuf_puts(buf, size, &off, ")\n");
 	}
 	return off;
 }

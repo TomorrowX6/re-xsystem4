@@ -280,6 +280,11 @@ static void parts_cg_cache_clear(void)
 	nr_parts_cg_cache = 0;
 }
 
+void PE_FlushCGCache(void)
+{
+	parts_cg_cache_clear();
+}
+
 static void parts_state_free(struct parts_state *state)
 {
 	parts_state_discard_texture_backups(state);

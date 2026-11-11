@@ -17,8 +17,14 @@
 #ifndef SYSTEM4_SAVEDATA_H
 #define SYSTEM4_SAVEDATA_H
 
+#include <stdbool.h>
+#include <stdio.h>
 #include "cJSON.h"
 #include "vm.h"
+
+FILE *atomic_save_open(const char *path, const char *mode, char **tmp_path_out);
+bool atomic_save_commit(FILE *fp, const char *path, char *tmp_path, bool keep_backup);
+void atomic_save_abort(FILE *fp, char *tmp_path);
 
 void json_load_page(struct page *page, cJSON *vars, bool call_dtors);
 

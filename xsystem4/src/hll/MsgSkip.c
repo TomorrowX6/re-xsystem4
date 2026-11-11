@@ -28,6 +28,7 @@
 #include "system4/string.h"
 #include "system4/utfsjis.h"
 
+#include "savedata.h"
 #include "vm.h"
 #include "xsystem4.h"
 
@@ -42,15 +43,26 @@ static int nr_flags;
 
 static void msgskip_save(void)
 {
-	FILE *f = file_open_utf8(save_path, "wb");
-	if (!f)
-		ERROR("fopen: '%s': %s", display_utf0(save_path), strerror(errno));
+	if (!save_path || !flags)
+		return;
+
+	char *tmp_path = NULL;
+	FILE *f = atomic_save_open(save_path, "wb", &tmp_path);
+	if (!f) {
+		WARNING("fopen: '%s': %s", display_utf0(save_path), strerror(errno));
+		return;
+	}
 
 	uint8_t header[4];
 	LittleEndian_putDW(header, 0, nr_flags);
-	fwrite(header, sizeof(header), 1, f);
-	fwrite(flags, (nr_flags + 7) / 8, 1, f);
-	fclose(f);
+	size_t bytes = (size_t)((nr_flags + 7) / 8);
+	bool ok = fwrite(header, sizeof(header), 1, f) == 1 &&
+		(bytes == 0 || fwrite(flags, bytes, 1, f) == 1);
+	if (!ok) {
+		atomic_save_abort(f, tmp_path);
+		return;
+	}
+	atomic_save_commit(f, save_path, tmp_path, false);
 }
 
 #ifdef __ANDROID__

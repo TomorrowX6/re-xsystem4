@@ -193,7 +193,11 @@ struct window_settings {
 static struct window_settings window_settings = {
 	.aspect_ratio = ASPECT_RATIO_NORMAL,
 	.scaling_type = SCALING_NORMAL,
+#ifdef __ANDROID__
+	.wait_vsync = true,
+#else
 	.wait_vsync = false,
+#endif
 	.record_pos_size = false,
 	.minimize_by_full_screen_inactive = true,
 	.back_to_title_confirm = true,

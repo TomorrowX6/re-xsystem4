@@ -385,13 +385,13 @@ struct instruction instructions[NR_OPCODES] = {
         OP   ( SH_GLOBALSREF_NE_STR0,             2, (T_GLOBAL, T_STRING),        (), (T_INT) ),
         OP   ( SH_LOC_LT_IMM_OR_LOC_GE_IMM,       3, (T_LOCAL, T_INT, T_INT),     (), (T_INT) ),
 
-        TODO ( A_SORT_MEM,         0, (),              (T_PAGE, T_VAR, T_INT), () ),
+        OP   ( A_SORT_MEM,         0, (),              (T_PAGE, T_VAR, T_INT), () ),
         OP   ( DG_SET,             0, (),              (T_PAGE, T_PAGE, T_FUNC), () ),
         OP   ( DG_ADD,             0, (),              (T_PAGE, T_PAGE, T_FUNC), () ),
         JMP  ( DG_CALL,            2, (T_DLG, T_ADDR), (), () ),
         OP   ( DG_NUMOF,           0, (),              (T_PAGE), (T_INT) ),
         OP   ( DG_EXIST,           0, (),              (T_PAGE, T_PAGE, T_FUNC), (T_INT) ),
-        TODO ( DG_ERASE,           0, (),              (), () ),
+        OP   ( DG_ERASE,           0, (),              (T_PAGE, T_PAGE, T_FUNC), () ),
         OP   ( DG_CLEAR,           0, (),              (T_PAGE), () ),
         OP   ( DG_COPY,            0, (),              (T_PAGE), (T_PAGE) ),
         OP   ( DG_ASSIGN,          0, (),              (T_PAGE, T_PAGE), (T_PAGE) ),
@@ -404,9 +404,9 @@ struct instruction instructions[NR_OPCODES] = {
         OP   ( DG_STR_TO_METHOD,   0, (T_DLG),         (T_STRING, T_DLG), (T_FUNC) ), // XXX: changed in ain version > 8
 
 	TODO ( OP_0X102, 0, (),             (), () ),
-	TODO ( X_GETENV, 0, (),             (), () ),
-	TODO ( X_SET,    0, (),             (), () ),
-	TODO ( X_ICAST,  1, (T_STRUCT),     (), () ),
+	OP   ( X_GETENV, 0, (),             (), () ),
+	OP   ( X_SET,    0, (),             (), () ),
+	OP   ( X_ICAST,  1, (T_STRUCT),     (), () ),
 	TODO ( X_OP_SET, 1, (T_INT),        (), () ),
 	TODO ( OP_0X107, 0, (),             (), () ),
 	TODO ( OP_0X108, 0, (),             (), () ),

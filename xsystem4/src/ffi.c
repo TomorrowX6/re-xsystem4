@@ -20,6 +20,7 @@
 #include <string.h>
 #include <ffi.h>
 #include "system4/ain.h"
+#include "system4/string.h"
 #include "system4/utfsjis.h"
 #include "vm.h"
 #include "vm/heap.h"
@@ -35,6 +36,7 @@ struct hll_function {
 	unsigned int nr_args;
 	ffi_type **args;
 	ffi_type *return_type;
+	bool warned_unimplemented;
 };
 
 static struct hll_function **libraries = NULL;
@@ -62,11 +64,15 @@ void vm_get_last_hll_call(const char **lib_name, const char **func_name)
 
 bool library_exists(int libno)
 {
+	if (ain->version >= 11 && v12_builtin_library(ain->libraries[libno].name))
+		return true;
 	return libraries[libno];
 }
 
 bool library_function_exists(int libno, int fno)
 {
+	if (ain->version >= 11 && v12_builtin_library(ain->libraries[libno].name))
+		return true;
 	return libraries[libno] && libraries[libno][fno].fun;
 }
 
@@ -333,13 +339,8 @@ void hll_call(int libno, int fno)
 	}
 
 	struct ain_hll_function *f = &ain->libraries[libno].functions[fno];
-
-	if (!libraries[libno])
-		VM_ERROR("Unimplemented HLL function: %s.%s", ain->libraries[libno].name, f->name);
-
-	struct hll_function *fun = &libraries[libno][fno];
-	if (!fun->fun)
-		VM_ERROR("Unimplemented HLL function: %s.%s", ain->libraries[libno].name, f->name);
+	struct hll_function *fun = libraries[libno] ? &libraries[libno][fno] : NULL;
+	bool unimplemented = !fun || !fun->fun;
 
 	void *args[HLL_MAX_ARGS];
 	void *ptrs[HLL_MAX_ARGS];
@@ -400,12 +401,38 @@ void hll_call(int libno, int fno)
 		argument_values[i] = stack[stack_ptr];
 	}
 
-	union vm_value r;
+	union vm_value r = { .i = 0 };
+	if (unimplemented) {
+		if (!fun || !fun->warned_unimplemented) {
+			if (fun)
+				fun->warned_unimplemented = true;
+			WARNING("Unimplemented HLL function: %s.%s", ain->libraries[libno].name, f->name);
+		}
+		switch (f->return_type.data) {
+		case AIN_STRING:
+			r.ref = string_ref(&EMPTY_STRING);
+			break;
+		case AIN_ARRAY:
+		case AIN_ARRAY_TYPE:
+			r.ref = NULL;
+			break;
+		case AIN_STRUCT:
+			r.i = heap_alloc_page(alloc_page(STRUCT_PAGE, f->return_type.struc, true));
+			break;
+		case AIN_FLOAT:
+			r.f = 0.0f;
+			break;
+		default:
+			r.i = 0;
+			break;
+		}
+	} else {
 #ifdef TRACE_HLL
-	trace_hll_call(&ain->libraries[libno], f, fun, &r, args);
+		trace_hll_call(&ain->libraries[libno], f, fun, &r, args);
 #else
-	ffi_call(&fun->cif, (void*)fun->fun, &r, args);
+		ffi_call(&fun->cif, (void*)fun->fun, &r, args);
 #endif
+	}
 
 
 	for (int i = 0; i < f->nr_arguments; i++) {
@@ -851,6 +878,12 @@ static void link_libraries(void)
 }
 
 bool libraries_initialized = false;
+
+void link_libraries_for_audit(void)
+{
+	library_run_all("_PreLink");
+	link_libraries();
+}
 
 void init_libraries(void)
 {

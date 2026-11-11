@@ -114,8 +114,12 @@ class GameModifierActivity : Activity() {
         discoverSaveTargets(intent.getStringExtra(EXTRA_DIR_NAME))
 
         findViewById<View>(R.id.btn_mod_switch_dir).setOnClickListener { showSwitchTargetDialog() }
-        findViewById<View>(R.id.btn_mod_full_unlock).setOnClickListener { showFullUnlockDialog() }
-        findViewById<View>(R.id.btn_mod_global_save).setOnClickListener { showGlobalSaveMenuDialog() }
+        findViewById<View>(R.id.btn_mod_full_unlock).setOnClickListener {
+            ensureGameNotRunning(this) { showFullUnlockDialog() }
+        }
+        findViewById<View>(R.id.btn_mod_global_save).setOnClickListener {
+            ensureGameNotRunning(this) { showGlobalSaveMenuDialog() }
+        }
         findViewById<View>(R.id.btn_mod_floating_cfg).setOnClickListener { showFloatingLocksDialog() }
         findViewById<View>(R.id.btn_mod_refresh).setOnClickListener {
             refreshList()
@@ -123,7 +127,8 @@ class GameModifierActivity : Activity() {
         }
 
         listView.setOnItemClickListener { _, _, pos, _ ->
-            showLocalSaveMenuDialog(adapter.getItem(pos))
+            val slot = adapter.getItem(pos)
+            ensureGameNotRunning(this) { showLocalSaveMenuDialog(slot) }
         }
 
         refreshList()

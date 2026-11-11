@@ -1234,7 +1234,7 @@ static bool billboard_posture_basis(struct s3de_object *obj,
 	if (!particle_world_dir(p, inst_xform, dir_world))
 		return false;
 
-	vec3 right, up;
+	vec3 right = {0}, up = {0};
 	switch (obj->posture_type) {
 	case S3DE_POSE_MOVE_DIR:
 		glm_vec3_cross(camera_front, dir_world, right);
@@ -1278,7 +1278,7 @@ static bool mesh_posture_basis(struct s3de_object *obj,
 			     vec3 world_pos, vec3 camera_pos, vec3 camera_up,
 			     mat4 inst_xform, mat3 out_rot)
 {
-	vec3 right, up, forward;
+	vec3 right = {0}, up = {0}, forward = {0};
 
 	switch (obj->posture_type) {
 	case S3DE_POSE_CAMERA:

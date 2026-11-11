@@ -19,6 +19,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <io.h>
+#include "system4/utfsjis.h"
+#else
+#include <strings.h>
+#include <unistd.h>
+#endif
 #include "cJSON.h"
 
 #include "system4.h"
@@ -43,31 +50,147 @@ static int current_global;
 		free(str);						\
 	}
 
+static char *make_atomic_tmp_path(const char *path)
+{
+	const char *slash1 = strrchr(path, '/');
+	const char *slash2 = strrchr(path, '\\');
+	const char *slash = slash1;
+	if (slash2 && (!slash || slash2 > slash))
+		slash = slash2;
+	size_t dir_len = slash ? (size_t)(slash - path + 1) : 0;
+	const char *base = slash ? slash + 1 : path;
+	size_t base_len = strlen(base);
+	char *tmp = xmalloc(dir_len + 1 + base_len + 4 + 1);
+	if (dir_len)
+		memcpy(tmp, path, dir_len);
+	tmp[dir_len] = '.';
+	memcpy(tmp + dir_len + 1, base, base_len);
+	memcpy(tmp + dir_len + 1 + base_len, ".tmp", 5);
+	return tmp;
+}
+
+static char *make_backup_path(const char *path)
+{
+	size_t len = strlen(path);
+	char *bak = xmalloc(len + 5);
+	memcpy(bak, path, len);
+	memcpy(bak + len, ".bak", 5);
+	return bak;
+}
+
+static bool is_critical_global_save(const char *path)
+{
+	if (!path)
+		return false;
+	const char *slash1 = strrchr(path, '/');
+	const char *slash2 = strrchr(path, '\\');
+	const char *base = slash1;
+	if (slash2 && (!base || slash2 > base))
+		base = slash2;
+	base = base ? base + 1 : path;
+#ifdef _WIN32
+	return !_stricmp(base, "GlobalSave.asd") || !_stricmp(base, "Collection.asd");
+#else
+	return !strcasecmp(base, "GlobalSave.asd") || !strcasecmp(base, "Collection.asd");
+#endif
+}
+
+FILE *atomic_save_open(const char *path, const char *mode, char **tmp_path_out)
+{
+	char *tmp = make_atomic_tmp_path(path);
+	FILE *fp = file_open_utf8(tmp, mode);
+	if (!fp) {
+		free(tmp);
+		*tmp_path_out = NULL;
+		return NULL;
+	}
+	*tmp_path_out = tmp;
+	return fp;
+}
+
+void atomic_save_abort(FILE *fp, char *tmp_path)
+{
+	if (fp)
+		fclose(fp);
+	if (tmp_path) {
+		remove_utf8(tmp_path);
+		free(tmp_path);
+	}
+}
+
+bool atomic_save_commit(FILE *fp, const char *path, char *tmp_path, bool keep_backup)
+{
+	bool ok = !ferror(fp) && fflush(fp) == 0;
+#ifdef _WIN32
+	if (ok && _commit(_fileno(fp)) != 0)
+		ok = false;
+#else
+	if (ok && fsync(fileno(fp)) != 0 && errno != EINVAL && errno != EROFS)
+		ok = false;
+#endif
+	if (fclose(fp) != 0)
+		ok = false;
+	if (!ok) {
+		WARNING("Error flushing temporary save file %s: %s", display_utf0(tmp_path), strerror(errno));
+		remove_utf8(tmp_path);
+		free(tmp_path);
+		return false;
+	}
+
+	if (keep_backup && file_exists(path) && file_size(path) > 16) {
+		char *bak = make_backup_path(path);
+		file_copy(path, bak);
+		free(bak);
+	}
+
+#ifdef _WIN32
+	wchar_t *wtmp = utf8_to_wchar(tmp_path);
+	wchar_t *wpath = utf8_to_wchar(path);
+	remove_utf8(path);
+	int rc = _wrename(wtmp, wpath);
+	free(wtmp);
+	free(wpath);
+#else
+	int rc = rename(tmp_path, path);
+#endif
+	if (rc != 0) {
+		WARNING("Failed renaming %s -> %s: %s", display_utf0(tmp_path), display_utf0(path), strerror(errno));
+		remove_utf8(tmp_path);
+		free(tmp_path);
+		return false;
+	}
+	free(tmp_path);
+	return true;
+}
+
 int save_json(const char *filename, cJSON *json)
 {
+	char *str = cJSON_Print(json);
+	if (!str)
+		return 0;
+
 	char *path = savedir_path(filename);
-	FILE *f = file_open_utf8(path, "w");
+	char *tmp_path = NULL;
+	FILE *f = atomic_save_open(path, "wb", &tmp_path);
 	if (!f) {
 		WARNING("Failed to open save file: %s: %s", display_utf0(filename), strerror(errno));
 		free(path);
+		free(str);
 		return 0;
 	}
-	free(path);
 
-	char *str = cJSON_Print(json);
-
-	if (fwrite(str, strlen(str), 1, f) != 1) {
+	size_t len = strlen(str);
+	if (len > 0 && fwrite(str, len, 1, f) != 1) {
 		WARNING("Failed to write save file: %s", strerror(errno));
+		atomic_save_abort(f, tmp_path);
+		free(path);
 		free(str);
 		return 0;
 	}
-	if (fclose(f)) {
-		WARNING("Error writing save to file: %s: %s", display_utf0(filename), strerror(errno));
-		free(str);
-		return 0;
-	}
+	bool ok = atomic_save_commit(f, path, tmp_path, is_critical_global_save(filename));
+	free(path);
 	free(str);
-	return 1;
+	return ok ? 1 : 0;
 }
 
 cJSON *load_json(const char *filename)
@@ -258,25 +381,30 @@ int save_globals(const char *keyname, const char *filename, const char *group_na
 	}
 
 	char *path = savedir_path(filename);
-	FILE *fp = file_open_utf8(path, "wb");
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(path, "wb", &tmp_path);
 	if (!fp) {
 		WARNING("Failed to open save file %s: %s", display_utf0(path), strerror(errno));
 		free(path);
 		gsave_free(save);
 		return 0;
 	}
-	free(path);
 
 	bool encrypt = !AIN_VERSION_GTE(ain, 6, 0);
 	int compression_level = AIN_VERSION_GTE(ain, 6, 0) ? 1 : 9;
 	enum savefile_error error = gsave_write(save, fp, encrypt, compression_level);
-	if (error != SAVEFILE_SUCCESS)
-		WARNING("Failed to write save file: %s", savefile_strerror(error));
-	fclose(fp);
 	gsave_free(save);
-	if (n_out)
+	if (error != SAVEFILE_SUCCESS) {
+		WARNING("Failed to write save file: %s", savefile_strerror(error));
+		atomic_save_abort(fp, tmp_path);
+		free(path);
+		return 0;
+	}
+	bool ok = atomic_save_commit(fp, path, tmp_path, is_critical_global_save(filename));
+	free(path);
+	if (ok && n_out)
 		*n_out = nr_vars;
-	return error == SAVEFILE_SUCCESS;
+	return ok ? 1 : 0;
 }
 
 static union vm_value json_to_vm_value(enum ain_data_type type, enum ain_data_type struct_type, int array_rank, cJSON *json);
@@ -664,27 +792,50 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 	// First, try reading as a gsave.
 	enum savefile_error error;
 	struct gsave *save = gsave_read(path, &error);
-	switch (error) {
-	case SAVEFILE_SUCCESS:
+	if (error == SAVEFILE_SUCCESS) {
 		free(path);
 		retval = load_globals_from_gsave(save, keyname, group_name, n);
 		gsave_free(save);
 		return retval;
-	case SAVEFILE_INVALID_SIGNATURE:
+	}
+	if (error == SAVEFILE_INVALID_SIGNATURE) {
 		// If not a System4 save file, try reading as a json.
 		retval = load_globals_from_json(path, keyname, group_name, n);
-		free(path);
-		return retval;
-	default:
+		if (retval) {
+			free(path);
+			return retval;
+		}
+	} else {
 		WARNING("%s: %s", display_utf0(path), savefile_strerror(error));
-		free(path);
-		return 0;
 	}
+
+	// Fall back to .bak if a backup exists (e.g. GlobalSave.asd.bak / Collection.asd.bak).
+	char *bak_path = make_backup_path(path);
+	if (file_exists(bak_path)) {
+		enum savefile_error bak_err;
+		struct gsave *bak_save = gsave_read(bak_path, &bak_err);
+		if (bak_err == SAVEFILE_SUCCESS) {
+			WARNING("Recovered corrupted save %s from backup %s", display_utf0(path), display_utf0(bak_path));
+			file_copy(bak_path, path);
+			free(bak_path);
+			free(path);
+			retval = load_globals_from_gsave(bak_save, keyname, group_name, n);
+			gsave_free(bak_save);
+			return retval;
+		}
+	}
+	free(bak_path);
+	free(path);
+	return 0;
 }
 
 int delete_save_file(const char *filename)
 {
 	char *path = savedir_path(filename);
+	char *bak_path = make_backup_path(path);
+	if (file_exists(bak_path))
+		remove_utf8(bak_path);
+	free(bak_path);
 	if (!file_exists(path)) {
 		free(path);
 		return 0;

@@ -850,7 +850,7 @@ bool RE_plugin_transform_pos_to_view_pos(struct RE_plugin *plugin, float x, floa
 	return true;
 }
 
-bool RE_plugin_get_camera_z_vector(struct RE_plugin *plugin, vec3 out)
+static bool RE_plugin_get_camera_basis_vector(struct RE_plugin *plugin, vec3 axis, vec3 out)
 {
 	if (!plugin)
 		return false;
@@ -867,8 +867,23 @@ bool RE_plugin_get_camera_z_vector(struct RE_plugin *plugin, vec3 out)
 	}
 	mat4 rot;
 	glm_euler_yxz(euler, rot);
-	glm_mat4_mulv3(rot, GLM_FORWARD, 0.f, out);
+	glm_mat4_mulv3(rot, axis, 0.f, out);
 	return true;
+}
+
+bool RE_plugin_get_camera_x_vector(struct RE_plugin *plugin, vec3 out)
+{
+	return RE_plugin_get_camera_basis_vector(plugin, GLM_XUP, out);
+}
+
+bool RE_plugin_get_camera_y_vector(struct RE_plugin *plugin, vec3 out)
+{
+	return RE_plugin_get_camera_basis_vector(plugin, GLM_YUP, out);
+}
+
+bool RE_plugin_get_camera_z_vector(struct RE_plugin *plugin, vec3 out)
+{
+	return RE_plugin_get_camera_basis_vector(plugin, GLM_FORWARD, out);
 }
 
 void RE_plugin_reset_light_param(struct RE_plugin *plugin)

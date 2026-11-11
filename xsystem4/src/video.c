@@ -71,7 +71,11 @@ static struct texture *view = &main_surface;
 static GLint max_texture_size;
 static SDL_Color clear_color = { 0, 0, 0, 255 };
 static float frame_rate;
+#ifdef __ANDROID__
+static bool wait_vsync = true;
+#else
 static bool wait_vsync = false;
+#endif
 
 static GLchar *read_shader_file(const char *path)
 {
@@ -119,6 +123,10 @@ void gfx_load_shader(struct shader *dst, const char *vertex_shader_path, const c
 	glAttachShader(program, vertex_shader);
 	glAttachShader(program, fragment_shader);
 	glLinkProgram(program);
+	glDetachShader(program, vertex_shader);
+	glDetachShader(program, fragment_shader);
+	glDeleteShader(vertex_shader);
+	glDeleteShader(fragment_shader);
 
 	GLint link_success;
 	glGetProgramiv(program, GL_LINK_STATUS, &link_success);
