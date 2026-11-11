@@ -27,8 +27,27 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build bison flex autoconf automake libtool pkg-config
+          if ! command -v ninja >/dev/null 2>&1; then
+            SDK_NINJA=$(ls -d "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"/cmake/*/bin/ninja 2>/dev/null | sort -V | tail -n 1 || true)
+            if [ -n "$SDK_NINJA" ]; then
+              echo "$(dirname "$SDK_NINJA")" >> "$GITHUB_PATH"
+              export PATH="$(dirname "$SDK_NINJA"):$PATH"
+            fi
+          fi
+          MISSING=""
+          for cmd in ninja:ninja-build bison:bison flex:flex autoconf:autoconf automake:automake libtoolize:libtool pkg-config:pkg-config; do
+            bin="${cmd%%:*}"
+            pkg="${cmd##*:}"
+            command -v "$bin" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
+          done
+          if [ -n "$MISSING" ]; then
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            fi
+            sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            sudo apt-get update
+            sudo apt-get install -y $MISSING
+          fi
 
       - name: Build Native Libraries
         run: |
