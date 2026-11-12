@@ -195,9 +195,9 @@ class FloatingModifierOverlay(private val activity: Activity) {
         }
 
         val streamerItemLabel = if (isStreamerDisabled) {
-            tr("主播模式和谐：已关闭 [点击刷新卡面 / 切换]…", "配信者モード：解除済 [更新 / 切替]…", "Streamer Mode: OFF [Refresh / Toggle]…")
+            tr("主播模式：已关闭 [点击切换]…", "配信者モード：OFF [タップで切替]…", "Streamer Mode: OFF [Tap to Toggle]…")
         } else {
-            tr("主播模式和谐：开启中 [点击立即关闭]", "配信者モード：ON [タップで解除]", "Streamer Mode: ON [Tap to Disable]")
+            tr("主播模式：开启中 [点击关闭]", "配信者モード：ON [タップでOFF]", "Streamer Mode: ON [Tap to Disable]")
         }
 
         val ctrlItemLabel = if (ctrlVisible) {
@@ -230,7 +230,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                             GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
                             sendAction(
                                 JSONObject().put("streamerMode", 0),
-                                tr("已关闭主播模式并清空卡面缓存（若当前在队伍界面，退出重进即可刷新）", "配信者モードを解除しました", "Streamer mode disabled & card cache cleared")
+                                tr("已关闭主播模式", "配信者モードを解除しました", "Streamer mode disabled")
                             )
                         } else {
                             showStreamerModeActionDialog()
@@ -266,8 +266,8 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showStreamerModeActionDialog() {
         val options = arrayOf(
-            tr("强制关闭主播模式并清空卡面缓存（解除白布和谐/秘书限制）", "配信者モードを強制解除してカードキャッシュを更新", "Force Disable Streamer Mode & Clear Card Cache"),
-            tr("恢复开启主播模式（显示白布和谐）", "配信者モードを再度ONにする（白布表示）", "Re-enable Streamer Mode (Censored)")
+            tr("关闭主播模式", "配信者モードを解除する", "Disable Streamer Mode"),
+            tr("开启主播模式", "配信者モードをONにする", "Enable Streamer Mode")
         )
         AlertDialog.Builder(activity)
             .setTitle(tr("主播模式设置 (日不落MOD)", "配信者モード設定", "Streamer Mode Settings"))
@@ -276,13 +276,13 @@ class FloatingModifierOverlay(private val activity: Activity) {
                     GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
                     sendAction(
                         JSONObject().put("streamerMode", 0),
-                        tr("已关闭主播模式并清空卡面缓存（若当前在队伍界面，退出重进即可刷新）", "配信者モードを解除しました", "Streamer mode disabled & card cache cleared")
+                        tr("已关闭主播模式", "配信者モードを解除しました", "Streamer mode disabled")
                     )
                 } else {
                     GameModifierBridge.setDisableStreamerModeEnabled(activity, false)
                     sendAction(
                         JSONObject().put("streamerMode", 1),
-                        tr("已恢复开启主播模式", "配信者モードをONにしました", "Streamer mode enabled")
+                        tr("已开启主播模式", "配信者モードをONにしました", "Streamer mode enabled")
                     )
                 }
             }
@@ -366,7 +366,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
                         sendAction(
                             JSONObject().put("streamerMode", 0),
-                            tr("已关闭主播模式并清空卡面缓存（若当前在队伍界面，退出重进即可刷新）", "配信者モードを解除しました", "Streamer mode disabled & card cache cleared")
+                            tr("已关闭主播模式", "配信者モードを解除しました", "Streamer mode disabled")
                         )
                     } else {
                         sendAction(
@@ -385,7 +385,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showCheatCodePresetsDialog() {
         val presets = listOf(
-            "关闭主播模式" to tr("关闭主播模式并刷新卡面缓存 (立即生效)", "配信者モード解除・カード更新", "Disable Streamer Mode & Clear Cache"),
+            "关闭主播模式" to tr("关闭主播模式", "配信者モード解除", "Disable Streamer Mode"),
             "界徐盛" to tr("解禁全部作弊码限制 (界徐盛，修改器也会自动解禁)", "全チート制限解除 (界徐盛)", "Unlock All Cheat Restrictions (界徐盛)"),
             "whosyourdaddy" to tr("击杀当前敌人 (whosyourdaddy)", "敵を即撃破 (whosyourdaddy)", "Kill Enemy (whosyourdaddy)"),
             "血量全满" to tr("战斗中我方血量全满 (血量全满)", "戦闘中の味方HP全回復", "Full Party HP in Battle (血量全满)"),
@@ -468,7 +468,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("一键部队满血与全属性+999%", "部隊HP99万＋全ステータス+999%", "Max Party HP & +999% Multipliers"),
             tr("一键全卡牌99叠卡 + 全角色5星", "全カード99枚＋全キャラ★5", "All Cards x99 & All Chars 5★"),
             tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties"),
-            tr("一键关闭主播模式并刷新卡面缓存 (解除白布/秘书限制)", "配信者モード解除・カードキャッシュ更新", "Disable Streamer Mode & Clear Card Cache"),
+            tr("一键关闭主播模式", "配信者モード解除", "Disable Streamer Mode"),
             tr("打开MOD内置作弊器 (按键0)", "MOD内蔵チートを開く (キー0)", "Open MOD Cheat Console (Key 0)")
         )
         AlertDialog.Builder(activity)
@@ -555,7 +555,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                         GameModifierBridge.setDisableStreamerModeEnabled(activity, true)
                         sendAction(
                             JSONObject().put("streamerMode", 0),
-                            tr("已关闭主播模式并清空卡面缓存（若当前在队伍界面，退出重进即可刷新）", "配信者モードを解除しました", "Streamer mode disabled & card cache cleared")
+                            tr("已关闭主播模式", "配信者モードを解除しました", "Streamer mode disabled")
                         )
                     }
                     6 -> sendAction(

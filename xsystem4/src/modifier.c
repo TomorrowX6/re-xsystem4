@@ -880,11 +880,11 @@ static bool vm_is_in_card_cache_callstack(void)
 
 /*
  * g_cardCache (global[286], group = -1) caches constructed CAS process arrays
- * across the entire process lifetime — even across returning to title or
- * loading another save! When m_isSummaryMode was 1, nude cards cached white
- * streamer curtains ('卡牌／主播') in Front.m_procCardBasic, FrontItem,
- * BackCard, BackCardListInfo, etc. Clearing those KeyValueMap m_data arrays
- * forces immediate reconstruction with uncensored CGs.
+ * across the entire process lifetime. Only clear the 5 lazily-populated
+ * per-card KeyValueMap<string, array<CASConstructionProcess>> tables that
+ * depend on m_isSummaryMode ("卡牌／主播" / "卡牌／物品／主播").
+ * NEVER clear Front.m_procOrg: it is populated once in
+ * CardConstructProcessCacheFront@0 for org IDs 1..10 and is never recreated!
  */
 static int vm_clear_card_cache(void)
 {
@@ -898,10 +898,8 @@ static int vm_clear_card_cache(void)
 	s_pending_clear_card_cache = false;
 	int total = 0;
 	struct page *front = vm_get_field_page(cc, "Front", NULL);
-	total += vm_clear_kvmap_field(front, "m_procOrg");
 	total += vm_clear_kvmap_field(front, "m_procCardBasic");
 	total += vm_clear_kvmap_field(vm_get_field_page(cc, "FrontItem", NULL), "m_proc");
-	total += vm_clear_kvmap_field(vm_get_field_page(cc, "FrontExtra", NULL), "m_proc");
 	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackSkill", NULL), "m_proc");
 	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackCard", NULL), "m_proc");
 	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackCardListInfo", NULL), "m_proc");
