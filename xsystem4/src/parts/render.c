@@ -17,6 +17,7 @@
 #include <limits.h>
 #include <math.h>
 #include <assert.h>
+#include <stddef.h>
 #include <string.h>
 #include <cglm/cglm.h>
 
@@ -26,6 +27,7 @@
 #include "system4/flat.h"
 
 #include "gfx/gfx.h"
+#include "gfx/private.h"
 #include "sact.h"
 #include "scene.h"
 #include "sprite.h"
@@ -35,9 +37,8 @@
 
 static struct {
 	struct shader shader;
+	GLint uv_rect;
 	GLint blend_rate;
-	GLint bot_left;
-	GLint top_right;
 	GLint add_color;
 	GLint multiply_color;
 	GLint draw_filter;
@@ -48,7 +49,17 @@ static struct {
 
 uint64_t parts_render_gen = 1;
 
-static void set_draw_filter_blend_func(int draw_filter)
+static bool parts_pass_active = false;
+static GLuint pass_tex0 = 0;
+static GLuint pass_tex1 = 0;
+static int pass_draw_filter = -1;
+static int pass_use_clipper = -1;
+static bool pass_blend_enabled = true;
+static int pass_clip_no = 0;
+static uint64_t pass_clip_gen = 0;
+static struct parts_context *pass_clip_ctx = NULL;
+
+static void apply_draw_filter_blend_func(int draw_filter)
 {
 	switch (draw_filter) {
 	case PARTS_DRAW_FILTER_ADDITIVE:
@@ -61,8 +72,68 @@ static void set_draw_filter_blend_func(int draw_filter)
 		glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ZERO, GL_ONE);
 		break;
 	default:
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 		break;
 	}
+}
+
+void parts_render_pass_begin(void)
+{
+	mat4 wv_transform = WV_TRANSFORM(config.view_width, config.view_height);
+	glUseProgram(parts_shader.shader.program);
+	glUniformMatrix4fv(parts_shader.shader.view_transform, 1, GL_FALSE, wv_transform[0]);
+	glUniform1i(parts_shader.shader.texture, 0);
+	glUniform1i(parts_shader.clipper_tex, 1);
+
+	glEnable(GL_BLEND);
+	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+
+	glBindVertexArray(sdl.gl.vao);
+	glEnableVertexAttribArray(parts_shader.shader.vertex_pos);
+	glEnableVertexAttribArray(parts_shader.shader.vertex_uv);
+	glBindBuffer(GL_ARRAY_BUFFER, sdl.gl.vbo);
+	glVertexAttribPointer(parts_shader.shader.vertex_pos, 4, GL_FLOAT, GL_FALSE, sizeof(struct gfx_vertex), NULL);
+	glVertexAttribPointer(parts_shader.shader.vertex_uv, 2, GL_FLOAT, GL_FALSE, sizeof(struct gfx_vertex), (void*)offsetof(struct gfx_vertex, u));
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sdl.gl.rect_ibo);
+
+	glActiveTexture(GL_TEXTURE0);
+
+	pass_tex0 = 0;
+	pass_tex1 = 0;
+	pass_blend_enabled = true;
+	pass_draw_filter = PARTS_DRAW_FILTER_NORMAL;
+	glUniform1i(parts_shader.draw_filter, PARTS_DRAW_FILTER_NORMAL);
+	pass_use_clipper = 0;
+	glUniform1i(parts_shader.use_clipper, 0);
+	pass_clip_no = 0;
+	pass_clip_gen = 0;
+	pass_clip_ctx = NULL;
+	parts_pass_active = true;
+}
+
+void parts_render_pass_end(void)
+{
+	if (!parts_pass_active)
+		return;
+	parts_pass_active = false;
+	if (!pass_blend_enabled) {
+		glEnable(GL_BLEND);
+		pass_blend_enabled = true;
+	}
+	if (pass_draw_filter != PARTS_DRAW_FILTER_NORMAL) {
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+	}
+	glActiveTexture(GL_TEXTURE0);
+	glDisableVertexAttribArray(parts_shader.shader.vertex_pos);
+	glDisableVertexAttribArray(parts_shader.shader.vertex_uv);
+	glBindVertexArray(0);
+	glUseProgram(0);
+}
+
+void parts_render_pass_rebind(void)
+{
+	if (parts_pass_active)
+		parts_render_pass_begin();
 }
 
 static void quad_screen_aabb(mat4 m, float *min_x, float *max_x, float *min_y, float *max_y)
@@ -76,18 +147,58 @@ static void quad_screen_aabb(mat4 m, float *min_x, float *max_x, float *min_y, f
 	*max_y = y0 + (dy0 > 0.0f ? dy0 : 0.0f) + (dy1 > 0.0f ? dy1 : 0.0f);
 }
 
-static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rectangle *rect, float blend_rate, vec3 add_color, vec3 multiply_color, int draw_filter, int alpha_clipper)
+static bool crop_quad_transform(mat4 mw_transform, int tex_w, int tex_h, const Rectangle *rect,
+		mat4 out_mw, vec4 out_uv)
 {
-	if (blend_rate <= 0.0f)
-		return;
+	if (tex_w <= 0 || tex_h <= 0)
+		return false;
+	if (!rect || (rect->x <= 0 && rect->y <= 0 &&
+			rect->x + rect->w >= tex_w && rect->y + rect->h >= tex_h)) {
+		if (rect && (rect->w <= 0 || rect->h <= 0))
+			return false;
+		glm_mat4_copy(mw_transform, out_mw);
+		out_uv[0] = 0.0f;
+		out_uv[1] = 0.0f;
+		out_uv[2] = 1.0f;
+		out_uv[3] = 1.0f;
+		return true;
+	}
+	int rx0 = max(0, rect->x);
+	int ry0 = max(0, rect->y);
+	int rx1 = min(tex_w, rect->x + rect->w);
+	int ry1 = min(tex_h, rect->y + rect->h);
+	if (rx1 <= rx0 || ry1 <= ry0)
+		return false;
 
-	float q_min_x, q_max_x, q_min_y, q_max_y;
-	quad_screen_aabb(mw_transform, &q_min_x, &q_max_x, &q_min_y, &q_max_y);
-	if (q_max_x <= 0.0f || q_min_x >= (float)config.view_width ||
-			q_max_y <= 0.0f || q_min_y >= (float)config.view_height)
-		return;
+	float u0 = (float)rx0 / (float)tex_w;
+	float v0 = (float)ry0 / (float)tex_h;
+	float du = (float)(rx1 - rx0) / (float)tex_w;
+	float dv = (float)(ry1 - ry0) / (float)tex_h;
+	out_uv[0] = u0;
+	out_uv[1] = v0;
+	out_uv[2] = du;
+	out_uv[3] = dv;
 
-	struct parts *clipper = alpha_clipper > 0 ? parts_try_get(alpha_clipper) : NULL;
+	for (int r = 0; r < 4; r++) {
+		float m0 = mw_transform[0][r];
+		float m1 = mw_transform[1][r];
+		out_mw[0][r] = du * m0;
+		out_mw[1][r] = dv * m1;
+		out_mw[2][r] = mw_transform[2][r];
+		out_mw[3][r] = mw_transform[3][r] + u0 * m0 + v0 * m1;
+	}
+	return true;
+}
+
+static bool get_alpha_clipper_info(int alpha_clipper, GLuint *tex_out, vec4 **inv_out,
+		float *min_x, float *max_x, float *min_y, float *max_y)
+{
+	if (alpha_clipper <= 0)
+		return false;
+	struct parts *clipper = parts_try_get(alpha_clipper);
+	if (!clipper)
+		return false;
+
 	static uint64_t cached_clip_gen = 0;
 	static int cached_clip_no = 0;
 	static struct parts_context *cached_clip_ctx = NULL;
@@ -95,63 +206,123 @@ static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rec
 	static GLuint cached_clip_tex = 0;
 	static float clip_min_x, clip_max_x, clip_min_y, clip_max_y;
 
-	if (clipper) {
-		if (cached_clip_gen != parts_render_gen || cached_clip_no != alpha_clipper || cached_clip_ctx != parts_current) {
-			struct parts_common *c_common = &clipper->states[clipper->state].common;
-			mat4 clip_mw;
-			parts_world_matrix(clipper, clip_mw);
-			glm_translate(clip_mw, (vec3){ c_common->origin_offset.x, c_common->origin_offset.y, 0 });
-			glm_scale(clip_mw, (vec3){ c_common->w, c_common->h, 1.0 });
-			glm_mat4_inv(clip_mw, cached_clip_inv);
-			quad_screen_aabb(clip_mw, &clip_min_x, &clip_max_x, &clip_min_y, &clip_max_y);
-			cached_clip_tex = c_common->texture.handle;
-			cached_clip_gen = parts_render_gen;
-			cached_clip_no = alpha_clipper;
-			cached_clip_ctx = parts_current;
+	if (cached_clip_gen != parts_render_gen || cached_clip_no != alpha_clipper || cached_clip_ctx != parts_current) {
+		struct parts_state *c_state = &clipper->states[clipper->state];
+		if (c_state->type == PARTS_CONSTRUCTION_PROCESS && c_state->cproc.needs_build && !clipper->textures_suspended) {
+			parts_build_construction_process(clipper, &c_state->cproc);
+			parts_render_pass_rebind();
 		}
+		struct parts_common *c_common = &c_state->common;
+		mat4 clip_mw;
+		parts_world_matrix(clipper, clip_mw);
+		glm_translate(clip_mw, (vec3){ c_common->origin_offset.x, c_common->origin_offset.y, 0 });
+		glm_scale(clip_mw, (vec3){ c_common->w, c_common->h, 1.0 });
+		glm_mat4_inv(clip_mw, cached_clip_inv);
+		quad_screen_aabb(clip_mw, &clip_min_x, &clip_max_x, &clip_min_y, &clip_max_y);
+		cached_clip_tex = c_common->texture.handle;
+		cached_clip_gen = parts_render_gen;
+		cached_clip_no = alpha_clipper;
+		cached_clip_ctx = parts_current;
+	}
+
+	if (tex_out) *tex_out = cached_clip_tex;
+	if (inv_out) *inv_out = cached_clip_inv;
+	*min_x = clip_min_x;
+	*max_x = clip_max_x;
+	*min_y = clip_min_y;
+	*max_y = clip_max_y;
+	return true;
+}
+
+static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rectangle *rect, float blend_rate, vec3 add_color, vec3 multiply_color, int draw_filter, int alpha_clipper)
+{
+	if (!texture || !texture->handle || blend_rate <= 0.0f)
+		return;
+
+	mat4 sub_mw;
+	vec4 uv_rect;
+	if (!crop_quad_transform(mw_transform, texture->w, texture->h, rect, sub_mw, uv_rect))
+		return;
+
+	float q_min_x, q_max_x, q_min_y, q_max_y;
+	quad_screen_aabb(sub_mw, &q_min_x, &q_max_x, &q_min_y, &q_max_y);
+	if (q_max_x <= 0.0f || q_min_x >= (float)config.view_width ||
+			q_max_y <= 0.0f || q_min_y >= (float)config.view_height)
+		return;
+
+	GLuint clip_tex = 0;
+	vec4 *clip_inv = NULL;
+	float clip_min_x, clip_max_x, clip_min_y, clip_max_y;
+	bool has_clipper = get_alpha_clipper_info(alpha_clipper, &clip_tex, &clip_inv,
+			&clip_min_x, &clip_max_x, &clip_min_y, &clip_max_y);
+	if (has_clipper) {
 		if (q_max_x <= clip_min_x || q_min_x >= clip_max_x ||
 				q_max_y <= clip_min_y || q_min_y >= clip_max_y)
 			return;
 	}
 
-	mat4 wv_transform = WV_TRANSFORM(config.view_width, config.view_height);
-	mat4 world_transform;
-	glm_mat4_copy(mw_transform, world_transform);
-	world_transform[0][2] = 0.0f;
-	world_transform[1][2] = 0.0f;
-	world_transform[2][2] = 0.0f;
-	world_transform[3][2] = 0.0f;
+	bool auto_pass = !parts_pass_active;
+	if (auto_pass)
+		parts_render_pass_begin();
 
-	struct gfx_render_job job = {
-		.shader = &parts_shader.shader,
-		.shape = GFX_RECTANGLE,
-		.texture = texture->handle,
-		.world_transform = world_transform[0],
-		.view_transform = wv_transform[0],
-		.data = texture,
-	};
+	sub_mw[0][2] = 0.0f;
+	sub_mw[1][2] = 0.0f;
+	sub_mw[2][2] = 0.0f;
+	sub_mw[3][2] = 0.0f;
 
-	gfx_prepare_job(&job);
-	glUniform1f(parts_shader.blend_rate, blend_rate);
-	glUniform2f(parts_shader.bot_left, rect->x, rect->y);
-	glUniform2f(parts_shader.top_right, rect->x + rect->w, rect->y + rect->h);
-	glUniform3fv(parts_shader.add_color, 1, add_color);
-	glUniform3fv(parts_shader.multiply_color, 1, multiply_color);
-	glUniform1i(parts_shader.draw_filter, draw_filter);
-
-	if (clipper) {
-		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, cached_clip_tex);
-		glActiveTexture(GL_TEXTURE0);
-
-		glUniform1i(parts_shader.use_clipper, 1);
-		glUniform1i(parts_shader.clipper_tex, 1);
-		glUniformMatrix4fv(parts_shader.inv_clipper_transform, 1, GL_FALSE, cached_clip_inv[0]);
-	} else {
-		glUniform1i(parts_shader.use_clipper, 0);
+	bool want_blend = !(texture->opaque && blend_rate >= 1.0f &&
+			draw_filter == PARTS_DRAW_FILTER_NORMAL && !has_clipper);
+	if (want_blend != pass_blend_enabled) {
+		if (want_blend)
+			glEnable(GL_BLEND);
+		else
+			glDisable(GL_BLEND);
+		pass_blend_enabled = want_blend;
 	}
 
-	gfx_run_job(&job);
+	if (draw_filter != pass_draw_filter) {
+		apply_draw_filter_blend_func(draw_filter);
+		glUniform1i(parts_shader.draw_filter, draw_filter);
+		pass_draw_filter = draw_filter;
+	}
+
+	if (pass_tex0 != texture->handle) {
+		glBindTexture(GL_TEXTURE_2D, texture->handle);
+		pass_tex0 = texture->handle;
+	}
+
+	glUniformMatrix4fv(parts_shader.shader.world_transform, 1, GL_FALSE, sub_mw[0]);
+	glUniform4fv(parts_shader.uv_rect, 1, uv_rect);
+	glUniform1f(parts_shader.blend_rate, blend_rate);
+	glUniform3fv(parts_shader.add_color, 1, add_color);
+	glUniform3fv(parts_shader.multiply_color, 1, multiply_color);
+
+	if (has_clipper) {
+		if (pass_tex1 != clip_tex) {
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, clip_tex);
+			glActiveTexture(GL_TEXTURE0);
+			pass_tex1 = clip_tex;
+		}
+		if (pass_use_clipper != 1) {
+			glUniform1i(parts_shader.use_clipper, 1);
+			pass_use_clipper = 1;
+		}
+		if (pass_clip_no != alpha_clipper || pass_clip_gen != parts_render_gen || pass_clip_ctx != parts_current) {
+			glUniformMatrix4fv(parts_shader.inv_clipper_transform, 1, GL_FALSE, clip_inv[0]);
+			pass_clip_no = alpha_clipper;
+			pass_clip_gen = parts_render_gen;
+			pass_clip_ctx = parts_current;
+		}
+	} else if (pass_use_clipper != 0) {
+		glUniform1i(parts_shader.use_clipper, 0);
+		pass_use_clipper = 0;
+	}
+
+	glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_INT, NULL);
+
+	if (auto_pass)
+		parts_render_pass_end();
 }
 
 static void parts_render_text(struct parts *parts, struct parts_text *t,
@@ -168,12 +339,13 @@ static void parts_render_text(struct parts *parts, struct parts_text *t,
 		parts->global.multiply_color.b / 255.0f,
 	};
 	float blend_rate = parts->global.alpha / 255.0;
+	int alpha_clipper = parts_get_effective_alpha_clipper(parts);
 
 	mat4 base;
 	parts_world_matrix(parts, base);
 	int x = t->common.origin_offset.x;
 	int y = t->common.origin_offset.y;
-	for (int i = 0; i < t->nr_lines; i++) {
+	for (unsigned i = 0; i < t->nr_lines; i++) {
 		struct parts_text_line *line = &t->lines[i];
 		for (int j = 0; j < line->nr_chars; j++) {
 			struct parts_text_char *ch = &line->chars[j];
@@ -190,13 +362,19 @@ static void parts_render_text(struct parts *parts, struct parts_text *t,
 				if (a.w > 0) { r.x = max(0, a.x - x); r.w = min(ch->t.w, a.x + a.w - x) - r.x; }
 				if (a.h > 0) { r.y = max(0, a.y - y); r.h = min(ch->t.h, a.y + a.h - y) - r.y; }
 			}
-			mat4 mw_transform;
-			glm_mat4_copy(base, mw_transform);
-			glm_translate(mw_transform, (vec3){x, y, 0});
-			glm_scale(mw_transform, (vec3){ch->t.w, ch->t.h, 1});
-			if (alpha > 0 && r.w > 0 && r.h > 0 && ch->t.handle)
+			if (alpha > 0 && r.w > 0 && r.h > 0 && ch->t.handle) {
+				mat4 mw_transform;
+				for (int row = 0; row < 4; row++) {
+					float b0 = base[0][row];
+					float b1 = base[1][row];
+					mw_transform[0][row] = ch->t.w * b0;
+					mw_transform[1][row] = ch->t.h * b1;
+					mw_transform[2][row] = base[2][row];
+					mw_transform[3][row] = base[3][row] + x * b0 + y * b1;
+				}
 				parts_render_texture(&ch->t, mw_transform, &r, alpha, add_color,
-						multiply_color, 0, parts_get_effective_alpha_clipper(parts));
+						multiply_color, 0, alpha_clipper);
+			}
 			x += ch->advance;
 		}
 		x = t->common.origin_offset.x;
@@ -206,8 +384,6 @@ static void parts_render_text(struct parts *parts, struct parts_text *t,
 
 static void parts_render_cg(struct parts *parts, struct parts_common *common)
 {
-	set_draw_filter_blend_func(parts->draw_filter);
-
 	mat4 mw_transform;
 	parts_world_matrix(parts, mw_transform);
 	glm_translate(mw_transform, (vec3){ common->origin_offset.x, common->origin_offset.y, 0 });
@@ -247,8 +423,6 @@ static void parts_render_cg(struct parts *parts, struct parts_common *common)
 		parts->global.multiply_color.b / 255.0f,
 	};
 	parts_render_texture(&common->texture, mw_transform, &r, parts->global.alpha / 255.0, add_color, multiply_color, parts->draw_filter, parts_get_effective_alpha_clipper(parts));
-
-	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 }
 
 struct emitter_render_ud {
@@ -289,16 +463,10 @@ static void render_emitter_particle_cb(const struct flat_emitter_particle *p,
 	m[0][2] = m[1][2] = m[2][2] = m[3][2] = 0.0f;
 	glm_scale(m, (vec3){ tex->w, tex->h, 1.0f });
 
-	if (d->draw_filter != PARTS_DRAW_FILTER_NORMAL)
-		set_draw_filter_blend_func(d->draw_filter);
-
 	float blend_rate = d->parent_alpha * p->fade_alpha;
 	Rectangle rect = { 0, 0, tex->w, tex->h };
 	parts_render_texture(tex, m, &rect, blend_rate,
 			d->add_color, d->mul_color, d->draw_filter, d->alpha_clipper);
-
-	if (d->draw_filter != PARTS_DRAW_FILTER_NORMAL)
-		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 }
 
 static void render_flat_emitter(struct parts *parts, struct parts_flat *f,
@@ -452,8 +620,6 @@ static void render_flat_cg(struct parts *parts, Texture *tex,
 	if (!tex->handle)
 		return;
 
-	set_draw_filter_blend_func(ctx->draw_filter);
-
 	mat4 render_m;
 	glm_mat4_copy(ctx->matrix, render_m);
 	// uk2 is the texture anchor in the 1..9 grid, independent of explicit origin.
@@ -482,19 +648,15 @@ static void render_flat_cg(struct parts *parts, Texture *tex,
 
 	parts_render_texture(tex, render_m, &rect, ctx->alpha, ctx->add_color, ctx->mul_color,
 			ctx->draw_filter, parts_get_effective_alpha_clipper(parts));
-
-	if (ctx->draw_filter != PARTS_DRAW_FILTER_NORMAL)
-		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 }
 
 static void render_flat_item(struct parts *parts, struct parts_flat *f,
-		struct flat_layer_state *state, size_t tl_idx,
+		int lib_idx, struct flat_layer_state *state, size_t tl_idx,
 		struct flat_timeline *tl, int local,
 		const struct flat_key_data_graphic *key,
 		struct flat_draw_ctx *parent, mat4 root,
 		struct flat_key_stack *key_stack)
 {
-	int lib_idx = parts_flat_find_library(f->flat, tl->library_name->text);
 	if (lib_idx < 0 || (size_t)lib_idx >= f->flat->nr_libraries)
 		return;
 
@@ -571,13 +733,15 @@ static void render_flat_layer(struct parts *parts, struct parts_flat *f,
 			continue;
 
 		int lib_idx = parts_flat_find_library(f->flat, tl->library_name->text);
-		if (lib_idx >= 0 && f->flat->libraries[lib_idx].type == FLAT_LIB_EMITTER) {
+		if (lib_idx < 0)
+			continue;
+		if (f->flat->libraries[lib_idx].type == FLAT_LIB_EMITTER) {
 			render_flat_emitter(parts, f, lib_idx, (int)i, local, tl->frame_count, tl, state,
 					root, ctx->alpha, key_stack);
 			continue;
 		}
 		for (unsigned instance = 0; instance < parts_flat_key_count(tl, local); instance++)
-			render_flat_item(parts, f, state, i, tl, local, parts_flat_key(tl, local, instance),
+			render_flat_item(parts, f, lib_idx, state, i, tl, local, parts_flat_key(tl, local, instance),
 					ctx, root, key_stack);
 	}
 }
@@ -696,6 +860,11 @@ static void parts_render_flash(struct parts *parts, struct parts_flash *f)
 			WARNING("character %d is not defined", obj->character_id);
 			continue;
 		}
+		if (parts_pass_active && pass_draw_filter != PARTS_DRAW_FILTER_NORMAL) {
+			glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+			glUniform1i(parts_shader.draw_filter, PARTS_DRAW_FILTER_NORMAL);
+			pass_draw_filter = PARTS_DRAW_FILTER_NORMAL;
+		}
 		// set blend mode
 		switch (obj->blend_mode) {
 		case PARTS_FLASH_BLEND_MULTIPLY:
@@ -725,6 +894,158 @@ static void parts_render_flash(struct parts *parts, struct parts_flash *f)
 	}
 }
 
+bool parts_cg_on_screen(struct parts *parts, struct parts_common *common)
+{
+	if (!parts || !common || common->w <= 0 || common->h <= 0 || parts->global.alpha <= 0)
+		return false;
+
+	mat4 mw_transform;
+	parts_world_matrix(parts, mw_transform);
+	glm_translate(mw_transform, (vec3){ common->origin_offset.x, common->origin_offset.y, 0 });
+	switch (parts->sprite_deform) {
+	case 1:
+		glm_translate(mw_transform, (vec3){ common->w, 0.0f, 0.0f });
+		glm_scale(mw_transform, (vec3){ -common->w, common->h, 1.0f });
+		break;
+	case 2:
+		glm_translate(mw_transform, (vec3){ 0.0f, common->h, 0.0f });
+		glm_scale(mw_transform, (vec3){ common->w, -common->h, 1.0f });
+		break;
+	default:
+	case 0:
+		glm_scale(mw_transform, (vec3){ common->w, common->h, 1.0f });
+		break;
+	}
+
+	Rectangle r = common->surface_area;
+	if (!r.w && !r.h) {
+		r = (Rectangle){ 0, 0, common->w, common->h };
+	}
+
+	mat4 sub_mw;
+	vec4 uv_rect;
+	if (!crop_quad_transform(mw_transform, common->w, common->h, &r, sub_mw, uv_rect))
+		return false;
+
+	float q_min_x, q_max_x, q_min_y, q_max_y;
+	quad_screen_aabb(sub_mw, &q_min_x, &q_max_x, &q_min_y, &q_max_y);
+	if (q_max_x <= 0.0f || q_min_x >= (float)config.view_width ||
+			q_max_y <= 0.0f || q_min_y >= (float)config.view_height)
+		return false;
+
+	int alpha_clipper = parts_get_effective_alpha_clipper(parts);
+	if (alpha_clipper > 0) {
+		float clip_min_x, clip_max_x, clip_min_y, clip_max_y;
+		if (get_alpha_clipper_info(alpha_clipper, NULL, NULL,
+				&clip_min_x, &clip_max_x, &clip_min_y, &clip_max_y)) {
+			if (q_max_x <= clip_min_x || q_min_x >= clip_max_x ||
+					q_max_y <= clip_min_y || q_min_y >= clip_max_y)
+				return false;
+		}
+	}
+	return true;
+}
+
+bool parts_sprite_is_fullscreen_opaque(struct sprite *sp)
+{
+	if (!sp || sp->render != parts_sprite_render)
+		return false;
+	struct parts *parts = (struct parts *)sp;
+	if (parts->textures_suspended || !parts_is_visible(parts))
+		return false;
+	if (parts->scrollbar || parts->message_box)
+		return false;
+	if (parts->component_type == 1 && parts->widget)
+		return false;
+	if (parts->global.alpha < 255 || parts->draw_filter != PARTS_DRAW_FILTER_NORMAL)
+		return false;
+	if (parts_get_effective_alpha_clipper(parts) > 0)
+		return false;
+
+	struct parts_state *state = parts_display_state(parts);
+	if (state->type == PARTS_CG || state->type == PARTS_ANIMATION ||
+			state->type == PARTS_CONSTRUCTION_PROCESS) {
+		struct parts_common *common = &state->common;
+		if (!common->texture.handle || !common->texture.opaque ||
+				common->w <= 0 || common->h <= 0)
+			return false;
+		if (common->surface_area.w || common->surface_area.h || parts->sprite_deform != 0)
+			return false;
+		mat4 m;
+		parts_world_matrix(parts, m);
+		if (m[0][1] != 0.0f || m[1][0] != 0.0f || m[0][0] <= 0.0f || m[1][1] <= 0.0f)
+			return false;
+		float x0 = m[3][0] + m[0][0] * common->origin_offset.x;
+		float y0 = m[3][1] + m[1][1] * common->origin_offset.y;
+		float x1 = x0 + m[0][0] * common->w;
+		float y1 = y0 + m[1][1] * common->h;
+		return x0 <= 0.0f && y0 <= 0.0f &&
+			x1 >= (float)config.view_width && y1 >= (float)config.view_height;
+	}
+
+	if (state->type == PARTS_FLAT && state->flat.flat && state->flat.root_state) {
+		struct parts_flat *f = &state->flat;
+		mat4 root_m;
+		parts_world_matrix(parts, root_m);
+		glm_translate(root_m, (vec3){ f->common.origin_offset.x, f->common.origin_offset.y, 0 });
+		if (root_m[0][1] != 0.0f || root_m[1][0] != 0.0f ||
+				root_m[0][0] <= 0.0f || root_m[1][1] <= 0.0f)
+			return false;
+
+		for (size_t i = f->flat->nr_timelines; i-- > 0;) {
+			if (f->root_state->disabled_timelines && i < f->root_state->nr_timelines &&
+					f->root_state->disabled_timelines[i])
+				continue;
+			struct flat_timeline *tl = &f->flat->timelines[i];
+			if (tl->type != FLAT_TIMELINE_GRAPHIC)
+				continue;
+			int local = f->root_state->current_frame - tl->begin_frame;
+			if (local < 0 || local >= tl->frame_count || parts_flat_key_count(tl, local) == 0)
+				continue;
+			const struct flat_key_data_graphic *key = parts_flat_key(tl, local, 0);
+			if (!key || key->alpha < 255 || key->draw_filter != PARTS_DRAW_FILTER_NORMAL ||
+					key->reverse_lr || key->reverse_tb ||
+					key->area_width != 0 || key->area_height != 0)
+				continue;
+			int lib_idx = parts_flat_find_library(f->flat, tl->library_name->text);
+			if (lib_idx < 0 || (size_t)lib_idx >= f->nr_libraries)
+				continue;
+			if (f->flat->libraries[lib_idx].type == FLAT_LIB_STOP_MOTION) {
+				lib_idx = parts_flat_stop_motion_get_cg_lib(f, lib_idx, local);
+				if (lib_idx < 0 || (size_t)lib_idx >= f->nr_libraries)
+					continue;
+			} else if (f->flat->libraries[lib_idx].type != FLAT_LIB_CG) {
+				continue;
+			}
+			Texture *tex = &f->textures[lib_idx];
+			if (!tex->handle || !tex->opaque || tex->w <= 0 || tex->h <= 0)
+				continue;
+
+			mat4 layer_m, render_m;
+			vec2 pos = { key->pos_x, key->pos_y };
+			parts_flat_build_layer_matrix(key, pos, true, true, true, false, false, layer_m);
+			glm_mat4_mul(root_m, layer_m, render_m);
+			if (key->uk2 >= 1 && key->uk2 <= 9) {
+				int anchor = key->uk2 - 1;
+				glm_translate(render_m, (vec3){ -(anchor % 3) * tex->w / 2.0f,
+						-(anchor / 3) * tex->h / 2.0f, 0 });
+			}
+			render_m[0][2] = render_m[1][2] = render_m[2][2] = render_m[3][2] = 0.0f;
+			glm_translate(render_m, (vec3){ -(float)key->area_x, -(float)key->area_y, 0.0f });
+			glm_scale(render_m, (vec3){ tex->w, tex->h, 1.0f });
+			if (render_m[0][1] == 0.0f && render_m[1][0] == 0.0f &&
+					render_m[0][0] >= (float)config.view_width &&
+					render_m[1][1] >= (float)config.view_height &&
+					render_m[3][0] <= 0.0f && render_m[3][1] <= 0.0f &&
+					render_m[3][0] + render_m[0][0] >= (float)config.view_width &&
+					render_m[3][1] + render_m[1][1] >= (float)config.view_height) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 static void parts_render_state(struct parts *parts, struct parts_state *state)
 {
 	switch (state->type) {
@@ -732,12 +1053,21 @@ static void parts_render_state(struct parts *parts, struct parts_state *state)
 	case PARTS_RECT_DETECTION:
 	case PARTS_LAYOUT_BOX:
 		break;
+	case PARTS_CONSTRUCTION_PROCESS:
+		if (state->cproc.needs_build && !parts->textures_suspended) {
+			if (!parts_cg_on_screen(parts, &state->common))
+				break;
+			parts_build_construction_process(parts, &state->cproc);
+			parts_render_pass_rebind();
+		}
+		if (state->common.texture.handle)
+			parts_render_cg(parts, &state->common);
+		break;
 	case PARTS_CG:
 	case PARTS_ANIMATION:
 	case PARTS_NUMERAL:
 	case PARTS_HGAUGE:
 	case PARTS_VGAUGE:
-	case PARTS_CONSTRUCTION_PROCESS:
 	case PARTS_MOVIE:
 		if (state->common.texture.handle)
 			parts_render_cg(parts, &state->common);
@@ -883,13 +1213,15 @@ void parts_sprite_render(struct sprite *sp)
 
 static bool pe_dirty = false;
 
+bool parts_is_dirty(void)
+{
+	return pe_dirty;
+}
+
 void parts_render_update(void)
 {
 	if (pe_dirty) {
-		struct parts *p;
-		PARTS_LIST_FOREACH(p) {
-			scene_sprite_dirty(&p->sp);
-		}
+		scene_dirty();
 		pe_dirty = false;
 	}
 }
@@ -914,9 +1246,8 @@ void parts_dirty(possibly_unused struct parts *parts)
 void parts_render_init(void)
 {
 	gfx_load_shader(&parts_shader.shader, "shaders/parts.v.glsl", "shaders/parts.f.glsl");
+	parts_shader.uv_rect = glGetUniformLocation(parts_shader.shader.program, "uv_rect");
 	parts_shader.blend_rate = glGetUniformLocation(parts_shader.shader.program, "blend_rate");
-	parts_shader.bot_left = glGetUniformLocation(parts_shader.shader.program, "bot_left");
-	parts_shader.top_right = glGetUniformLocation(parts_shader.shader.program, "top_right");
 	parts_shader.add_color = glGetUniformLocation(parts_shader.shader.program, "add_color");
 	parts_shader.multiply_color = glGetUniformLocation(parts_shader.shader.program, "multiply_color");
 	parts_shader.draw_filter = glGetUniformLocation(parts_shader.shader.program, "draw_filter");

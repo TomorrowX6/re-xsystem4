@@ -72,6 +72,11 @@ static SDL_FPoint swipe_cur_posf = {0};
 static SDL_FPoint swipe_vel = {0};
 static int swipe_idle_ms = 0;
 
+bool parts_input_is_busy(void)
+{
+	return prev_clicking || is_dragging || is_swiping || swipe_inertia;
+}
+
 static void parts_set_focus(struct parts *parts, bool focus)
 {
 	if (parts->focused == focus) return;

@@ -27,6 +27,7 @@
 #include "json.h"
 #include "queue.h"
 #include "scene.h"
+#include "parts/parts_internal.h"
 #include "xsystem4.h"
 
 static int id_counter = 0;
@@ -70,19 +71,42 @@ void scene_unregister_sprite(struct sprite *sp)
 
 void scene_render(void)
 {
-	gfx_clear();
-	if (wp.handle) {
-		Rectangle r = RECT(0, 0, wp.w, wp.h);
-		gfx_render_texture(&wp, &r);
+	struct sprite *start_sp = NULL;
+	struct sprite *sp;
+	TAILQ_FOREACH_REVERSE(sp, &sprite_list, listhead, entry) {
+		if (sp->render == parts_sprite_render && parts_sprite_is_fullscreen_opaque(sp)) {
+			start_sp = sp;
+			break;
+		}
 	}
 
-	struct sprite *sp;
-	TAILQ_FOREACH(sp, &sprite_list, entry) {
-		if (sp->render)
-			sp->render(sp);
-		else
-			WARNING("sprite in scene without render function");
+	if (!start_sp) {
+		gfx_clear();
+		if (wp.handle) {
+			Rectangle r = RECT(0, 0, wp.w, wp.h);
+			gfx_render_texture(&wp, &r);
+		}
+		start_sp = TAILQ_FIRST(&sprite_list);
 	}
+
+	bool in_parts_pass = false;
+	for (sp = start_sp; sp; sp = TAILQ_NEXT(sp, entry)) {
+		if (sp->render) {
+			bool is_parts = (sp->render == parts_sprite_render || sp->render == parts_background_render);
+			if (is_parts && !in_parts_pass) {
+				parts_render_pass_begin();
+				in_parts_pass = true;
+			} else if (!is_parts && in_parts_pass) {
+				parts_render_pass_end();
+				in_parts_pass = false;
+			}
+			sp->render(sp);
+		} else {
+			WARNING("sprite in scene without render function");
+		}
+	}
+	if (in_parts_pass)
+		parts_render_pass_end();
 }
 
 int scene_set_wp(int cg_no) {
@@ -137,6 +161,19 @@ void scene_set_sprite_z2(struct sprite *sp, int z, int z2)
 		scene_unregister_sprite(sp);
 		scene_register_sprite(sp);
 	}
+}
+
+bool scene_sprite_check_z_order(struct sprite *sp, int z, int z2)
+{
+	if (!sp->in_scene)
+		return false;
+	struct sprite *prev = TAILQ_PREV(sp, listhead, entry);
+	struct sprite *next = TAILQ_NEXT(sp, entry);
+	if (prev && !(prev->z < z || (prev->z == z && prev->z2 <= z2)))
+		return false;
+	if (next && !(z < next->z || (z == next->z && z2 <= next->z2)))
+		return false;
+	return true;
 }
 
 void scene_print(void)

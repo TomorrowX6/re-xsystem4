@@ -68,6 +68,7 @@ void heap_grow(size_t new_size)
 	heap_free_stack = xrealloc(heap_free_stack, sizeof(int32_t) * new_size);
 	for (size_t i = heap_size; i < new_size; i++) {
 		heap[i].ref = 0;
+		heap[i].has_delegate_target = false;
 		heap[i].delegate_index = -1;
 		heap_free_stack[i] = i;
 	}
@@ -117,6 +118,7 @@ int32_t heap_alloc_slot(enum vm_pointer_type type)
 	heap[slot].ref = 1;
 	heap[slot].seq = heap_next_seq++;
 	heap[slot].type = type;
+	heap[slot].has_delegate_target = false;
 	heap[slot].page = NULL;
 	heap[slot].delegate_index = -1;
 #ifdef DEBUG_HEAP
@@ -133,6 +135,7 @@ int32_t heap_alloc_slot(enum vm_pointer_type type)
 static void heap_free_slot(int32_t slot)
 {
 	unregister_delegate_page(slot);
+	heap[slot].has_delegate_target = false;
 	heap[slot].seq = 0;
 	heap_free_stack[--heap_free_ptr] = slot;
 }
@@ -285,6 +288,27 @@ struct page *heap_get_delegate_page(int index)
 	return page;
 }
 
+void heap_mark_delegate_target(int slot)
+{
+	if (heap_index_valid(slot))
+		heap[slot].has_delegate_target = true;
+}
+
+void heap_refresh_delegate_targets(void)
+{
+	int width = delegate_stride();
+	for (size_t d = 0; d < nr_delegate_slots; d++) {
+		struct page *page = heap[delegate_slots[d]].page;
+		if (!page || page->type != DELEGATE_PAGE)
+			continue;
+		for (int i = 0; i < page->nr_vars; i += width) {
+			int target = page->values[i].i;
+			if (target >= 0 && (uint32_t)page->values[i + 2].i == heap_get_seq(target))
+				heap_mark_delegate_target(target);
+		}
+	}
+}
+
 void heap_set_page(int slot, struct page *page)
 {
 #ifdef DEBUG_HEAP
@@ -301,6 +325,12 @@ void heap_set_page(int slot, struct page *page)
 			heap[slot].delegate_index = nr_delegate_slots;
 			delegate_slots[nr_delegate_slots++] = slot;
 		}
+		int width = delegate_stride();
+		for (int i = 0; i < page->nr_vars; i += width) {
+			int target = page->values[i].i;
+			if (target >= 0 && (uint32_t)page->values[i + 2].i == heap_get_seq(target))
+				heap_mark_delegate_target(target);
+		}
 	} else {
 		unregister_delegate_page(slot);
 	}
@@ -308,9 +338,12 @@ void heap_set_page(int slot, struct page *page)
 
 void heap_copy_delegate_targets(int source, int destination)
 {
-	if (ain->version < 11 || source == destination) return;
+	if (ain->version < 11 || source == destination
+			|| !heap_index_valid(source) || !heap[source].has_delegate_target)
+		return;
 	struct page *object = heap_get_page(source);
-	if (!object || object->type != STRUCT_PAGE) return;
+	if (!object || object->type != STRUCT_PAGE)
+		return;
 	uint32_t seq = heap_get_seq(source);
 	// v12 value copies inherit the source object's event subscriptions. The
 	// bindings remain weak: deleting either object removes only its own entry.

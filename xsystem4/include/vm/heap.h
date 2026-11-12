@@ -35,6 +35,7 @@ struct vm_pointer {
 	int ref;
 	uint32_t seq;
 	enum vm_pointer_type type;
+	bool has_delegate_target;
 	// Index in the live delegate-page registry, or -1.
 	int delegate_index;
 	union {
@@ -75,6 +76,8 @@ struct string *heap_get_string(int index);
 void heap_set_page(int slot, struct page *page);
 void heap_string_assign(int slot, struct string *string);
 void heap_struct_assign(int lval, int rval);
+void heap_mark_delegate_target(int slot);
+void heap_refresh_delegate_targets(void);
 void heap_copy_delegate_targets(int source, int destination);
 int32_t heap_alloc_page(struct page *page);
 int32_t heap_alloc_string(struct string *s);

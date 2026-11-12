@@ -800,6 +800,7 @@ struct page *delegate_new_from_method(int obj, int fun)
 	page->values[0].i = obj;
 	page->values[1].i = fun;
 	page->values[2].i = heap_get_seq(obj);
+	heap_mark_delegate_target(obj);
 	if (width == 4) {
 		page->values[3].i = vm_capture_environment(fun);
 		heap_ref(page->values[3].i);
@@ -851,6 +852,7 @@ struct page *delegate_append_captured(struct page *dst, int obj, int fun, int en
 	dst->values[dst->nr_vars+0].i = obj;
 	dst->values[dst->nr_vars+1].i = fun;
 	dst->values[dst->nr_vars+2].i = heap_get_seq(obj);
+	heap_mark_delegate_target(obj);
 	if (width == 4) {
 		dst->values[dst->nr_vars+3].i = environment;
 		heap_ref(environment);

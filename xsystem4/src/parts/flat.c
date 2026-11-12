@@ -14,6 +14,7 @@
  * along with this program; if not, see <http://gnu.org/licenses/>.
  */
 
+#include <assert.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -140,18 +141,113 @@ void parts_flat_layer_state_free(struct flat_layer_state *s)
 	free(s);
 }
 
+#define PARTS_FLAT_IDLE_CACHE_MAX 64
+
+struct parts_flat_asset {
+	char *name;
+	size_t name_len;
+	int ref;
+	struct flat *flat;
+	size_t nr_libraries;
+	Texture *base_textures;
+	struct flat_stop_motion_frames *stop_motion_frames;
+	int end_frame;
+	int width;
+	int height;
+	struct parts_flat_asset *prev;
+	struct parts_flat_asset *next;
+};
+
+static struct parts_flat_asset *flat_asset_head = NULL;
+static struct parts_flat_asset *flat_asset_tail = NULL;
+static int flat_asset_idle_count = 0;
+
+static void flat_asset_unlink(struct parts_flat_asset *a)
+{
+	if (a->prev)
+		a->prev->next = a->next;
+	else
+		flat_asset_head = a->next;
+	if (a->next)
+		a->next->prev = a->prev;
+	else
+		flat_asset_tail = a->prev;
+	a->prev = a->next = NULL;
+}
+
+static void flat_asset_push_front(struct parts_flat_asset *a)
+{
+	a->prev = NULL;
+	a->next = flat_asset_head;
+	if (flat_asset_head)
+		flat_asset_head->prev = a;
+	else
+		flat_asset_tail = a;
+	flat_asset_head = a;
+}
+
+static void flat_asset_destroy(struct parts_flat_asset *a)
+{
+	if (a->base_textures) {
+		for (size_t i = 0; i < a->nr_libraries; i++)
+			gfx_delete_texture(&a->base_textures[i]);
+		free(a->base_textures);
+	}
+	if (a->stop_motion_frames) {
+		for (size_t i = 0; i < a->nr_libraries; i++)
+			free(a->stop_motion_frames[i].lib_indices);
+		free(a->stop_motion_frames);
+	}
+	if (a->flat)
+		flat_free(a->flat);
+	free(a->name);
+	free(a);
+}
+
+static void flat_asset_evict_idle(int max_idle)
+{
+	struct parts_flat_asset *a = flat_asset_tail;
+	while (a && flat_asset_idle_count > max_idle) {
+		struct parts_flat_asset *prev = a->prev;
+		if (a->ref == 0) {
+			flat_asset_unlink(a);
+			flat_asset_idle_count--;
+			flat_asset_destroy(a);
+		}
+		a = prev;
+	}
+}
+
+void parts_flat_cache_clear(void)
+{
+	flat_asset_evict_idle(0);
+}
+
+static void flat_asset_unref(struct parts_flat_asset *a)
+{
+	if (!a)
+		return;
+	assert(a->ref > 0);
+	a->ref--;
+	if (a->ref == 0) {
+		flat_asset_idle_count++;
+		flat_asset_evict_idle(PARTS_FLAT_IDLE_CACHE_MAX);
+	}
+}
+
 void parts_flat_free(struct parts_flat *f)
 {
-	if (f->flat)
-		flat_free(f->flat);
 	if (f->name)
 		free_string(f->name);
 	parts_flat_layer_state_free(f->root_state);
 	if (f->textures) {
-		for (size_t i = 0; i < f->nr_libraries; i++)
-			gfx_delete_texture(&f->textures[i]);
+		for (size_t i = 0; i < f->nr_libraries; i++) {
+			if (!f->asset || (f->owns_texture && f->owns_texture[i]))
+				gfx_delete_texture(&f->textures[i]);
+		}
 		free(f->textures);
 	}
+	free(f->owns_texture);
 	if (f->proxy_cg_names) {
 		for (size_t i = 0; i < f->nr_libraries; i++) {
 			if (f->proxy_cg_names[i])
@@ -159,17 +255,25 @@ void parts_flat_free(struct parts_flat *f)
 		}
 		free(f->proxy_cg_names);
 	}
-	if (f->stop_motion_frames) {
-		for (size_t i = 0; i < f->nr_libraries; i++)
-			free(f->stop_motion_frames[i].lib_indices);
-		free(f->stop_motion_frames);
+	if (f->asset) {
+		flat_asset_unref(f->asset);
+	} else {
+		if (f->flat)
+			flat_free(f->flat);
+		if (f->stop_motion_frames) {
+			for (size_t i = 0; i < f->nr_libraries; i++)
+				free(f->stop_motion_frames[i].lib_indices);
+			free(f->stop_motion_frames);
+		}
 	}
 }
 
 int parts_flat_find_library(struct flat *fl, const char *name)
 {
+	size_t len = strlen(name);
 	for (size_t i = 0; i < fl->nr_libraries; i++) {
-		if (strcmp(fl->libraries[i].name->text, name) == 0)
+		struct string *lib_name = fl->libraries[i].name;
+		if ((size_t)lib_name->size == len && memcmp(lib_name->text, name, len) == 0)
 			return (int)i;
 	}
 	return -1;
@@ -347,12 +451,13 @@ static bool flat_advance_children(struct flat *fl,
 // Build the CG list for a STOP_MOTION library: frame 0 is the base
 // library named in `sm->library_name`; subsequent frames are numbered
 // variants `${stem}_NN.${ext}`, terminated by the first missing entry.
-static void build_stop_motion_frames(struct parts_flat *f, int sm_lib_idx)
+static void build_stop_motion_frames(struct flat *flat,
+		struct flat_stop_motion_frames *stop_motion_frames, int sm_lib_idx)
 {
-	struct flat_stop_motion *sm = &f->flat->libraries[sm_lib_idx].stop_motion;
+	struct flat_stop_motion *sm = &flat->libraries[sm_lib_idx].stop_motion;
 	const char *base = sm->library_name->text;
 
-	int base_idx = parts_flat_find_library(f->flat, base);
+	int base_idx = parts_flat_find_library(flat, base);
 	if (base_idx < 0)
 		return;
 
@@ -370,15 +475,15 @@ static void build_stop_motion_frames(struct parts_flat *f, int sm_lib_idx)
 	for (int i = 1; ; i++) {
 		snprintf(name_buf, sizeof(name_buf), "%.*s_%02d.%s",
 				(int)(dot - base), base, i, dot + 1);
-		int idx = parts_flat_find_library(f->flat, name_buf);
+		int idx = parts_flat_find_library(flat, name_buf);
 		if (idx < 0)
 			break;
 		indices = xrealloc(indices, (count + 1) * sizeof(int));
 		indices[count++] = idx;
 	}
 
-	f->stop_motion_frames[sm_lib_idx].lib_indices = indices;
-	f->stop_motion_frames[sm_lib_idx].count = count;
+	stop_motion_frames[sm_lib_idx].lib_indices = indices;
+	stop_motion_frames[sm_lib_idx].count = count;
 }
 
 static int stop_motion_frame_index(int loop_type, int span, int local, int total)
@@ -416,9 +521,8 @@ int parts_flat_stop_motion_get_cg_lib(struct parts_flat *f, int sm_lib_idx, int 
 // TALT stores named rectangles in shared images instead of individual LIBL CGs.
 // Materialize each rectangle as an owned texture so every renderer (including
 // stop motion and particles) can use the same library indices and dimensions.
-static void parts_flat_load_atlases(struct parts_flat *f, size_t library_index)
+static void parts_flat_load_atlases(struct flat *flat, Texture *textures, size_t library_index)
 {
-	struct flat *flat = f->flat;
 	for (size_t i = 0; i < flat->nr_talt_entries; i++) {
 		struct talt_entry *entry = &flat->talt_entries[i];
 		struct cg *atlas = NULL;
@@ -458,11 +562,111 @@ static void parts_flat_load_atlases(struct parts_flat *f, size_t library_index)
 						+ ((size_t)(y + row) * atlas->metrics.w + x) * 4;
 				memcpy(pixels + (size_t)row * w * 4, source, (size_t)w * 4);
 			}
-			gfx_init_texture_with_pixels(&f->textures[library_index], w, h, pixels);
+			gfx_init_texture_with_pixels(&textures[library_index], w, h, pixels);
 			free(pixels);
 		}
 		cg_free(atlas);
 	}
+}
+
+static struct parts_flat_asset *flat_asset_acquire(struct string *filename)
+{
+	size_t len = (size_t)filename->size;
+	for (struct parts_flat_asset *a = flat_asset_head; a; a = a->next) {
+		if (a->name_len == len && memcmp(a->name, filename->text, len) == 0) {
+			if (a->ref == 0)
+				flat_asset_idle_count--;
+			a->ref++;
+			if (a != flat_asset_head) {
+				flat_asset_unlink(a);
+				flat_asset_push_front(a);
+			}
+			return a;
+		}
+	}
+
+	struct archive_data *dfile = asset_get_by_name(ASSET_FLAT, filename->text, NULL);
+	if (!dfile)
+		return NULL;
+
+	int error;
+	struct flat *fl = flat_open(dfile->data, dfile->size, &error);
+	if (!fl) {
+		archive_free_data(dfile);
+		return NULL;
+	}
+
+	struct parts_flat_asset *a = xcalloc(1, sizeof(*a));
+	a->name = xstrdup(filename->text);
+	a->name_len = len;
+	a->ref = 1;
+	a->flat = fl;
+	a->end_frame = flat_compute_max_frame(fl->timelines, fl->nr_timelines) - 1;
+
+	size_t nr_libl = fl->nr_libraries;
+	a->nr_libraries = nr_libl;
+	for (size_t i = 0; i < fl->nr_talt_entries; i++)
+		a->nr_libraries += fl->talt_entries[i].nr_meta;
+	if (a->nr_libraries != nr_libl) {
+		fl->libraries = xrealloc(fl->libraries,
+				a->nr_libraries * sizeof(struct flat_library));
+		memset(fl->libraries + nr_libl, 0,
+				(a->nr_libraries - nr_libl) * sizeof(struct flat_library));
+		fl->nr_libraries = a->nr_libraries;
+	}
+
+	a->base_textures = xcalloc(a->nr_libraries, sizeof(Texture));
+	a->stop_motion_frames = xcalloc(a->nr_libraries, sizeof(struct flat_stop_motion_frames));
+	for (size_t i = 0; i < nr_libl; i++) {
+		struct flat_library *lib = &fl->libraries[i];
+		if (lib->type != FLAT_LIB_CG)
+			continue;
+		struct cg *cg = cg_load_buffer((uint8_t *)lib->cg.data, lib->cg.size);
+		if (!cg) {
+			WARNING("flat: failed to load CG for library '%s'", lib->name->text);
+			continue;
+		}
+		gfx_init_texture_with_cg(&a->base_textures[i], cg);
+		cg_free(cg);
+		// Clear pointer into dfile->data before archive_free_data(dfile).
+		lib->cg.data = NULL;
+		lib->cg.size = 0;
+	}
+	parts_flat_load_atlases(fl, a->base_textures, nr_libl);
+	for (size_t i = 0; i < fl->nr_libraries; i++) {
+		if (fl->libraries[i].type == FLAT_LIB_STOP_MOTION)
+			build_stop_motion_frames(fl, a->stop_motion_frames, (int)i);
+	}
+	for (size_t i = 0; i < fl->nr_libraries; i++) {
+		if (fl->libraries[i].type != FLAT_LIB_EMITTER)
+			continue;
+		struct flat_emitter *em = &fl->libraries[i].emitter;
+		if (em->end_pos_type != 0)
+			WARNING("flat: emitter '%s': unsupported end_pos_type %d",
+					display_sjis0(em->library_name->text), em->end_pos_type);
+		if (em->pos_track_mode < 0 || em->pos_track_mode > 2)
+			WARNING("flat: emitter '%s': unsupported pos_track_mode %d",
+					display_sjis0(em->library_name->text), em->pos_track_mode);
+	}
+
+	int w = fl->hdr.width;
+	int h = fl->hdr.height;
+	if (ain->version < 12 && (w <= 0 || h <= 0)) {
+		w = 0;
+		h = 0;
+		for (size_t i = 0; i < a->nr_libraries; i++) {
+			if (a->base_textures[i].w > w)
+				w = a->base_textures[i].w;
+			if (a->base_textures[i].h > h)
+				h = a->base_textures[i].h;
+		}
+	}
+	a->width = max(0, w);
+	a->height = max(0, h);
+
+	archive_free_data(dfile);
+	flat_asset_push_front(a);
+	return a;
 }
 
 bool parts_flat_load(struct parts *parts, struct parts_flat *f, struct string *filename)
@@ -479,91 +683,28 @@ bool parts_flat_load(struct parts *parts, struct parts_flat *f, struct string *f
 	if (!filename || !filename->size || !filename->text[0])
 		return false;
 
-	struct archive_data *dfile = asset_get_by_name(ASSET_FLAT, filename->text, NULL);
-	if (!dfile)
+	struct parts_flat_asset *asset = flat_asset_acquire(filename);
+	if (!asset)
 		return false;
 
-	int error;
-	f->flat = flat_open(dfile->data, dfile->size, &error);
-	if (!f->flat) {
-		archive_free_data(dfile);
-		return false;
-	}
-
+	f->asset = asset;
+	f->flat = asset->flat;
 	f->name = string_dup(filename);
 	f->stopped = false;
 	f->elapsed = 0;
-	f->end_frame = flat_compute_max_frame(
-			f->flat->timelines, f->flat->nr_timelines) - 1;
+	f->end_frame = asset->end_frame;
 	f->root_state = parts_flat_layer_state_new(f->flat->nr_timelines);
-
-	// Reserve library slots for the atlas rectangles before resolving timelines.
-	size_t nr_libl = f->flat->nr_libraries;
-	f->nr_libraries = nr_libl;
-	for (size_t i = 0; i < f->flat->nr_talt_entries; i++)
-		f->nr_libraries += f->flat->talt_entries[i].nr_meta;
-	if (f->nr_libraries != nr_libl) {
-		f->flat->libraries = xrealloc(f->flat->libraries,
-				f->nr_libraries * sizeof(struct flat_library));
-		memset(f->flat->libraries + nr_libl, 0,
-				(f->nr_libraries - nr_libl) * sizeof(struct flat_library));
-		f->flat->nr_libraries = f->nr_libraries;
-	}
-	// Load textures for CG libraries.
+	f->nr_libraries = asset->nr_libraries;
 	f->textures = xcalloc(f->nr_libraries, sizeof(Texture));
+	if (f->nr_libraries > 0)
+		memcpy(f->textures, asset->base_textures, f->nr_libraries * sizeof(Texture));
+	f->owns_texture = xcalloc(f->nr_libraries, sizeof(bool));
 	f->proxy_cg_names = xcalloc(f->nr_libraries, sizeof(struct string *));
-	f->stop_motion_frames = xcalloc(f->nr_libraries,
-			sizeof(struct flat_stop_motion_frames));
-	for (size_t i = 0; i < nr_libl; i++) {
-		struct flat_library *lib = &f->flat->libraries[i];
-		if (lib->type != FLAT_LIB_CG)
-			continue;
-		struct cg *cg = cg_load_buffer((uint8_t *)lib->cg.data, lib->cg.size);
-		if (!cg) {
-			WARNING("flat: failed to load CG for library '%s'", lib->name->text);
-			continue;
-		}
-		gfx_init_texture_with_cg(&f->textures[i], cg);
-		cg_free(cg);
-	}
-	parts_flat_load_atlases(f, nr_libl);
-	for (size_t i = 0; i < f->flat->nr_libraries; i++) {
-		if (f->flat->libraries[i].type == FLAT_LIB_STOP_MOTION)
-			build_stop_motion_frames(f, (int)i);
-	}
-	for (size_t i = 0; i < f->flat->nr_libraries; i++) {
-		if (f->flat->libraries[i].type != FLAT_LIB_EMITTER)
-			continue;
-		struct flat_emitter *em = &f->flat->libraries[i].emitter;
-		if (em->end_pos_type != 0)
-			WARNING("flat: emitter '%s': unsupported end_pos_type %d",
-					display_sjis0(em->library_name->text), em->end_pos_type);
-		if (em->pos_track_mode < 0 || em->pos_track_mode > 2)
-			WARNING("flat: emitter '%s': unsupported pos_track_mode %d",
-					display_sjis0(em->library_name->text), em->pos_track_mode);
-	}
+	f->stop_motion_frames = asset->stop_motion_frames;
 
-	// TODO: The original engine performs per-frame hit testing against
-	// the flat's visible sprites (with full transform chain), rather than
-	// using a static hitbox. For now, estimate dimensions from CG textures.
-	int w = f->flat->hdr.width;
-	int h = f->flat->hdr.height;
-	if (ain->version < 12 && (w <= 0 || h <= 0)) {
-		w = 0;
-		h = 0;
-		for (size_t i = 0; i < f->nr_libraries; i++) {
-			if (f->textures[i].w > w)
-				w = f->textures[i].w;
-			if (f->textures[i].h > h)
-				h = f->textures[i].h;
-		}
-	}
-	parts_set_dims(parts, &f->common, max(0, w), max(0, h));
+	parts_set_dims(parts, &f->common, asset->width, asset->height);
 	f->needs_advance = true;
-
-	// f->flat contains pointers into dfile->data, but it should be safe to
-	// free now since we've loaded all CG data we need.
-	archive_free_data(dfile);
+	parts_frame_did_heavy_load = true;
 	return true;
 }
 
@@ -1440,20 +1581,26 @@ void PE_ChangeFlatCG(int parts_no, struct string *old_name, struct string *new_n
 
 	int unused_no;
 	struct cg *cg = asset_cg_load_by_name(new_name->text, &unused_no);
-	if (!cg) {
+	if (cg) {
+		if (!f->asset || (f->owns_texture && f->owns_texture[lib_idx]))
+			gfx_delete_texture(&f->textures[lib_idx]);
+		gfx_init_texture_with_cg(&f->textures[lib_idx], cg);
+		cg_free(cg);
+		if (f->owns_texture)
+			f->owns_texture[lib_idx] = true;
+	} else {
 		int new_lib_idx = parts_flat_find_library(f->flat, new_name->text);
-		if (new_lib_idx >= 0 && (size_t)new_lib_idx < f->nr_libraries
-				&& f->flat->libraries[new_lib_idx].type == FLAT_LIB_CG
-				&& f->flat->libraries[new_lib_idx].cg.data) {
-			cg = cg_load_buffer((uint8_t *)f->flat->libraries[new_lib_idx].cg.data,
-					f->flat->libraries[new_lib_idx].cg.size);
+		if (new_lib_idx < 0 || (size_t)new_lib_idx >= f->nr_libraries
+				|| f->flat->libraries[new_lib_idx].type != FLAT_LIB_CG
+				|| !f->asset || !f->asset->base_textures[new_lib_idx].handle) {
+			return;
 		}
+		if (f->owns_texture && f->owns_texture[lib_idx]) {
+			gfx_delete_texture(&f->textures[lib_idx]);
+			f->owns_texture[lib_idx] = false;
+		}
+		f->textures[lib_idx] = f->asset->base_textures[new_lib_idx];
 	}
-	if (!cg)
-		return;
-	gfx_delete_texture(&f->textures[lib_idx]);
-	gfx_init_texture_with_cg(&f->textures[lib_idx], cg);
-	cg_free(cg);
 	if (f->proxy_cg_names) {
 		if (f->proxy_cg_names[lib_idx])
 			free_string(f->proxy_cg_names[lib_idx]);
@@ -1533,14 +1680,12 @@ static void flat_restore_cg_index(struct parts_flat *f, int lib_idx)
 {
 	if (lib_idx < 0 || (size_t)lib_idx >= f->nr_libraries)
 		return;
-	struct flat_library *lib = &f->flat->libraries[lib_idx];
-	if (lib->type == FLAT_LIB_CG && lib->cg.data) {
-		struct cg *cg = cg_load_buffer((uint8_t *)lib->cg.data, lib->cg.size);
-		if (cg) {
+	if (f->asset) {
+		if (f->owns_texture && f->owns_texture[lib_idx]) {
 			gfx_delete_texture(&f->textures[lib_idx]);
-			gfx_init_texture_with_cg(&f->textures[lib_idx], cg);
-			cg_free(cg);
+			f->owns_texture[lib_idx] = false;
 		}
+		f->textures[lib_idx] = f->asset->base_textures[lib_idx];
 	}
 	if (f->proxy_cg_names && f->proxy_cg_names[lib_idx]) {
 		free_string(f->proxy_cg_names[lib_idx]);

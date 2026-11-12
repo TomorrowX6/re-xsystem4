@@ -66,6 +66,12 @@ static mat4 world_view_transform = MAT4(
 static struct shader default_shader;
 
 static GLuint main_surface_fb;
+static GLuint offscreen_draw_fbo;
+static GLuint offscreen_read_fbo;
+static GLuint offscreen_draw_tex;
+static GLuint offscreen_read_tex;
+static GLuint pinned_draw_tex;
+static bool pinned_draw_bound;
 static struct texture main_surface;
 static struct texture *view = &main_surface;
 static GLint max_texture_size;
@@ -180,6 +186,9 @@ static int gl_initialize(void)
 
 	glBindVertexArray(0);
 
+	glGenFramebuffers(1, &offscreen_draw_fbo);
+	glGenFramebuffers(1, &offscreen_read_fbo);
+
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
 
 	return 0;
@@ -288,6 +297,16 @@ int gfx_init(void)
 
 void gfx_fini(void)
 {
+	if (offscreen_draw_fbo)
+		glDeleteFramebuffers(1, &offscreen_draw_fbo);
+	if (offscreen_read_fbo)
+		glDeleteFramebuffers(1, &offscreen_read_fbo);
+	offscreen_draw_fbo = 0;
+	offscreen_read_fbo = 0;
+	offscreen_draw_tex = 0;
+	offscreen_read_tex = 0;
+	pinned_draw_tex = 0;
+	pinned_draw_bound = false;
 	glDeleteProgram(default_shader.program);
 	SDL_DestroyWindow(sdl.window);
 	SDL_FreeFormat(sdl.format);
@@ -312,10 +331,14 @@ static void main_surface_init(int w, int h)
 
 	main_surface.w = w;
 	main_surface.h = h;
+	main_surface.opaque = true;
 
+	if (main_surface_fb)
+		glDeleteFramebuffers(1, &main_surface_fb);
 	glGenFramebuffers(1, &main_surface_fb);
 	glBindFramebuffer(GL_FRAMEBUFFER, main_surface_fb);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, main_surface.handle, 0);
+	pinned_draw_bound = false;
 }
 
 void gfx_set_window_logical_size(int w, int h)
@@ -432,6 +455,8 @@ static void gfx_update_frame_rate_counter(void)
 
 void gfx_swap(void)
 {
+	pinned_draw_tex = 0;
+	pinned_draw_bound = false;
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glViewport(sdl.viewport.x, sdl.viewport.y, sdl.viewport.w, sdl.viewport.h);
 	gfx_clear();
@@ -634,6 +659,7 @@ static void init_texture(struct texture *t, int w, int h)
 
 	t->w = w;
 	t->h = h;
+	t->opaque = false;
 }
 
 void gfx_init_texture_with_pixels(struct texture *t, int w, int h, void *pixels)
@@ -644,6 +670,7 @@ void gfx_init_texture_with_pixels(struct texture *t, int w, int h, void *pixels)
 
 void gfx_update_texture_with_pixels(struct texture *t, void *pixels)
 {
+	t->opaque = false;
 	glBindTexture(GL_TEXTURE_2D, t->handle);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t->w, t->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 }
@@ -651,6 +678,20 @@ void gfx_update_texture_with_pixels(struct texture *t, void *pixels)
 void gfx_init_texture_with_cg(struct texture *t, struct cg *cg)
 {
 	gfx_init_texture_with_pixels(t, cg->metrics.w, cg->metrics.h, cg->pixels);
+	if (!cg->metrics.has_alpha) {
+		t->opaque = true;
+	} else if (cg->pixels && cg->metrics.w >= config.view_width && cg->metrics.h >= config.view_height) {
+		const uint8_t *p = cg->pixels;
+		size_t n = (size_t)cg->metrics.w * cg->metrics.h;
+		bool all_opaque = true;
+		for (size_t i = 0; i < n; i++) {
+			if (p[i * 4 + 3] != 255) {
+				all_opaque = false;
+				break;
+			}
+		}
+		t->opaque = all_opaque;
+	}
 }
 
 void gfx_init_texture_rgba(struct texture *t, int w, int h, SDL_Color color)
@@ -690,6 +731,7 @@ void gfx_init_texture_rgb(struct texture *t, int w, int h, SDL_Color color)
 	glClearColor(color.r / 255.f, color.g / 255.f, color.b / 255.f, 255.f);
 	glClear(GL_COLOR_BUFFER_BIT);
 	gfx_reset_framebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+	t->opaque = true;
 }
 
 void gfx_init_texture_amap(struct texture *t, int w, int h, uint8_t *amap, SDL_Color color)
@@ -719,32 +761,105 @@ void gfx_copy_main_surface(struct texture *dst)
 {
 	init_texture(dst, main_surface.w, main_surface.h);
 	glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, main_surface.w, main_surface.h, 0);
+	dst->opaque = true;
 }
 
 void gfx_delete_texture(struct texture *t)
 {
-	if (t->handle)
+	if (t->handle) {
+		if (pinned_draw_tex == t->handle)
+			gfx_end_draw_target();
+		if (offscreen_draw_tex == t->handle)
+			offscreen_draw_tex = 0;
+		if (offscreen_read_tex == t->handle)
+			offscreen_read_tex = 0;
 		glDeleteTextures(1, &t->handle);
+	}
 	t->handle = 0;
+	t->opaque = false;
+}
+
+void gfx_begin_draw_target(Texture *t)
+{
+	if (!t || !t->handle)
+		return;
+	t->opaque = false;
+	pinned_draw_tex = t->handle;
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, offscreen_draw_fbo);
+	if (offscreen_draw_tex != t->handle) {
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
+		offscreen_draw_tex = t->handle;
+	}
+	pinned_draw_bound = true;
+}
+
+void gfx_end_draw_target(void)
+{
+	if (!pinned_draw_tex && !pinned_draw_bound)
+		return;
+	pinned_draw_tex = 0;
+	pinned_draw_bound = false;
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, main_surface_fb);
+	glViewport(0, 0, sdl.w, sdl.h);
+}
+
+void gfx_flush_draw_target(Texture *t)
+{
+	if (!t || !t->handle || offscreen_draw_tex != t->handle)
+		return;
+	pinned_draw_bound = false;
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, main_surface_fb);
 }
 
 GLuint gfx_set_framebuffer(GLenum target, Texture *t, int x, int y, int w, int h)
 {
-	GLuint fbo;
-	glGenFramebuffers(1, &fbo);
-	glBindFramebuffer(target, fbo);
-	glFramebufferTexture2D(target, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
-	glViewport(x, y, w, h);
+	if (target == GL_READ_FRAMEBUFFER) {
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, offscreen_read_fbo);
+		if (offscreen_read_tex != t->handle) {
+			glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
+			offscreen_read_tex = t->handle;
+		}
+		return offscreen_read_fbo;
+	}
 
-	if (glCheckFramebufferStatus(target) != GL_FRAMEBUFFER_COMPLETE)
-		ERROR("Incomplete framebuffer");
-	return fbo;
+	t->opaque = false;
+	if (target == GL_DRAW_FRAMEBUFFER && pinned_draw_bound && pinned_draw_tex == t->handle) {
+		glViewport(x, y, w, h);
+		return offscreen_draw_fbo;
+	}
+
+	glBindFramebuffer(target, offscreen_draw_fbo);
+	if (offscreen_draw_tex != t->handle) {
+		glFramebufferTexture2D(target, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
+		offscreen_draw_tex = t->handle;
+	}
+	if (target == GL_FRAMEBUFFER)
+		offscreen_read_tex = 0;
+	pinned_draw_bound = (target == GL_DRAW_FRAMEBUFFER && pinned_draw_tex != 0 && pinned_draw_tex == t->handle);
+	glViewport(x, y, w, h);
+	return offscreen_draw_fbo;
 }
 
 void gfx_reset_framebuffer(GLenum target, GLuint fbo)
 {
+	(void)fbo;
+	if (target == GL_READ_FRAMEBUFFER) {
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, main_surface_fb);
+		return;
+	}
+	if (target == GL_DRAW_FRAMEBUFFER && pinned_draw_tex) {
+		if (!pinned_draw_bound || offscreen_draw_tex != pinned_draw_tex) {
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, offscreen_draw_fbo);
+			if (offscreen_draw_tex != pinned_draw_tex) {
+				glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pinned_draw_tex, 0);
+				offscreen_draw_tex = pinned_draw_tex;
+			}
+			pinned_draw_bound = true;
+		}
+		return;
+	}
+	pinned_draw_bound = false;
 	glBindFramebuffer(target, main_surface_fb);
-	glDeleteFramebuffers(1, &fbo);
 	glViewport(0, 0, sdl.w, sdl.h);
 }
 

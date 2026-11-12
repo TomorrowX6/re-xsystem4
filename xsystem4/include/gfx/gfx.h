@@ -37,6 +37,7 @@ enum draw_method {
 typedef struct texture {
 	GLuint handle;
 	int w, h;
+	bool opaque;
 } Texture;
 
 struct gfx_render_job;
@@ -114,6 +115,9 @@ void gfx_copy_main_surface(struct texture *dst);
 void gfx_delete_texture(struct texture *t);
 GLuint gfx_set_framebuffer(GLenum target, Texture *t, int x, int y, int w, int h);
 void gfx_reset_framebuffer(GLenum target, GLuint fbo);
+void gfx_begin_draw_target(Texture *t);
+void gfx_end_draw_target(void);
+void gfx_flush_draw_target(Texture *t);
 SDL_Color gfx_get_pixel(Texture *t, int x, int y);
 void *gfx_get_pixels(Texture *t);
 int gfx_save_texture(Texture *t, const char *path, enum cg_type);

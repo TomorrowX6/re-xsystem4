@@ -290,6 +290,7 @@ struct parts_cp_op {
 struct parts_construction_process {
 	struct parts_common common;
 	TAILQ_HEAD(, parts_cp_op) ops;
+	bool needs_build;
 };
 
 enum parts_flash_blend_mode {
@@ -380,9 +381,12 @@ struct flat_stop_motion_frames {
 	int count;
 };
 
+struct parts_flat_asset;
+
 struct parts_flat {
 	struct parts_common common;
 	struct string *name;
+	struct parts_flat_asset *asset;
 	struct flat *flat;
 	bool stopped;
 	bool needs_advance;
@@ -394,6 +398,7 @@ struct parts_flat {
 	struct flat_layer_state *root_state;
 	size_t nr_libraries;
 	Texture *textures;  // indexed by library index (only CG libs have valid textures)
+	bool *owns_texture; // true if textures[i] was overridden per-instance (PE_ChangeFlatCG)
 	struct string **proxy_cg_names;
 	// Indexed by library index. Only entries for STOP_MOTION libraries have lib_indices populated.
 	struct flat_stop_motion_frames *stop_motion_frames;
@@ -597,6 +602,9 @@ struct parts {
 	int margin_right;
 	struct parts_motion_list motion;
 	int controller_no;
+	mat4 world_matrix;
+	uint64_t world_matrix_gen;
+	struct parts *world_matrix_self;
 };
 
 #define PARTS_LIST_FOREACH(iter) TAILQ_FOREACH(iter, &parts_list, parts_list_entry)
@@ -739,10 +747,17 @@ struct string *parts_text_get(struct parts_text *t);
 // render.c
 void parts_render_init(void);
 void parts_render_update(void);
+bool parts_is_dirty(void);
 void parts_engine_dirty(void);
 void parts_engine_clean(void);
 void parts_dirty(struct parts *parts);
 void parts_sprite_render(struct sprite *sp);
+void parts_background_render(struct sprite *sprite);
+void parts_render_pass_begin(void);
+void parts_render_pass_end(void);
+void parts_render_pass_rebind(void);
+bool parts_sprite_is_fullscreen_opaque(struct sprite *sp);
+bool parts_cg_on_screen(struct parts *parts, struct parts_common *common);
 void parts_render(struct parts *parts);
 void parts_render_family(struct parts *parts);
 
@@ -752,6 +767,8 @@ void parts_add_motion(struct parts *parts, struct parts_motion *motion);
 
 // input.c
 extern bool parts_began_click;
+extern bool parts_frame_did_heavy_load;
+bool parts_input_is_busy(void);
 void parts_input_reset_part(struct parts *parts);
 void parts_input_reset(void);
 struct iarray_writer;
@@ -806,6 +823,7 @@ bool parts_flash_seek(struct parts_flash *f, int frame);
 
 // flat.c
 void parts_flat_free(struct parts_flat *f);
+void parts_flat_cache_clear(void);
 bool parts_flat_load(struct parts *parts, struct parts_flat *f, struct string *filename);
 bool parts_flat_update(struct parts_flat *f, int passed_time);
 struct flat_layer_state *parts_flat_layer_state_new(size_t nr_timelines);

@@ -71,8 +71,10 @@ static void suspend_state(struct parts_state *state)
 		state->common.texture.handle = 0; // Alias of the current frame.
 		break;
 	case PARTS_FLAT:
-		for (size_t i = 0; i < state->flat.nr_libraries; i++)
-			suspend_texture(state, &state->flat.textures[i]);
+		for (size_t i = 0; i < state->flat.nr_libraries; i++) {
+			if (state->flat.owns_texture && state->flat.owns_texture[i])
+				suspend_texture(state, &state->flat.textures[i]);
+		}
 		break;
 	case PARTS_FLASH:
 		if (state->flash.bitmaps) ht_foreach(state->flash.bitmaps, suspend_bitmap, state);

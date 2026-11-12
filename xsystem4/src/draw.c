@@ -163,6 +163,8 @@ void gfx_draw_init(void)
 
 static void run_draw_shader(Shader *s, Texture *dst, Texture *src, mat4 mw_transform, mat4 wv_transform, struct copy_data *data)
 {
+	if (src && dst && src->handle && src->handle == dst->handle)
+		gfx_flush_draw_target(dst);
 	GLuint fbo = gfx_set_framebuffer(GL_DRAW_FRAMEBUFFER, dst, data->vpx, data->vpy, data->vpw, data->vph);
 
 	struct gfx_render_job job = {

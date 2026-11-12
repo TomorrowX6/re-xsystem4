@@ -924,6 +924,7 @@ static void delete_heap(void)
 		}
 		heap[i].ref = 0;
 		heap[i].seq = 0;
+		heap[i].has_delegate_target = false;
 	}
 
 	heap_free_ptr = 0;
@@ -980,6 +981,7 @@ static void load_json_heap(cJSON *json)
 			invalid_save_data("Invalid heap data");
 		}
 	}
+	heap_refresh_delegate_targets();
 }
 
 static int resolve_func_symbol(struct rsave_symbol *sym, int nr_slots)
@@ -1209,6 +1211,7 @@ static void load_rsave_heap(struct rsave *save)
 		}
 	}
 	heap_next_seq = save->version == 14 ? save->nr_heap_objs + 1 : save->next_seq;
+	heap_refresh_delegate_targets();
 }
 
 static void load_json_call_stack(cJSON *json)

@@ -99,11 +99,13 @@ static struct parts *parts_alloc(void)
 {
 	struct parts *parts = xcalloc(1, sizeof(struct parts));
 	parts_init(parts);
+	parts->world_matrix_self = parts;
 	return parts;
 }
 
 void parts_component_dirty(struct parts *parts)
 {
+	parts_render_gen++;
 	if (parts->dirty)
 		return;
 	parts->dirty = true;
@@ -161,7 +163,19 @@ static void parts_list_remove(struct parts *parts)
 
 void parts_list_resort(struct parts *parts)
 {
-	// TODO: this could be optimized
+	int z = parts_get_sprite_z(parts);
+	int z2 = parts_get_sprite_z2(parts);
+	struct parts *prev = TAILQ_PREV(parts, parts_list_head, parts_list_entry);
+	struct parts *next = TAILQ_NEXT(parts, parts_list_entry);
+	bool ok_prev = !prev || prev->sp.z < z || (prev->sp.z == z && prev->sp.z2 <= z2);
+	bool ok_next = !next || next->sp.z > z || (next->sp.z == z && next->sp.z2 >= z2);
+	if (ok_prev && ok_next &&
+			(parts_current->background || scene_sprite_check_z_order(&parts->sp, z, z2))) {
+		parts->sp.z = z;
+		parts->sp.z2 = z2;
+		parts_engine_dirty();
+		return;
+	}
 	parts_list_remove(parts);
 	parts_list_insert(parts);
 }
@@ -203,7 +217,7 @@ bool parts_exists(int parts_no)
 	return !!ht_get_int(parts_table, parts_no, NULL);
 }
 
-#define PARTS_CG_CACHE_SIZE 16
+#define PARTS_CG_CACHE_SIZE 128
 
 struct parts_cg_cache_entry {
 	int cg_no;
@@ -283,6 +297,8 @@ static void parts_cg_cache_clear(void)
 void PE_FlushCGCache(void)
 {
 	parts_cg_cache_clear();
+	parts_cproc_cache_clear();
+	parts_flat_cache_clear();
 }
 
 static void parts_state_free(struct parts_state *state)
@@ -547,6 +563,8 @@ static Point calculate_offset(int mode, int w, int h)
  */
 static void parts_common_recalculate_hitbox(struct parts *parts, struct parts_common *common)
 {
+	if (parts->states[0].type == PARTS_LAYOUT_BOX)
+		parts_render_gen++;
 	// v12 hitboxes stay in component space; transforms retain subpixel positions.
 	float x = ain->version >= 12 ? 0 : parts->local.pos.x;
 	float y = ain->version >= 12 ? 0 : parts->local.pos.y;
@@ -603,11 +621,12 @@ SDL_FPoint parts_local_position(struct parts *parts)
 
 static void parts_apply_local_matrix(struct parts *parts, mat4 out)
 {
+	float tx = 0.0f, ty = 0.0f;
 	if (parts->parent && parts->parent->states[0].type == PARTS_LAYOUT_BOX &&
 			parts->parent->states[0].layout_box.layout_type == PARTS_LAYOUT_FREE) {
 		Point off = parts->parent->states[0].common.origin_offset;
-		if (off.x != 0 || off.y != 0)
-			glm_translate(out, (vec3){off.x, off.y, 0});
+		tx += off.x;
+		ty += off.y;
 	}
 	SDL_FPoint pos = parts_local_position(parts);
 	for (int axis = 0; axis < 2; axis++) {
@@ -620,8 +639,25 @@ static void parts_apply_local_matrix(struct parts *parts, mat4 out)
 			}
 		}
 	}
-	if (pos.x != 0.0f || pos.y != 0.0f)
-		glm_translate(out, (vec3){pos.x, pos.y, 0});
+	tx += pos.x;
+	ty += pos.y;
+	if (parts->local.rotation.x == 0.0f && parts->local.rotation.y == 0.0f &&
+			parts->local.rotation.z == 0.0f) {
+		float sx = parts->local.scale.x;
+		float sy = parts->local.scale.y;
+		if (tx != 0.0f || ty != 0.0f || sx != 1.0f || sy != 1.0f) {
+			for (int r = 0; r < 4; r++) {
+				float m0 = out[0][r];
+				float m1 = out[1][r];
+				out[3][r] += tx * m0 + ty * m1;
+				out[0][r] = sx * m0;
+				out[1][r] = sy * m1;
+			}
+		}
+		return;
+	}
+	if (tx != 0.0f || ty != 0.0f)
+		glm_translate(out, (vec3){tx, ty, 0});
 	if (parts->local.rotation.z != 0.0f)
 		glm_rotate_z(out, glm_rad(parts->local.rotation.z), out);
 	if (parts->local.rotation.x != 0.0f)
@@ -643,6 +679,10 @@ static void parts_update_global_pos_mat(struct parts *parts, SDL_FPoint parent_p
 		glm_mat4_copy(parent_matrix, matrix);
 		parts_apply_local_matrix(parts, matrix);
 		parts->global.pos = (SDL_FPoint){matrix[3][0], matrix[3][1]};
+		if (parts->world_matrix_self == parts) {
+			glm_mat4_copy(matrix, parts->world_matrix);
+			parts->world_matrix_gen = parts_render_gen;
+		}
 	}
 
 	struct parts *child;
@@ -674,20 +714,20 @@ void parts_set_posf(struct parts *parts, SDL_FPoint pos)
 	parts->local.pos.x = pos.x;
 	parts->local.pos.y = pos.y;
 	parts_recalculate_hitbox(parts);
+	parts_dirty(parts);
 	parts_update_global_pos(parts, parts->parent ? parts->parent->global.pos
 			: (SDL_FPoint){root_pos.x, root_pos.y});
-	parts_dirty(parts);
 }
 
 void parts_set_global_pos(Point pos)
 {
 	root_pos = pos;
+	parts_engine_dirty();
 	struct parts *parts;
 	PARTS_LIST_FOREACH(parts) {
 		if (!parts->parent)
 			parts_update_global_pos(parts, (SDL_FPoint){root_pos.x, root_pos.y});
 	}
-	parts_engine_dirty();
 }
 
 static void parts_update_global_z(struct parts *parts, int parent_z)
@@ -835,9 +875,9 @@ void parts_set_origin_mode(struct parts *parts, int origin_mode)
 {
 	parts->origin_mode = origin_mode;
 	parts_recalculate_hitbox(parts);
+	parts_dirty(parts);
 	parts_update_global_pos(parts, parts->parent ? parts->parent->global.pos
 			: (SDL_FPoint){root_pos.x, root_pos.y});
-	parts_dirty(parts);
 }
 
 static void parts_update_global_scale_x(struct parts *parts, float parent_scale_x)
@@ -949,6 +989,7 @@ bool _parts_cg_set(struct parts *parts, struct parts_cg *parts_cg, struct cg *cg
 	if (parts_cg->name)
 		free_string(parts_cg->name);
 	parts_cg->name = name;
+	parts_frame_did_heavy_load = true;
 	parts_dirty(parts);
 	cg_free(cg);
 	return true;
@@ -1201,6 +1242,7 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 	gfx_delete_texture(&num->common.texture);
 	if (w > 0 && height > 0) {
 		gfx_init_texture_rgba(&num->common.texture, w, height, (SDL_Color){0, 0, 0, 0});
+		gfx_begin_draw_target(&num->common.texture);
 		float x = 0;
 		for (int i = 0; i < length; i++) {
 			if (!hidden[i]) {
@@ -1214,6 +1256,7 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 			}
 			x += advances[i] + num->space;
 		}
+		gfx_end_draw_target();
 	}
 	parts_set_dims(parts, &num->common, w, height);
 	parts_dirty(parts);
@@ -1222,7 +1265,7 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 
 bool parts_numeral_set_number(struct parts *parts, struct parts_numeral *num, int n)
 {
-	if (num->have_num && num->num == n)
+	if (num->have_num && num->num == n && num->common.texture.handle)
 		return true;
 	num->have_num = true;
 	num->num = n;
@@ -1298,26 +1341,45 @@ bool parts_state_update(struct parts_state *state, int passed_time)
 	return dirty;
 }
 
-static void parts_update_loop(struct parts *parts, int passed_time)
+static void parts_update_loop(struct parts *parts, int passed_time, bool occluded)
 {
+	bool visible = !occluded && parts_is_visible(parts);
 	struct parts_state *display = parts_display_state(parts);
-	bool dirty = parts_state_update(display, passed_time);
+	bool state_dirty = false;
+	if (!visible && display->type == PARTS_FLAT &&
+			!display->flat.needs_advance && display->flat.pending_seek_delta <= 0) {
+		state_dirty = false;
+	} else {
+		state_dirty = parts_state_update(display, passed_time);
+	}
 	if (display != &parts->states[PARTS_STATE_DEFAULT]
 			&& parts->states[PARTS_STATE_DEFAULT].type == PARTS_FLAT
 			&& parts->states[PARTS_STATE_DEFAULT].flat.needs_advance) {
-		dirty |= parts_state_update(&parts->states[PARTS_STATE_DEFAULT], 0);
+		state_dirty |= parts_state_update(&parts->states[PARTS_STATE_DEFAULT], 0);
 	}
-	if (parts->scrollbar) dirty |= parts_scrollbar_update(parts, passed_time);
-	if (parts->message_box) dirty |= parts_message_window_update(parts, passed_time);
-	if (dirty)
+	bool ui_dirty = false;
+	if (parts->scrollbar) ui_dirty |= parts_scrollbar_update(parts, passed_time);
+	if (parts->message_box) ui_dirty |= parts_message_window_update(parts, passed_time);
+	if ((state_dirty && visible) || (ui_dirty && !occluded))
 		parts_dirty(parts);
 }
 
 static void parts_update_animation(int passed_time, int scaled_time)
 {
+	struct parts *cover = NULL;
+	struct parts *p;
+	PARTS_LIST_FOREACH_REVERSE(p) {
+		if (parts_sprite_is_fullscreen_opaque(&p->sp)) {
+			cover = p;
+			break;
+		}
+	}
+	bool occluded = (cover != NULL);
 	struct parts *parts;
 	PARTS_LIST_FOREACH(parts) {
-		parts_update_loop(parts, parts->enable_speed_up ? scaled_time : passed_time);
+		if (parts == cover)
+			occluded = false;
+		parts_update_loop(parts, parts->enable_speed_up ? scaled_time : passed_time, occluded);
 	}
 }
 
@@ -1399,10 +1461,11 @@ struct parts_context *parts_context_select(struct parts_context *context)
 {
 	struct parts_context *previous = parts_current;
 	parts_current = context;
+	parts_render_gen++;
 	return previous;
 }
 
-static void parts_background_render(struct sprite *sprite)
+void parts_background_render(struct sprite *sprite)
 {
 	struct parts_context *context = (void*)((char*)sprite - offsetof(struct parts_context, sprite));
 	struct parts_context *previous = parts_context_select(context);
@@ -1474,6 +1537,7 @@ void PE_Reset(void)
 	PE_ReleaseAllParts();
 	parts_cg_cache_clear();
 	parts_cproc_cache_clear();
+	parts_flat_cache_clear();
 	PE_ReleaseMessage();
 	ctrl_stack_init();
 	sact_ModuleFini();
@@ -1518,6 +1582,10 @@ static void parts_update_component_mat(struct parts *parts, mat4 parent_matrix)
 		glm_mat4_copy(parent_matrix, matrix);
 		parts_apply_local_matrix(parts, matrix);
 		parts->global.pos = (SDL_FPoint){matrix[3][0], matrix[3][1]};
+		if (parts->world_matrix_self == parts) {
+			glm_mat4_copy(matrix, parts->world_matrix);
+			parts->world_matrix_gen = parts_render_gen;
+		}
 	}
 	if (parts_get_sprite_z(parts) != parts->sp.z
 			|| parts_get_sprite_z2(parts) != parts->sp.z2) {
@@ -1593,14 +1661,48 @@ void PE_UpdateComponent(possibly_unused int passed_time)
 		PARTS_LIST_FOREACH(parts) {
 			if (!parts->parent) {
 				parts_update_layout_tree(parts);
-				parts_update_component(parts);
 			}
 		}
 		parts_scrollbar_update_links();
+		uint64_t gen_start = ++parts_render_gen;
+		PARTS_LIST_FOREACH(parts) {
+			if (!parts->parent) {
+				parts_update_component(parts);
+			}
+		}
+		if (parts_render_gen != gen_start) {
+			PARTS_LIST_FOREACH(parts) {
+				if (parts->world_matrix_self == parts && parts->world_matrix_gen >= gen_start)
+					parts->world_matrix_gen = parts_render_gen;
+			}
+		}
+	}
+}
+
+static void parts_prewarm_offscreen_cproc(void)
+{
+	uint64_t freq = SDL_GetPerformanceFrequency();
+	uint64_t budget = freq ? (freq * 4) / 1000 : 0;
+	uint64_t t_start = SDL_GetPerformanceCounter();
+	int built = 0;
+	struct parts *parts;
+	PARTS_LIST_FOREACH(parts) {
+		if (parts->textures_suspended || !parts_is_visible(parts))
+			continue;
+		struct parts_state *state = parts_display_state(parts);
+		if (state->type != PARTS_CONSTRUCTION_PROCESS || !state->cproc.needs_build)
+			continue;
+		if (parts_cg_on_screen(parts, &state->common))
+			continue;
+		parts_build_construction_process(parts, &state->cproc);
+		built++;
+		if (built >= 4 || (budget && SDL_GetPerformanceCounter() - t_start >= budget))
+			break;
 	}
 }
 
 bool parts_message_window_show = true;
+bool parts_frame_did_heavy_load = false;
 
 void PE_Update(int passed_time, bool message_window_show)
 {
@@ -1615,6 +1717,13 @@ void PE_UpdateWithTimeScale(int passed_time, int scaled_time, bool message_windo
 	parts_update_animation(passed_time, scaled_time);
 	PE_UpdateInputState(passed_time);
 	parts_scrollbar_notify_changes();
+	if (!parts_frame_did_heavy_load && !parts_input_is_busy()) {
+		bool was_dirty = parts_is_dirty();
+		parts_prewarm_offscreen_cproc();
+		if (!was_dirty)
+			parts_engine_clean();
+	}
+	parts_frame_did_heavy_load = false;
 	parts_render_update();
 }
 
@@ -2331,6 +2440,10 @@ void parts_world_matrix(struct parts *parts, mat4 out)
 		glm_scale(out, (vec3){parts->global.scale.x, parts->global.scale.y, 1});
 		return;
 	}
+	if (parts->world_matrix_self == parts && parts->world_matrix_gen == parts_render_gen) {
+		glm_mat4_copy(parts->world_matrix, out);
+		return;
+	}
 	// Child positions live in their parent's transformed coordinate system.
 	// Multiplying full matrices also retains shear from nonuniform scaling.
 	if (parts->parent) {
@@ -2341,6 +2454,10 @@ void parts_world_matrix(struct parts *parts, mat4 out)
 			glm_translate(out, (vec3){root_pos.x, root_pos.y, 0});
 	}
 	parts_apply_local_matrix(parts, out);
+	if (parts->world_matrix_self == parts) {
+		glm_mat4_copy(out, parts->world_matrix);
+		parts->world_matrix_gen = parts_render_gen;
+	}
 }
 
 void PE_GetComponentAbsoluteSquarePos(int no, float *x0, float *y0,

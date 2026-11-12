@@ -689,7 +689,7 @@ static bool build_draw_rect(struct parts_construction_process *cproc, struct par
 	return true;
 }
 
-#define PARTS_CPROC_CACHE_SIZE 32
+#define PARTS_CPROC_CACHE_SIZE 256
 
 struct cproc_cg_cache_entry {
 	struct string *name;
@@ -902,56 +902,69 @@ static bool build_blur_filter(struct parts_construction_process *cproc, struct p
 bool parts_build_construction_process(struct parts *parts,
 		struct parts_construction_process *cproc)
 {
+	parts_frame_did_heavy_load = true;
+	cproc->needs_build = false;
+	bool ok = false;
+	bool is_rgb_tex = false;
 	struct parts_cp_op *op;
 	TAILQ_FOREACH(op, &cproc->ops, entry) {
 		switch (op->type) {
 		case PARTS_CP_CREATE:
+			is_rgb_tex = false;
+			gfx_end_draw_target();
 			if (!build_create(parts, cproc, &op->create))
-				return false;
+				goto done;
+			gfx_begin_draw_target(&cproc->common.texture);
 			break;
 		case PARTS_CP_CREATE_PIXEL_ONLY:
+			gfx_end_draw_target();
 			if (!build_create_pixel_only(parts, cproc, &op->create))
-				return false;
+				goto done;
+			is_rgb_tex = true;
+			gfx_begin_draw_target(&cproc->common.texture);
 			break;
 		case PARTS_CP_CG:
+			is_rgb_tex = false;
+			gfx_end_draw_target();
 			if (!build_cg(parts, cproc, &op->cg))
-				return false;
+				goto done;
+			gfx_begin_draw_target(&cproc->common.texture);
 			break;
 		case PARTS_CP_FILL:
 			if (!build_fill(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_FILL_ALPHA_COLOR:
 			if (!build_fill_alpha_color(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_FILL_AMAP:
 			if (!build_fill_amap(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_FILL_WITH_ALPHA:
 			if (!build_fill_with_alpha(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_FILL_GRADATION_HORIZON:
 			if (!build_fill_gradation_horizon(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_MUL_AMAP_GRADATION_HORIZON:
 			if (!build_mul_amap_gradation(cproc, &op->fill, false))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_MUL_AMAP_GRADATION_VERTICAL:
 			if (!build_mul_amap_gradation(cproc, &op->fill, true))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_DRAW_RECT:
 			if (!build_draw_rect(cproc, &op->fill))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_DRAW_LINE:
 			if (!cproc->common.texture.handle)
-				return false;
+				goto done;
 			gfx_draw_line(&cproc->common.texture, op->line.x0, op->line.y0,
 					op->line.x1, op->line.y1, op->line.r, op->line.g, op->line.b);
 			gfx_draw_line_to_amap(&cproc->common.texture, op->line.x0, op->line.y0,
@@ -960,59 +973,97 @@ bool parts_build_construction_process(struct parts *parts,
 		case PARTS_CP_DRAW_CUT_CG:
 		case PARTS_CP_ALPHA_BLEND_CUT_CG:
 			if (!build_draw_cut_cg(cproc, &op->cut_cg))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_COPY_CUT_CG:
 			if (!build_copy_cut_cg(cproc, &op->cut_cg))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_ONLY_ALPHA_CUT_CG:
 			if (!build_only_alpha_cut_cg(cproc, &op->cut_cg))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_BLEND_CG:
 			if (!build_blend_cg(cproc, &op->cg))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_DRAW_TEXT:
 			if (!build_text(cproc, &op->text, RENDER_BLENDED))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_COPY_TEXT:
 			if (!build_text(cproc, &op->text, RENDER_COPY))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_ALPHA_BLEND_TEXT:
 			if (!build_text(cproc, &op->text, RENDER_BLEND_ALPHA))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_ONLY_ALPHA_TEXT:
 			if (!build_text(cproc, &op->text, RENDER_ALPHA_ONLY))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_GRAY_FILTER:
 			if (!build_gray_filter(cproc, &op->filter))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_ADD_FILTER:
 			if (!build_add_filter(cproc, &op->filter))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_MUL_FILTER:
 			if (!build_mul_filter(cproc, &op->filter))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_HBLUR_FILTER:
 			if (!build_blur_filter(cproc, &op->filter, false))
-				return false;
+				goto done;
 			break;
 		case PARTS_CP_VBLUR_FILTER:
 			if (!build_blur_filter(cproc, &op->filter, true))
-				return false;
+				goto done;
 			break;
 		}
 	}
 	parts_dirty(parts);
+	ok = true;
+done:
+	gfx_end_draw_target();
+	if (ok && is_rgb_tex)
+		cproc->common.texture.opaque = true;
+	return ok;
+}
+
+static bool cproc_determine_dims(struct parts_construction_process *cproc, int *w_out, int *h_out)
+{
+	bool found = false;
+	int w = 0, h = 0;
+	struct parts_cp_op *op;
+	TAILQ_FOREACH(op, &cproc->ops, entry) {
+		switch (op->type) {
+		case PARTS_CP_CREATE:
+		case PARTS_CP_CREATE_PIXEL_ONLY:
+			w = op->create.w;
+			h = op->create.h;
+			found = (w > 0 && h > 0);
+			break;
+		case PARTS_CP_CG: {
+			Texture *cached = cproc_get_cached_texture(op->cg.name);
+			if (!cached)
+				return false;
+			w = cached->w;
+			h = cached->h;
+			found = (w > 0 && h > 0);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	if (!found)
+		return false;
+	*w_out = w;
+	*h_out = h;
 	return true;
 }
 
@@ -1026,8 +1077,28 @@ bool PE_BuildPartsConstructionProcess(int parts_no, int state)
 	return parts_build_construction_process(parts, cproc);
 }
 
+bool PE_BuildPartsConstructionProcessThread(int parts_no, int state)
+{
+	if (!parts_state_valid(--state))
+		return false;
+
+	struct parts *parts = parts_get(parts_no);
+	struct parts_construction_process *cproc = parts_get_construction_process(parts, state);
+	int w = 0, h = 0;
+	if (!cproc_determine_dims(cproc, &w, &h))
+		return parts_build_construction_process(parts, cproc);
+
+	gfx_delete_texture(&cproc->common.texture);
+	parts_set_dims(parts, &cproc->common, w, h);
+	cproc->needs_build = true;
+	parts_frame_did_heavy_load = true;
+	parts_dirty(parts);
+	return true;
+}
+
 bool parts_clear_construction_process(struct parts_construction_process *cproc)
 {
+	cproc->needs_build = false;
 	while (!TAILQ_EMPTY(&cproc->ops)) {
 		struct parts_cp_op *op = TAILQ_FIRST(&cproc->ops);
 		TAILQ_REMOVE(&cproc->ops, op, entry);
