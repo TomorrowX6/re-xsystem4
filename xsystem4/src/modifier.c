@@ -15,6 +15,7 @@
 #include "system4.h"
 #include "system4/ain.h"
 #include "system4/file.h"
+#include "system4/instructions.h"
 #include "system4/savefile.h"
 #include "system4/string.h"
 #include "system4/utfsjis.h"
@@ -31,7 +32,12 @@ extern bool key_state[VK_NR_KEYCODES];
 static int s_pulse_key0_frames = 0;
 static char *s_pending_cheat_gbk = NULL;
 static int s_cheat_wait_frames = 0;
+static bool s_pending_is_streamer_cheat = false;
+static bool s_wait_post_rcs_streamer_refresh = false;
 static bool s_pending_clear_card_cache = false;
+static bool s_pending_live_ui_refresh = false;
+static bool s_in_modifier_frame = false;
+static int s_last_observed_summary_mode = -1;
 
 /* Lock bitmask flags */
 #define LOCK_PARTY_MAX_HP       (1 << 0)
@@ -52,12 +58,23 @@ static bool s_pending_clear_card_cache = false;
 #define SJIS_BATTLE_COUNT "\x81\x9f\x90\xed\x93\xac\x89\xf1\x90\x94"
 #define GBK_DIFFICULTY    "\xa1\xf4\xc4\xd1\xb6\xc8"
 #define SJIS_DIFFICULTY   "\x81\x9f\x93\xef\x88\xd5\x93\x78"
-/* GBK for "灌注Eins陈谢谢喵" (MOD streamer-mode unlock passphrase) */
+/* GBK byte sequences for MOD streamer-mode detection & in-game dialog */
 #define GBK_STREAMER_PASSPHRASE "\xb9\xe0\xd7\xa2\x45\x69\x6e\x73\xb3\xc2\xd0\xbb\xd0\xbb\xdf\xf7"
+#define GBK_CARD_STREAMER       "\xbf\xa8\xc5\xc6\xa3\xaf\xd6\xf7\xb2\xa5"
+#define GBK_STREAMER_MODE       "\xd6\xf7\xb2\xa5\xc4\xa3\xca\xbd"
+#define GBK_XIEXIEMIAO          "\xd0\xbb\xd0\xbb\xdf\xf7"
+#define GBK_ZHUBO               "\xd6\xf7\xb2\xa5"
+#define GBK_CHEAT_INVALID_TITLE "\xd7\xf7\xb1\xd7\xc2\xeb\xce\xde\xd0\xa7"
+#define GBK_CHEAT_INVALID_MSG   "\xce\xb4\xd5\xd2\xb5\xbd\xb6\xd4\xd3\xa6\xd7\xf7\xb1\xd7\xc2\xeb\xa3\xa1"
+#define GBK_CHEAT_OK_TITLE      "\xd7\xf7\xb1\xd7\xc2\xeb\xc9\xfa\xd0\xa7\xa3\xa1"
+#define GBK_STREAMER_OFF_MSG    "\xd6\xf7\xb2\xa5\xc4\xa3\xca\xbd\xd2\xd1\xb9\xd8\xb1\xd5\xa3\xa1"
 
 static pthread_mutex_t g_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_live_lock_mask = LOCK_DISABLE_STREAMER_MODE;
-static bool g_force_refresh_streamer_off = false;
+static int g_live_lock_mask = 0;
+#ifdef __ANDROID__
+static bool g_has_lock_mask_init = false;
+#endif
+static int g_pending_lock_streamer_mode = -1;
 static char *g_pending_action_json = NULL;
 static char *g_cached_live_state_json = NULL;
 
@@ -858,6 +875,420 @@ static int vm_clear_kvmap_field(struct page *cache_sub, const char *map_field)
 	return vm_clear_array_slot(m_data->i);
 }
 
+static struct ain *s_inspected_ain = NULL;
+static bool s_is_mod_streamer = false;
+static int s_fno_run_char_setting = -1;
+static int s_fno_run_info_dialog = -1;
+static int s_fno_is_summary_get = -1;
+static int s_fno_is_summary_set = -1;
+static int s_fno_pcfv_load = -1;
+static int s_fno_qmmcv_update = -1;
+static int s_fno_cm_set_checkbox = -1;
+static int s_struc_pcfv = -1;
+static int s_struc_qmmcv = -1;
+static int s_struc_common_menu = -1;
+static int s_struc_scene_common_menu = -1;
+static char *s_rcs_streamer_cheat_gbk = NULL;
+static bool s_rcs_streamer_has_tt0_req = false;
+static int32_t s_rcs_streamer_req_tt0 = 0;
+static int s_rcs_invalid_title_idx = -1;
+static int s_rcs_invalid_msg_idx = -1;
+
+static bool s_saved_tt0_active = false;
+static int32_t s_saved_tt0 = 0;
+static bool s_rcs_popup_override_active = false;
+static struct string *s_orig_invalid_title_str = NULL;
+static struct string *s_orig_invalid_msg_str = NULL;
+static struct string *s_override_ok_title_str = NULL;
+static struct string *s_override_off_msg_str = NULL;
+
+static inline uint16_t mod_le16(const uint8_t *buf, size_t off)
+{
+	return (uint16_t)buf[off] | ((uint16_t)buf[off + 1] << 8);
+}
+
+static inline int32_t mod_le32(const uint8_t *buf, size_t off)
+{
+	uint32_t v = (uint32_t)buf[off] |
+	             ((uint32_t)buf[off + 1] << 8) |
+	             ((uint32_t)buf[off + 2] << 16) |
+	             ((uint32_t)buf[off + 3] << 24);
+	return (int32_t)v;
+}
+
+static size_t mod_func_end_addr(int fno)
+{
+	if (!ain || fno < 0 || fno >= ain->nr_functions)
+		return 0;
+	size_t start = (size_t)ain->functions[fno].address;
+	size_t best = ain->code_size;
+	for (int i = 0; i < ain->nr_functions; i++) {
+		if (i == fno || !ain->functions[i].name)
+			continue;
+		if (!strncmp(ain->functions[i].name, "<lambda", 7))
+			continue;
+		size_t addr = (size_t)ain->functions[i].address;
+		if (addr > start && addr < best)
+			best = addr;
+	}
+	return best;
+}
+
+static bool mod_is_streamer_cheat_str(const char *s)
+{
+	if (!s || !s[0])
+		return false;
+	return strstr(s, "Eins") != NULL ||
+	       strstr(s, "eins") != NULL ||
+	       strstr(s, GBK_XIEXIEMIAO) != NULL ||
+	       strstr(s, GBK_ZHUBO) != NULL;
+}
+
+static bool mod_scan_tt0_req_at(size_t start_ip, size_t limit_addr, int tt_glob_idx, int32_t *out_req)
+{
+	if (!ain || !ain->code || start_ip >= limit_addr || limit_addr > ain->code_size)
+		return false;
+	size_t ip = start_ip;
+	int hist_op[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+	int32_t hist_arg[8] = { 0 };
+	for (int steps = 0; steps < 32 && ip + 2 <= limit_addr; steps++) {
+		enum opcode op = mod_le16(ain->code, ip) & ~OPTYPE_MASK;
+		if (op >= NR_OPCODES)
+			break;
+		int32_t w = instruction_width(op);
+		if (w <= 0 || ip + (size_t)w > limit_addr)
+			break;
+		int32_t arg0 = (instructions[op].nr_args >= 1) ? mod_le32(ain->code, ip + 2) : 0;
+
+		if (op == RETURN || op == ENDFUNC)
+			break;
+		if (op == CALLFUNC && arg0 == s_fno_run_info_dialog)
+			break;
+
+		/* Match: PUSH <tt>; REF; PUSH 0; REF; PUSH <req>; (NOTE + IFNZ | EQUALE + IFZ) */
+		if ((op == IFNZ && hist_op[0] == NOTE) || (op == IFZ && hist_op[0] == EQUALE)) {
+			if (hist_op[1] == PUSH &&
+			    hist_op[2] == REF &&
+			    hist_op[3] == PUSH && hist_arg[3] == 0 &&
+			    hist_op[4] == REF &&
+			    hist_op[5] == PUSH && (tt_glob_idx < 0 || hist_arg[5] == tt_glob_idx)) {
+				*out_req = hist_arg[1];
+				return true;
+			}
+		}
+
+		for (int k = 7; k > 0; k--) {
+			hist_op[k] = hist_op[k - 1];
+			hist_arg[k] = hist_arg[k - 1];
+		}
+		hist_op[0] = (int)op;
+		hist_arg[0] = arg0;
+		ip += (size_t)w;
+	}
+	return false;
+}
+
+static void mod_scan_func_for_streamer_cheat(int fno, int tt_glob_idx, int depth)
+{
+	if (!ain || !ain->code || fno < 0 || fno >= ain->nr_functions || depth > 1)
+		return;
+	size_t ip = (size_t)ain->functions[fno].address;
+	size_t end_addr = mod_func_end_addr(fno);
+	if (end_addr > ain->code_size)
+		end_addr = ain->code_size;
+
+	while (ip + 2 <= end_addr) {
+		enum opcode op = mod_le16(ain->code, ip) & ~OPTYPE_MASK;
+		if (op >= NR_OPCODES) {
+			ip += 2;
+			continue;
+		}
+		int32_t w = instruction_width(op);
+		if (w <= 0 || ip + (size_t)w > end_addr)
+			break;
+
+		/* 1. Fallback invalid-cheat dialog string slots in RunCharacterSetting */
+		if (depth == 0 && op == S_PUSH && ip + 18 <= end_addr) {
+			int32_t s1 = mod_le32(ain->code, ip + 2);
+			enum opcode op2 = mod_le16(ain->code, ip + 6) & ~OPTYPE_MASK;
+			enum opcode op3 = mod_le16(ain->code, ip + 12) & ~OPTYPE_MASK;
+			if (op2 == S_PUSH && op3 == CALLFUNC) {
+				int32_t s2 = mod_le32(ain->code, ip + 8);
+				int32_t callee = mod_le32(ain->code, ip + 14);
+				if (callee == s_fno_run_info_dialog &&
+				    s1 >= 0 && s1 < ain->nr_strings && ain->strings[s1] &&
+				    s2 >= 0 && s2 < ain->nr_strings && ain->strings[s2] &&
+				    !strcmp(ain->strings[s1]->text, GBK_CHEAT_INVALID_TITLE) &&
+				    !strcmp(ain->strings[s2]->text, GBK_CHEAT_INVALID_MSG)) {
+					s_rcs_invalid_title_idx = s1;
+					s_rcs_invalid_msg_idx = s2;
+				}
+			}
+		}
+
+		/* 2. Direct S_PUSH + (S_EQUALE / S_NOTE / String.Contains) cheat check */
+		if (!s_rcs_streamer_cheat_gbk && op == S_PUSH && ip + 8 <= end_addr) {
+			int32_t sidx = mod_le32(ain->code, ip + 2);
+			if (sidx >= 0 && sidx < ain->nr_strings && ain->strings[sidx] &&
+			    mod_is_streamer_cheat_str(ain->strings[sidx]->text)) {
+				size_t ip2 = ip + 6;
+				enum opcode op2 = mod_le16(ain->code, ip2) & ~OPTYPE_MASK;
+				if (op2 < NR_OPCODES && (op2 == S_EQUALE || op2 == S_NOTE || op2 == CALLHLL)) {
+					size_t ip3 = ip2 + (size_t)instruction_width(op2);
+					size_t handler_ip = 0;
+					bool matched = false;
+					if (ip3 + 6 <= end_addr) {
+						enum opcode op3 = mod_le16(ain->code, ip3) & ~OPTYPE_MASK;
+						int32_t target = mod_le32(ain->code, ip3 + 2);
+						if ((op2 == S_EQUALE || op2 == CALLHLL) && op3 == IFNZ && target > 0) {
+							handler_ip = (size_t)target;
+							matched = true;
+						} else if ((op2 == S_EQUALE || op2 == CALLHLL) && op3 == IFZ) {
+							handler_ip = ip3 + 6;
+							matched = true;
+						} else if (op2 == S_NOTE && op3 == IFNZ) {
+							handler_ip = ip3 + 6;
+							matched = true;
+						} else if (op2 == S_NOTE && op3 == IFZ && target > 0) {
+							handler_ip = (size_t)target;
+							matched = true;
+						}
+					}
+					if (matched) {
+						s_rcs_streamer_cheat_gbk = strdup(ain->strings[sidx]->text);
+						int32_t req = 0;
+						if (handler_ip > 0 && mod_scan_tt0_req_at(handler_ip, end_addr, tt_glob_idx, &req)) {
+							s_rcs_streamer_has_tt0_req = true;
+							s_rcs_streamer_req_tt0 = req;
+						}
+					}
+				}
+			}
+		}
+
+		/* 3. String SWITCH / STRSWITCH cheat dispatch */
+		if (!s_rcs_streamer_cheat_gbk && (op == SWITCH || op == STRSWITCH)) {
+			int32_t sw_idx = mod_le32(ain->code, ip + 2);
+			if (sw_idx >= 0 && sw_idx < ain->nr_switches) {
+				struct ain_switch *sw = &ain->switches[sw_idx];
+				if (sw->case_type == AIN_SWITCH_STRING && sw->cases) {
+					for (int c = 0; c < sw->nr_cases; c++) {
+						int32_t sidx = sw->cases[c].value;
+						if (sidx >= 0 && sidx < ain->nr_strings && ain->strings[sidx] &&
+						    mod_is_streamer_cheat_str(ain->strings[sidx]->text)) {
+							s_rcs_streamer_cheat_gbk = strdup(ain->strings[sidx]->text);
+							int32_t req = 0;
+							if (sw->cases[c].address > 0 &&
+							    mod_scan_tt0_req_at((size_t)sw->cases[c].address, end_addr, tt_glob_idx, &req)) {
+								s_rcs_streamer_has_tt0_req = true;
+								s_rcs_streamer_req_tt0 = req;
+							}
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		/* 4. 1-level helper CALLFUNC inside RunCharacterSetting */
+		if (!s_rcs_streamer_cheat_gbk && depth == 0 && op == CALLFUNC) {
+			int32_t callee = mod_le32(ain->code, ip + 2);
+			if (callee >= 0 && callee < ain->nr_functions &&
+			    callee != fno && callee != s_fno_run_info_dialog &&
+			    ain->functions[callee].name &&
+			    strncmp(ain->functions[callee].name, "Scenes::RunIScene", 17) != 0) {
+				mod_scan_func_for_streamer_cheat(callee, tt_glob_idx, depth + 1);
+			}
+		}
+
+		if (op == ENDFUNC && mod_le32(ain->code, ip + 2) == fno)
+			break;
+		ip += (size_t)w;
+	}
+}
+
+static void vm_inspect_mod_streamer_ain(void)
+{
+	if (!ain)
+		return;
+	if (s_inspected_ain == ain)
+		return;
+
+	s_inspected_ain = ain;
+	s_is_mod_streamer = false;
+	s_fno_run_char_setting = -1;
+	s_fno_run_info_dialog = -1;
+	s_fno_is_summary_get = -1;
+	s_fno_is_summary_set = -1;
+	s_fno_pcfv_load = -1;
+	s_fno_qmmcv_update = -1;
+	s_fno_cm_set_checkbox = -1;
+	s_struc_pcfv = -1;
+	s_struc_qmmcv = -1;
+	s_struc_common_menu = -1;
+	s_struc_scene_common_menu = -1;
+	free(s_rcs_streamer_cheat_gbk);
+	s_rcs_streamer_cheat_gbk = NULL;
+	s_rcs_streamer_has_tt0_req = false;
+	s_rcs_streamer_req_tt0 = 0;
+	s_rcs_invalid_title_idx = -1;
+	s_rcs_invalid_msg_idx = -1;
+
+	if (ain->strings) {
+		for (int i = 0; i < ain->nr_strings; i++) {
+			if (!ain->strings[i])
+				continue;
+			const char *t = ain->strings[i]->text;
+			if (strstr(t, GBK_CARD_STREAMER) ||
+			    strstr(t, GBK_STREAMER_MODE) ||
+			    strstr(t, "Eins")) {
+				s_is_mod_streamer = true;
+				break;
+			}
+		}
+	}
+
+	if (ain->structures) {
+		for (int i = 0; i < ain->nr_structures; i++) {
+			const char *sn = ain->structures[i].name;
+			if (!sn)
+				continue;
+			if (!strcmp(sn, "PlayerCardFlipView"))
+				s_struc_pcfv = i;
+			else if (!strcmp(sn, "QuestMapMiniCardView"))
+				s_struc_qmmcv = i;
+			else if (!strcmp(sn, "CommonMenu"))
+				s_struc_common_menu = i;
+			else if (!strcmp(sn, "SceneCommonMenu"))
+				s_struc_scene_common_menu = i;
+		}
+	}
+
+	if (ain->functions) {
+		for (int i = 0; i < ain->nr_functions; i++) {
+			const char *fn = ain->functions[i].name;
+			if (!fn)
+				continue;
+			if (!strcmp(fn, "Scenes::RunCharacterSetting")) {
+				s_fno_run_char_setting = i;
+			} else if (!strcmp(fn, "DialogScenes::RunInformationDialog")) {
+				s_fno_run_info_dialog = i;
+			} else if (!strcmp(fn, "GameConfig@IsSummaryMode::get") &&
+			           s_fno_is_summary_get < 0 &&
+			           ain->functions[i].nr_args == 0 &&
+			           ain->functions[i].return_type.data != AIN_VOID) {
+				s_fno_is_summary_get = i;
+			} else if (!strcmp(fn, "GameConfig@IsSummaryMode::set") &&
+			           s_fno_is_summary_set < 0 &&
+			           ain->functions[i].nr_args == 1 &&
+			           ain->functions[i].return_type.data == AIN_VOID) {
+				s_fno_is_summary_set = i;
+			} else if (!strcmp(fn, "PlayerCardFlipView@Load") &&
+			           ain->functions[i].nr_args == 0 &&
+			           ain->functions[i].return_type.data == AIN_VOID) {
+				s_fno_pcfv_load = i;
+			} else if (!strcmp(fn, "QuestMapMiniCardView@UpdateCard") &&
+			           ain->functions[i].nr_args == 0 &&
+			           ain->functions[i].return_type.data == AIN_VOID) {
+				s_fno_qmmcv_update = i;
+			} else if (!strcmp(fn, "CommonMenu@SetCheckBoxState") &&
+			           ain->functions[i].nr_args == 0 &&
+			           ain->functions[i].return_type.data == AIN_VOID) {
+				s_fno_cm_set_checkbox = i;
+			}
+		}
+	}
+
+	if (s_fno_run_char_setting >= 0) {
+		int tt_glob_idx = -1;
+		if (ain->globals) {
+			for (int i = 0; i < ain->nr_globals; i++) {
+				if (ain->globals[i].name && !strcmp(ain->globals[i].name, "tt")) {
+					tt_glob_idx = i;
+					break;
+				}
+			}
+		}
+		mod_scan_func_for_streamer_cheat(s_fno_run_char_setting, tt_glob_idx, 0);
+	}
+}
+
+static bool vm_has_mod_streamer_mode(void)
+{
+	vm_inspect_mod_streamer_ain();
+	return s_is_mod_streamer;
+}
+
+static void vm_activate_rcs_popup_override(void)
+{
+	vm_inspect_mod_streamer_ain();
+	if (s_rcs_popup_override_active || !ain || !ain->strings)
+		return;
+	if (s_rcs_invalid_title_idx < 0 || s_rcs_invalid_title_idx >= ain->nr_strings ||
+	    s_rcs_invalid_msg_idx < 0 || s_rcs_invalid_msg_idx >= ain->nr_strings)
+		return;
+	if (!s_override_ok_title_str)
+		s_override_ok_title_str = make_string(GBK_CHEAT_OK_TITLE, strlen(GBK_CHEAT_OK_TITLE));
+	if (!s_override_off_msg_str)
+		s_override_off_msg_str = make_string(GBK_STREAMER_OFF_MSG, strlen(GBK_STREAMER_OFF_MSG));
+	s_orig_invalid_title_str = ain->strings[s_rcs_invalid_title_idx];
+	s_orig_invalid_msg_str = ain->strings[s_rcs_invalid_msg_idx];
+	ain->strings[s_rcs_invalid_title_idx] = s_override_ok_title_str;
+	ain->strings[s_rcs_invalid_msg_idx] = s_override_off_msg_str;
+	s_rcs_popup_override_active = true;
+}
+
+static bool vm_callstack_has_func(const char *exact_name)
+{
+	if (!ain || !ain->functions || call_stack_ptr <= 0 || !exact_name)
+		return false;
+	for (int i = 0; i < call_stack_ptr; i++) {
+		int32_t fno = call_stack[i].fno;
+		if (fno >= 0 && fno < ain->nr_functions &&
+		    ain->functions[fno].name &&
+		    !strcmp(ain->functions[fno].name, exact_name))
+			return true;
+	}
+	return false;
+}
+
+static int32_t vm_get_tt(int idx, int32_t def_val)
+{
+	struct page *tt = vm_get_global_page("tt", NULL);
+	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return def_val;
+	return tt->values[idx].i;
+}
+
+static void vm_set_tt(int idx, int32_t val)
+{
+	struct page *tt = vm_get_global_page("tt", NULL);
+	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return;
+	tt->values[idx].i = val;
+}
+
+static void vm_restore_temp_rcs_overrides(bool force)
+{
+	if (s_rcs_popup_override_active && ain && ain->strings) {
+		if (force ||
+		    vm_callstack_has_func("DialogScenes::RunInformationDialog") ||
+		    !vm_callstack_has_func("Scenes::RunCharacterSetting")) {
+			if (s_rcs_invalid_title_idx >= 0 && s_rcs_invalid_title_idx < ain->nr_strings && s_orig_invalid_title_str)
+				ain->strings[s_rcs_invalid_title_idx] = s_orig_invalid_title_str;
+			if (s_rcs_invalid_msg_idx >= 0 && s_rcs_invalid_msg_idx < ain->nr_strings && s_orig_invalid_msg_str)
+				ain->strings[s_rcs_invalid_msg_idx] = s_orig_invalid_msg_str;
+			s_rcs_popup_override_active = false;
+		}
+	}
+	if (s_saved_tt0_active) {
+		if (force ||
+		    vm_callstack_has_func("DialogScenes::RunInformationDialog") ||
+		    !vm_callstack_has_func("Scenes::RunCharacterSetting")) {
+			vm_set_tt(0, s_saved_tt0);
+			s_saved_tt0_active = false;
+		}
+	}
+}
+
 static bool vm_is_in_card_cache_callstack(void)
 {
 	if (!ain || !ain->functions || call_stack_ptr <= 0)
@@ -872,6 +1303,32 @@ static bool vm_is_in_card_cache_callstack(void)
 		if (!strncmp(fn, "CardCache@", 10) ||
 		    !strncmp(fn, "CardConstruct", 13) ||
 		    !strncmp(fn, "KeyValueMap<", 12)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool vm_is_in_card_ui_callstack(void)
+{
+	if (vm_is_in_card_cache_callstack())
+		return true;
+	if (!ain || !ain->functions || call_stack_ptr <= 0)
+		return false;
+	for (int i = 0; i < call_stack_ptr; i++) {
+		int32_t fno = call_stack[i].fno;
+		if (fno < 0 || fno >= ain->nr_functions)
+			continue;
+		const char *fn = ain->functions[fno].name;
+		if (!fn)
+			continue;
+		if (!strncmp(fn, "PlayerCardFlipView", 18) ||
+		    !strncmp(fn, "QuestMapMiniCardView", 20) ||
+		    !strncmp(fn, "PartyCard@", 10) ||
+		    !strncmp(fn, "FormationView@", 14) ||
+		    !strncmp(fn, "CommonMenu@", 11) ||
+		    !strcmp(fn, "Scenes::RunCharacterSetting") ||
+		    !strncmp(fn, "SceneCharacterSetting@", 22)) {
 			return true;
 		}
 	}
@@ -906,50 +1363,213 @@ static int vm_clear_card_cache(void)
 	return total;
 }
 
+static bool vm_is_live_pcfv_page(struct page *p)
+{
+	if (!p || p->type != STRUCT_PAGE || p->index != s_struc_pcfv)
+		return false;
+	struct page *pc = vm_get_field_page(p, "m_playerCard", NULL);
+	if (!pc || pc->type != STRUCT_PAGE)
+		return false;
+	struct page *par = vm_get_field_page(p, "m_parent", NULL);
+	if (!par || par->type != STRUCT_PAGE || vm_get_field_int(par, "m_partsNumber", NULL, 0) <= 0)
+		return false;
+	struct page *cv = vm_get_field_page(p, "m_cardView", NULL);
+	if (!cv || cv->type != ARRAY_PAGE || cv->nr_vars <= 0)
+		return false;
+	struct page *cv0 = vm_safe_get_page(cv->values[0].i);
+	if (!cv0 || cv0->type != STRUCT_PAGE || vm_get_field_int(cv0, "m_partsNumber", NULL, 0) <= 0)
+		return false;
+	return true;
+}
+
+static bool vm_is_live_qmmcv_page(struct page *p)
+{
+	if (!p || p->type != STRUCT_PAGE || p->index != s_struc_qmmcv)
+		return false;
+	struct page *par = vm_get_field_page(p, "m_parent", NULL);
+	if (!par || par->type != STRUCT_PAGE || vm_get_field_int(par, "m_partsNumber", NULL, 0) <= 0)
+		return false;
+	struct page *cids = vm_get_field_page(p, "m_cardId", NULL);
+	if (!cids || cids->type != ARRAY_PAGE || cids->nr_vars <= 0)
+		return false;
+	return true;
+}
+
+/*
+ * Rebuilds already-instantiated card views (SceneParty's PlayerCardFlipView and
+ * QuestMap's QuestMapMiniCardView) and CommonMenu's SummaryCheckBox in-place
+ * after Streamer Mode changes, so white-curtain cards reload immediately
+ * without requiring the player to leave the current screen.
+ */
+static void vm_refresh_live_streamer_ui(void)
+{
+	if (!vm_is_ready())
+		return;
+	vm_inspect_mod_streamer_ain();
+	if (vm_is_in_card_ui_callstack()) {
+		s_pending_live_ui_refresh = true;
+		return;
+	}
+	s_pending_live_ui_refresh = false;
+	if (s_pending_clear_card_cache)
+		vm_clear_card_cache();
+
+	bool saved_dg = dg_callbegin_pending;
+	dg_callbegin_pending = false;
+
+	if (s_fno_pcfv_load >= 0 && s_struc_pcfv >= 0) {
+		size_t cap = 64, nr = 0;
+		int *slots = malloc(cap * sizeof(int));
+		if (slots) {
+			for (size_t s = 1; s < heap_size; s++) {
+				if (heap[s].ref > 0 && vm_is_live_pcfv_page(heap[s].page)) {
+					if (nr == cap) {
+						cap *= 2;
+						int *ns = realloc(slots, cap * sizeof(int));
+						if (!ns) break;
+						slots = ns;
+					}
+					slots[nr++] = (int)s;
+				}
+			}
+			for (size_t i = 0; i < nr; i++) {
+				int slot = slots[i];
+				if (page_index_valid(slot) && heap[slot].ref > 0 &&
+				    vm_is_live_pcfv_page(heap[slot].page)) {
+					vm_call(s_fno_pcfv_load, slot);
+				}
+			}
+			free(slots);
+		}
+	}
+
+	if (s_fno_qmmcv_update >= 0 && s_struc_qmmcv >= 0) {
+		size_t cap = 16, nr = 0;
+		int *slots = malloc(cap * sizeof(int));
+		if (slots) {
+			for (size_t s = 1; s < heap_size; s++) {
+				if (heap[s].ref > 0 && vm_is_live_qmmcv_page(heap[s].page)) {
+					if (nr == cap) {
+						cap *= 2;
+						int *ns = realloc(slots, cap * sizeof(int));
+						if (!ns) break;
+						slots = ns;
+					}
+					slots[nr++] = (int)s;
+				}
+			}
+			for (size_t i = 0; i < nr; i++) {
+				int slot = slots[i];
+				if (page_index_valid(slot) && heap[slot].ref > 0 &&
+				    vm_is_live_qmmcv_page(heap[slot].page)) {
+					vm_call(s_fno_qmmcv_update, slot);
+				}
+			}
+			free(slots);
+		}
+	}
+
+	if (s_fno_cm_set_checkbox >= 0 && s_struc_common_menu >= 0) {
+		int cm_slot = -1;
+		for (int i = call_stack_ptr - 1; i >= 0; i--) {
+			struct page *sp = vm_safe_get_page(call_stack[i].struct_page);
+			if (!sp || sp->type != STRUCT_PAGE)
+				continue;
+			if (sp->index == s_struc_common_menu) {
+				cm_slot = call_stack[i].struct_page;
+				break;
+			}
+			if (sp->index == s_struc_scene_common_menu) {
+				union vm_value *mv = vm_get_struct_member(sp, "m_menu", NULL);
+				if (mv && vm_safe_get_page(mv->i)) {
+					cm_slot = mv->i;
+					break;
+				}
+			}
+		}
+		struct page *cm_page = vm_safe_get_page(cm_slot);
+		if (cm_page && cm_page->type == STRUCT_PAGE &&
+		    cm_page->index == s_struc_common_menu &&
+		    vm_get_field_page(cm_page, "m_act", NULL) != NULL) {
+			vm_call(s_fno_cm_set_checkbox, cm_slot);
+		}
+	}
+
+	dg_callbegin_pending = saved_dg;
+}
+
+static int vm_get_live_streamer_mode(bool allow_vm_call)
+{
+	if (!vm_globals_ready() || !vm_has_mod_streamer_mode())
+		return -1;
+	int cfg_idx = vm_find_global_idx("g_gameConfig", NULL);
+	if (cfg_idx < 0 || cfg_idx >= heap[0].page->nr_vars)
+		return -1;
+	int cfg_slot = global_get(cfg_idx).i;
+	struct page *cfg = vm_safe_get_page(cfg_slot);
+	if (!cfg || cfg->type != STRUCT_PAGE)
+		return -1;
+	if (allow_vm_call && call_stack_ptr > 0 && s_fno_is_summary_get >= 0) {
+		bool saved_dg = dg_callbegin_pending;
+		dg_callbegin_pending = false;
+		vm_call(s_fno_is_summary_get, cfg_slot);
+		int res = stack_pop().i;
+		dg_callbegin_pending = saved_dg;
+		return res != 0 ? 1 : 0;
+	}
+	int32_t v = vm_get_field_int(cfg, "m_isSummaryMode", NULL, -1);
+	if (v < 0)
+		return -1;
+	return v != 0 ? 1 : 0;
+}
+
 static void vm_set_streamer_mode(int enabled, bool persist_disk, bool force_clear_cache)
 {
+	if (!vm_has_mod_streamer_mode())
+		return;
 	int target = enabled ? 1 : 0;
 	bool changed = false;
-	struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
-	if (cfg) {
+	int cfg_idx = vm_find_global_idx("g_gameConfig", NULL);
+	int cfg_slot = (cfg_idx >= 0 && cfg_idx < heap[0].page->nr_vars) ? global_get(cfg_idx).i : -1;
+	struct page *cfg = vm_safe_get_page(cfg_slot);
+	if (cfg && cfg->type == STRUCT_PAGE) {
 		int32_t prev = vm_get_field_int(cfg, "m_isSummaryMode", NULL, -1);
 		if (prev != target) {
 			vm_set_field_int(cfg, "m_isSummaryMode", NULL, target);
 			changed = true;
 		}
+		if (persist_disk && call_stack_ptr > 0 && s_fno_is_summary_set >= 0 &&
+		    !vm_is_in_card_ui_callstack()) {
+			bool saved_dg = dg_callbegin_pending;
+			dg_callbegin_pending = false;
+			stack_push(vm_int(target));
+			vm_call(s_fno_is_summary_set, cfg_slot);
+			dg_callbegin_pending = saved_dg;
+		}
 	}
 	if (changed || force_clear_cache) {
 		vm_clear_card_cache();
+		s_pending_live_ui_refresh = true;
 	}
 	if (persist_disk) {
 		persist_streamer_mode_to_savedir(target != 0);
 	}
+	s_last_observed_summary_mode = target;
 }
 
 void modifier_on_globals_loaded(void)
 {
-	if (!vm_globals_ready())
+	if (!vm_globals_ready() || !vm_has_mod_streamer_mode())
 		return;
 	pthread_mutex_lock(&g_mod_mutex);
 	int mask = g_live_lock_mask;
 	pthread_mutex_unlock(&g_mod_mutex);
 	if (mask & LOCK_DISABLE_STREAMER_MODE) {
-		vm_set_streamer_mode(0, true, false);
+		/* Always purge g_cardCache on save/resume load in case resume.bin had cached white curtains */
+		vm_set_streamer_mode(0, true, true);
+	} else {
+		s_last_observed_summary_mode = vm_get_live_streamer_mode(false);
 	}
-}
-
-static int32_t vm_get_tt(int idx, int32_t def_val)
-{
-	struct page *tt = vm_get_global_page("tt", NULL);
-	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return def_val;
-	return tt->values[idx].i;
-}
-
-static void vm_set_tt(int idx, int32_t val)
-{
-	struct page *tt = vm_get_global_page("tt", NULL);
-	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return;
-	tt->values[idx].i = val;
 }
 
 /*
@@ -957,13 +1577,37 @@ static void vm_set_tt(int idx, int32_t val)
  * tt[1224] == 1 (which challenge modes / base phase A reset to 0, showing
  * "作弊码禁用！当前状态或模式下无法使用！"). Setting tt[1224] = 1 unlocks the gate
  * cleanly without wiping the player's tt[6655] bonus score to -99999.
+ * Also ensure tt[6699] (the VK_0 re-entrancy lock) is cleared if RunCharacterSetting
+ * is not currently on call_stack.
  */
 static void vm_unlock_mod_cheat_gate(void)
 {
 	struct page *tt = vm_get_global_page("tt", NULL);
-	if (tt && tt->type == ARRAY_PAGE && tt->nr_vars > 1224) {
+	if (!tt || tt->type != ARRAY_PAGE)
+		return;
+	if (tt->nr_vars > 1224)
 		tt->values[1224].i = 1;
-	}
+	if (tt->nr_vars > 6699 && !vm_callstack_has_func("Scenes::RunCharacterSetting"))
+		tt->values[6699].i = 0;
+}
+
+static void vm_trigger_streamer_unlock_popup(void)
+{
+	vm_inspect_mod_streamer_ain();
+	pthread_mutex_lock(&g_mod_mutex);
+	g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
+	pthread_mutex_unlock(&g_mod_mutex);
+
+	vm_set_streamer_mode(0, true, true);
+	if (!s_is_mod_streamer)
+		return;
+
+	vm_unlock_mod_cheat_gate();
+	const char *cheat_gbk = s_rcs_streamer_cheat_gbk ? s_rcs_streamer_cheat_gbk : GBK_STREAMER_PASSPHRASE;
+	free(s_pending_cheat_gbk);
+	s_pending_cheat_gbk = strdup(cheat_gbk);
+	s_cheat_wait_frames = 180;
+	s_pending_is_streamer_cheat = true;
 }
 
 static void vm_queue_cheat_code_utf8(const char *utf8_str)
@@ -972,10 +1616,7 @@ static void vm_queue_cheat_code_utf8(const char *utf8_str)
 	if (!strcmp(utf8_str, "关闭主播模式") ||
 	    !strcmp(utf8_str, "灌注Eins陈谢谢喵") ||
 	    !strcmp(utf8_str, "关注Eins陈谢谢喵")) {
-		pthread_mutex_lock(&g_mod_mutex);
-		g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
-		pthread_mutex_unlock(&g_mod_mutex);
-		vm_set_streamer_mode(0, true, true);
+		vm_trigger_streamer_unlock_popup();
 		return;
 	}
 	if (!strcmp(utf8_str, "1123029976")) {
@@ -990,6 +1631,7 @@ static void vm_queue_cheat_code_utf8(const char *utf8_str)
 			free(s_pending_cheat_gbk);
 			s_pending_cheat_gbk = gbk;
 			s_cheat_wait_frames = 180;
+			s_pending_is_streamer_cheat = false;
 		} else {
 			free(gbk);
 		}
@@ -1043,13 +1685,33 @@ static void vm_step_pending_cheat(void)
 		if (in_join && scs_ss) {
 			key_state[VK_0] = false;
 			s_pulse_key0_frames = 0;
-			vm_unlock_mod_cheat_gate();
+			if (ain->globals) {
+				struct page *tt = vm_get_global_page("tt", NULL);
+				if (tt && tt->type == ARRAY_PAGE && tt->nr_vars > 1224)
+					tt->values[1224].i = 1;
+			}
 			union vm_value *cur_v = vm_get_struct_member(scs_page, "m_current", NULL);
 			if (cur_v) {
 				vm_set_string_slot(cur_v->i, s_pending_cheat_gbk);
 			}
 			struct page *gc = vm_get_global_page("g_gameContext", NULL);
 			vm_set_player_info_name(gc, s_pending_cheat_gbk);
+
+			if (s_pending_is_streamer_cheat) {
+				vm_inspect_mod_streamer_ain();
+				if (s_rcs_streamer_cheat_gbk != NULL) {
+					if (s_rcs_streamer_has_tt0_req) {
+						s_saved_tt0 = vm_get_tt(0, 0);
+						s_saved_tt0_active = true;
+						vm_set_tt(0, s_rcs_streamer_req_tt0);
+					}
+				} else {
+					vm_activate_rcs_popup_override();
+				}
+				s_wait_post_rcs_streamer_refresh = true;
+				s_pending_is_streamer_cheat = false;
+			}
+
 			vm_set_field_int(scs_ss, "<IsFinish>", "m_isFinish", 1);
 			int idx_end_busy = vm_find_global_idx("parts::detail::g_EndPartsBusyLoop", NULL);
 			if (idx_end_busy >= 0)
@@ -1076,6 +1738,8 @@ static void vm_step_pending_cheat(void)
 		free(s_pending_cheat_gbk);
 		s_pending_cheat_gbk = NULL;
 		s_cheat_wait_frames = 0;
+		s_pending_is_streamer_cheat = false;
+		vm_restore_temp_rcs_overrides(true);
 	}
 }
 
@@ -1389,6 +2053,11 @@ static void vm_execute_pending_action(const char *json_str)
 		vm_process_all_characters(set_char_star, set_char_exp);
 	}
 
+	bool want_streamer_popup = false;
+	if ((it = cJSON_GetObjectItem(act, "streamerPopup")) &&
+	    (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+		want_streamer_popup = true;
+	}
 	if ((it = cJSON_GetObjectItem(act, "streamerMode")) && cJSON_IsNumber(it)) {
 		int en = it->valueint != 0 ? 1 : 0;
 		pthread_mutex_lock(&g_mod_mutex);
@@ -1399,15 +2068,14 @@ static void vm_execute_pending_action(const char *json_str)
 		pthread_mutex_unlock(&g_mod_mutex);
 		vm_set_streamer_mode(en, true, true);
 	}
-	if ((it = cJSON_GetObjectItem(act, "cheatCode")) && cJSON_IsString(it) &&
-	    it->valuestring && it->valuestring[0]) {
+	if (want_streamer_popup) {
+		vm_trigger_streamer_unlock_popup();
+	} else if ((it = cJSON_GetObjectItem(act, "cheatCode")) && cJSON_IsString(it) &&
+	           it->valuestring && it->valuestring[0]) {
 		vm_queue_cheat_code_utf8(it->valuestring);
 	} else if ((it = cJSON_GetObjectItem(act, "fillStreamerPassphrase")) &&
 	           (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
-		pthread_mutex_lock(&g_mod_mutex);
-		g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
-		pthread_mutex_unlock(&g_mod_mutex);
-		vm_set_streamer_mode(0, true, true);
+		vm_trigger_streamer_unlock_popup();
 	}
 	if (!s_pending_cheat_gbk &&
 	    (it = cJSON_GetObjectItem(act, "triggerKey0")) &&
@@ -1428,13 +2096,6 @@ static void vm_execute_pending_action(const char *json_str)
 static void vm_enforce_locks(int mask)
 {
 	if (!mask || !ain) return;
-
-	if (mask & LOCK_DISABLE_STREAMER_MODE) {
-		struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
-		if (cfg && vm_get_field_int(cfg, "m_isSummaryMode", NULL, 0) != 0) {
-			vm_set_streamer_mode(0, true, true);
-		}
-	}
 
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
@@ -1534,7 +2195,11 @@ static char *vm_build_live_state_json(int lock_mask)
 	struct page *bc    = vm_get_global_page("g_battleContext", NULL);
 	struct page *enemy = vm_get_global_page("g_enemy", NULL);
 
-	if (cfg) {
+	if (vm_has_mod_streamer_mode()) {
+		int sm = vm_get_live_streamer_mode(!vm_is_in_card_ui_callstack());
+		if (sm >= 0)
+			cJSON_AddNumberToObject(root, "streamerMode", sm);
+	} else if (cfg) {
 		cJSON_AddNumberToObject(root, "streamerMode", vm_get_field_int(cfg, "m_isSummaryMode", NULL, 0));
 	}
 
@@ -1652,8 +2317,9 @@ static char *vm_build_live_state_json(int lock_mask)
 
 void modifier_on_frame(void)
 {
-	if (!vm_is_ready())
+	if (!vm_is_ready() || s_in_modifier_frame)
 		return;
+	s_in_modifier_frame = true;
 
 	static uint32_t s_frame_tick = 0;
 	s_frame_tick++;
@@ -1688,22 +2354,28 @@ void modifier_on_frame(void)
 	}
 #endif
 
+	vm_restore_temp_rcs_overrides(false);
+
 	pthread_mutex_lock(&g_mod_mutex);
 	char *pending = g_pending_action_json;
 	g_pending_action_json = NULL;
-	bool force_streamer_off = g_force_refresh_streamer_off;
-	g_force_refresh_streamer_off = false;
+	int pending_lock_sm = g_pending_lock_streamer_mode;
+	g_pending_lock_streamer_mode = -1;
 	pthread_mutex_unlock(&g_mod_mutex);
+
+	bool did_streamer_sync = false;
 
 	if (s_pending_clear_card_cache) {
 		vm_clear_card_cache();
 	}
-	if (force_streamer_off) {
-		vm_set_streamer_mode(0, true, true);
+	if (pending_lock_sm == 0 || pending_lock_sm == 1) {
+		vm_set_streamer_mode(pending_lock_sm, true, true);
+		did_streamer_sync = true;
 	}
 	if (pending) {
 		vm_execute_pending_action(pending);
 		free(pending);
+		did_streamer_sync = true;
 	}
 	if (s_pending_cheat_gbk) {
 		vm_step_pending_cheat();
@@ -1711,6 +2383,53 @@ void modifier_on_frame(void)
 		key_state[VK_0] = true;
 		if (--s_pulse_key0_frames == 0)
 			key_state[VK_0] = false;
+	}
+
+	/*
+	 * In Scenes::RunCharacterSetting, MOD cheat handlers call
+	 * DialogScenes::RunInformationDialog(...) FIRST and write the unlock flag /
+	 * achievement AFTER the user dismisses the popup. Once RunCharacterSetting
+	 * leaves call_stack, purge g_cardCache and rebuild live card views!
+	 */
+	if (s_wait_post_rcs_streamer_refresh &&
+	    !s_pending_cheat_gbk &&
+	    !vm_callstack_has_func("Scenes::RunCharacterSetting") &&
+	    !vm_callstack_has_func("SceneCharacterSetting@Run")) {
+		s_wait_post_rcs_streamer_refresh = false;
+		vm_set_streamer_mode(0, true, true);
+		did_streamer_sync = true;
+	}
+
+	/*
+	 * Observe in-game MENU ("SummaryCheckBox") changes to Streamer Mode so the
+	 * player can also toggle Streamer Mode via the in-game MENU with immediate
+	 * card cache purge & live card view refresh.
+	 */
+	if (vm_has_mod_streamer_mode() &&
+	    !s_pending_cheat_gbk &&
+	    !s_wait_post_rcs_streamer_refresh &&
+	    !vm_callstack_has_func("Scenes::RunCharacterSetting")) {
+		int cur_sm = vm_get_live_streamer_mode(false);
+		if (cur_sm == 0 || cur_sm == 1) {
+			if (s_last_observed_summary_mode < 0) {
+				s_last_observed_summary_mode = cur_sm;
+			} else if (cur_sm != s_last_observed_summary_mode) {
+				s_last_observed_summary_mode = cur_sm;
+				pthread_mutex_lock(&g_mod_mutex);
+				if (cur_sm == 0)
+					g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
+				else
+					g_live_lock_mask &= ~LOCK_DISABLE_STREAMER_MODE;
+				pthread_mutex_unlock(&g_mod_mutex);
+				vm_clear_card_cache();
+				s_pending_live_ui_refresh = true;
+				did_streamer_sync = true;
+			}
+		}
+	}
+
+	if (s_pending_live_ui_refresh) {
+		vm_refresh_live_streamer_ui();
 	}
 
 	pthread_mutex_lock(&g_mod_mutex);
@@ -1722,13 +2441,15 @@ void modifier_on_frame(void)
 	}
 
 	/* Refresh live snapshot when action executed or every 30 frames */
-	if (pending || force_streamer_off || (s_frame_tick % 30 == 1)) {
+	if (did_streamer_sync || (s_frame_tick % 30 == 1)) {
 		char *snap = vm_build_live_state_json(lock_mask);
 		pthread_mutex_lock(&g_mod_mutex);
 		free(g_cached_live_state_json);
 		g_cached_live_state_json = snap;
 		pthread_mutex_unlock(&g_mod_mutex);
 	}
+
+	s_in_modifier_frame = false;
 }
 
 /* =========================================================================
@@ -1807,9 +2528,16 @@ Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeSetLiveLocks(
 	(void)clazz;
 	pthread_mutex_lock(&g_mod_mutex);
 	int prev = g_live_lock_mask;
+	bool first_init = !g_has_lock_mask_init;
+	g_has_lock_mask_init = true;
 	g_live_lock_mask = (int)mask;
-	if (!(prev & LOCK_DISABLE_STREAMER_MODE) && (mask & LOCK_DISABLE_STREAMER_MODE)) {
-		g_force_refresh_streamer_off = true;
+	bool prev_dis = (prev & LOCK_DISABLE_STREAMER_MODE) != 0;
+	bool next_dis = ((int)mask & LOCK_DISABLE_STREAMER_MODE) != 0;
+	if (first_init) {
+		if (next_dis)
+			g_pending_lock_streamer_mode = 0;
+	} else if (prev_dis != next_dis) {
+		g_pending_lock_streamer_mode = next_dis ? 0 : 1;
 	}
 	pthread_mutex_unlock(&g_mod_mutex);
 }

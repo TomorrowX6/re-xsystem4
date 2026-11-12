@@ -35,6 +35,7 @@ class XSystem4Activity : SDLActivity() {
     private var ctrlOverlayContainer: FrameLayout? = null
     private var ctrlPill: TextView? = null
     private var ctrlSkipLatched: Boolean = false
+    private var lastSyncedConfigSeq: Int = -1
 
     private fun dp(v: Int): Int =
         (v * resources.displayMetrics.density).toInt()
@@ -58,6 +59,7 @@ class XSystem4Activity : SDLActivity() {
         GameModifierBridge.markAlreadyLoaded()
         try {
             GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+            lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
         } catch (_: Throwable) {
         }
         window.decorView.postDelayed({ ensureOverlaysAttached() }, 3500L)
@@ -217,20 +219,29 @@ class XSystem4Activity : SDLActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         try {
-            GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+            val curSeq = GameModifierBridge.getConfigSeq(this)
+            if (curSeq != lastSyncedConfigSeq) {
+                GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+                lastSyncedConfigSeq = curSeq
+            }
         } catch (_: Throwable) {
         }
     }
 
     override fun onPause() {
         setCtrlSkipLatched(false)
+        lastSyncedConfigSeq = GameModifierBridge.syncLockMaskFromNative(this)
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
         try {
-            GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+            val curSeq = GameModifierBridge.getConfigSeq(this)
+            if (curSeq != lastSyncedConfigSeq) {
+                GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+                lastSyncedConfigSeq = curSeq
+            }
         } catch (_: Throwable) {
         }
     }
@@ -259,9 +270,7 @@ class XSystem4Activity : SDLActivity() {
         try {
             val lockMask = GameModifierBridge.getSavedLockMask(this)
             GameModifierBridge.nativeSetLiveLocks(lockMask)
-            if ((lockMask and GameModifierBridge.LOCK_DISABLE_STREAMER_MODE) != 0) {
-                GameModifierBridge.writeStreamerModeForDir(java.io.File(saveFolder), false)
-            }
+            lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
         } catch (_: Throwable) {
         }
         return arrayOf("--save-folder", saveFolder, "--save-format=rsm", gameRoot)

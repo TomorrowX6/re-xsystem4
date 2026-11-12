@@ -30,6 +30,7 @@
 #include "system4/string.h"
 #include "system4/utfsjis.h"
 
+#include "modifier.h"
 #include "savedata.h"
 #include "vm.h"
 #include "vm/heap.h"
@@ -1357,10 +1358,12 @@ void vm_load_image(const char *key, const char *path)
 	enum savefile_error error = load_rsave_image(key, path);
 	switch (error) {
 	case SAVEFILE_SUCCESS:
+		modifier_on_globals_loaded();
 		return;
 	case SAVEFILE_INVALID_SIGNATURE:
 		// If not a System4 resume save file, read as a json.
 		load_json_image(key, path);
+		modifier_on_globals_loaded();
 		return;
 	default:
 		VM_ERROR("Failed to read VM image '%s': %s", display_sjis0(path), savefile_strerror(error));

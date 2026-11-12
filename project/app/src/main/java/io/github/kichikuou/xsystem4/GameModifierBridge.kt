@@ -14,6 +14,7 @@ object GameModifierBridge {
     private const val KEY_CTRL_OVERLAY_VISIBLE = "ctrl_overlay_visible"
     private const val KEY_DISABLE_STREAMER_MODE = "disable_streamer_mode"
     private const val KEY_LOCK_MASK = "lock_mask"
+    private const val KEY_CONFIG_SEQ = "config_seq"
     private const val FULL_UNLOCK_ASSET = "full_unlock_saves.zip"
     private const val UNLOCK_BAK_SUFFIX = ".unlock.bak"
     private const val MOD_BAK_SUFFIX = ".mod.bak"
@@ -91,6 +92,7 @@ object GameModifierBridge {
             put(KEY_CTRL_OVERLAY_VISIBLE, prefs.getBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
             put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             put(KEY_LOCK_MASK, mask)
+            put(KEY_CONFIG_SEQ, prefs.getInt(KEY_CONFIG_SEQ, 0))
         }
     }
 
@@ -106,8 +108,10 @@ object GameModifierBridge {
         } else {
             rawMask and LOCK_DISABLE_STREAMER_MODE.inv()
         }
+        val nextSeq = json.optInt(KEY_CONFIG_SEQ, 0) + 1
         json.put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
         json.put(KEY_LOCK_MASK, mask)
+        json.put(KEY_CONFIG_SEQ, nextSeq)
         try {
             val cfgFile = File(context.filesDir, CONFIG_FILE_NAME)
             val tmpFile = File(context.filesDir, "$CONFIG_FILE_NAME.tmp")
@@ -124,7 +128,29 @@ object GameModifierBridge {
             .putBoolean(KEY_CTRL_OVERLAY_VISIBLE, json.optBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
             .putBoolean(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             .putInt(KEY_LOCK_MASK, mask)
+            .putInt(KEY_CONFIG_SEQ, nextSeq)
             .commit()
+    }
+
+    fun getConfigSeq(context: Context): Int {
+        return readConfigJson(context).optInt(KEY_CONFIG_SEQ, 0)
+    }
+
+    fun syncLockMaskFromNative(context: Context): Int {
+        if (!loaded) return getConfigSeq(context)
+        return try {
+            val liveMask = nativeGetLiveLocks()
+            val savedMask = getSavedLockMask(context)
+            if (liveMask != savedMask) {
+                val json = readConfigJson(context)
+                json.put(KEY_DISABLE_STREAMER_MODE, (liveMask and LOCK_DISABLE_STREAMER_MODE) != 0)
+                json.put(KEY_LOCK_MASK, liveMask)
+                writeConfigJson(context, json)
+            }
+            getConfigSeq(context)
+        } catch (_: Throwable) {
+            getConfigSeq(context)
+        }
     }
 
     fun isFloatingEnabled(context: Context): Boolean {
