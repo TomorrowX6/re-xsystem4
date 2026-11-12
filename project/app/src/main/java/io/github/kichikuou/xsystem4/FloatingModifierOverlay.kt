@@ -170,6 +170,10 @@ class FloatingModifierOverlay(private val activity: Activity) {
     }
 
     private fun showMainModifierDialog() {
+        val xsAct = activity as? XSystem4Activity
+        xsAct?.setCtrlSkipLatched(false)
+        val ctrlVisible = xsAct?.isCtrlOverlayCurrentlyVisible()
+            ?: GameModifierBridge.isCtrlOverlayVisible(activity)
         val j = readLiveJson()
         val inGame = j.optBoolean("inGame", false)
         val inBattle = j.optBoolean("inBattle", false)
@@ -199,9 +203,16 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("关闭主播模式：未开启 [点击关闭主播模式]", "配信者モード無効：OFF", "Disable Streamer Mode: OFF")
         }
 
+        val ctrlItemLabel = if (ctrlVisible) {
+            tr("Ctrl 快进悬浮键：已显示 [点击隐藏]", "Ctrl早送りボタン：表示中", "Ctrl Skip Button: Shown")
+        } else {
+            tr("Ctrl 快进悬浮键：已隐藏 [点击显示]", "Ctrl早送りボタン：非表示", "Ctrl Skip Button: Hidden")
+        }
+
         val items = arrayOf(
             tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…"),
             streamerItemLabel,
+            ctrlItemLabel,
             tr("输入作弊码…", "チートコード入力…", "Enter Cheat Code…"),
             tr("战斗快捷指令…", "戦闘クイック操作…", "Battle Quick Actions…"),
             tr("一键全局强化…", "一括強化プリセット…", "One-Click Boosts…"),
@@ -226,14 +237,25 @@ class FloatingModifierOverlay(private val activity: Activity) {
                             else tr("已重新开启主播模式", "配信者モードを有効化しました", "Streamer Mode enabled")
                         )
                     }
-                    2 -> showCheatCodeDialog()
-                    3 -> showBattleQuickDialog()
-                    4 -> showOneClickBoostDialog()
-                    5 -> showEditResourcesDialog(j)
-                    6 -> showEditPartyDialog(j)
-                    7 -> showEditWorldDialog(j)
-                    8 -> showEditCardsDialog()
-                    9 -> {
+                    2 -> {
+                        val nextVisible = xsAct?.toggleCtrlOverlay() ?: (!ctrlVisible).also {
+                            GameModifierBridge.setCtrlOverlayVisible(activity, it)
+                        }
+                        Toast.makeText(
+                            activity,
+                            if (nextVisible) tr("已显示 Ctrl 快进悬浮键（单击锁定快进，可自由拖动，点击黑边也可显隐）", "Ctrl早送りボタンを表示しました", "Ctrl skip button shown")
+                            else tr("已隐藏 Ctrl 快进悬浮键", "Ctrl早送りボタンを非表示にしました", "Ctrl skip button hidden"),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    3 -> showCheatCodeDialog()
+                    4 -> showBattleQuickDialog()
+                    5 -> showOneClickBoostDialog()
+                    6 -> showEditResourcesDialog(j)
+                    7 -> showEditPartyDialog(j)
+                    8 -> showEditWorldDialog(j)
+                    9 -> showEditCardsDialog()
+                    10 -> {
                         floatingBtn?.visibility = View.GONE
                         Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
                     }

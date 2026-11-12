@@ -1661,4 +1661,22 @@ Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeWriteStreamerMode(
 	return ok ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeSetCtrlSkip(
+	JNIEnv *env, jclass clazz, jboolean jenabled)
+{
+	(void)env;
+	(void)clazz;
+	input_set_touch_ctrl_skip(jenabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeGetCtrlSkip(
+	JNIEnv *env, jclass clazz)
+{
+	(void)env;
+	(void)clazz;
+	return input_get_touch_ctrl_skip() ? JNI_TRUE : JNI_FALSE;
+}
+
 #endif /* __ANDROID__ */

@@ -140,6 +140,13 @@ extern bool keyboard_focus;
 void input_parts_poll_begin(bool allow_press);
 void input_notify_parts_poll(bool allow_press, bool clicking);
 void input_cancel_long_touch(void);
+void input_reset_close_hook(void);
+void input_set_close_hook(bool enabled);
+bool input_get_close_hook(void);
+bool input_has_system_message(void);
+bool input_pop_system_message(int *message);
+void input_set_touch_ctrl_skip(bool enabled);
+bool input_get_touch_ctrl_skip(void);
 
 void handle_window_events(void);
 void handle_events(void);

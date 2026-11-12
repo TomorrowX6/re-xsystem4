@@ -15,6 +15,7 @@ struct parts_texture_backup {
 	uLongf size;
 	int width, height;
 	GLint min_filter, mag_filter, wrap_s, wrap_t;
+	bool opaque;
 	struct parts_texture_backup *next;
 };
 
@@ -27,6 +28,7 @@ static void suspend_texture(struct parts_state *state, Texture *texture)
 	b->target = texture;
 	b->width = texture->w;
 	b->height = texture->h;
+	b->opaque = texture->opaque;
 	glBindTexture(GL_TEXTURE_2D, texture->handle);
 	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &b->min_filter);
 	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &b->mag_filter);
@@ -98,6 +100,7 @@ void parts_state_resume_textures(struct parts_state *state)
 					|| size != (uLongf)b->width * b->height * 4)
 				VM_ERROR("Could not restore a suspended Parts texture");
 			gfx_init_texture_with_pixels(b->target, b->width, b->height, pixels);
+			b->target->opaque = b->opaque;
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, b->min_filter);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, b->mag_filter);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, b->wrap_s);
@@ -109,6 +112,55 @@ void parts_state_resume_textures(struct parts_state *state)
 	}
 	if (state->type == PARTS_ANIMATION && state->anim.nr_frames)
 		state->common.texture = state->anim.frames[state->anim.current_frame];
+}
+
+int parts_copy_texture_pixels(struct parts_state *state, Texture *texture, struct parts_texture_pixels *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (!texture)
+		return 0;
+	if (texture->handle && texture->w > 0 && texture->h > 0) {
+		if ((size_t)texture->w > INT_MAX / 4 / (size_t)texture->h)
+			return -1;
+		out->w = texture->w;
+		out->h = texture->h;
+		out->opaque = texture->opaque;
+		GLint prev_binding = 0;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_binding);
+		glBindTexture(GL_TEXTURE_2D, texture->handle);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &out->min_filter);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &out->mag_filter);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &out->wrap_s);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &out->wrap_t);
+		glBindTexture(GL_TEXTURE_2D, (GLuint)prev_binding);
+		out->rgba = gfx_get_pixels(texture);
+		return out->rgba ? 1 : -1;
+	}
+	if (state) {
+		for (struct parts_texture_backup *b = state->texture_backups; b; b = b->next) {
+			if (b->target == texture && b->width > 0 && b->height > 0) {
+				uLongf raw_size = (uLongf)b->width * b->height * 4;
+				uint8_t *pixels = malloc(raw_size);
+				if (!pixels)
+					return -1;
+				if (uncompress(pixels, &raw_size, b->data, b->size) != Z_OK ||
+				    raw_size != (uLongf)b->width * b->height * 4) {
+					free(pixels);
+					return -1;
+				}
+				out->rgba = pixels;
+				out->w = b->width;
+				out->h = b->height;
+				out->min_filter = b->min_filter;
+				out->mag_filter = b->mag_filter;
+				out->wrap_s = b->wrap_s;
+				out->wrap_t = b->wrap_t;
+				out->opaque = b->opaque;
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
 void parts_state_discard_texture_backups(struct parts_state *state)

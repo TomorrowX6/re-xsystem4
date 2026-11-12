@@ -291,6 +291,7 @@ struct parts_construction_process {
 	struct parts_common common;
 	TAILQ_HEAD(, parts_cp_op) ops;
 	bool needs_build;
+	bool needs_pixel_snapshot;
 };
 
 enum parts_flash_blend_mode {
@@ -720,9 +721,17 @@ void parts_message_window_rebuild_text(struct parts *parts);
 bool parts_message_window_update(struct parts *parts, int passed_time);
 bool parts_state_update(struct parts_state *state, int passed_time);
 struct parts_state *parts_display_state(struct parts *parts);
+struct parts_texture_pixels {
+	uint8_t *rgba;
+	int w, h;
+	GLint min_filter, mag_filter, wrap_s, wrap_t;
+	bool opaque;
+};
+
 void parts_state_reset(struct parts_state *state, enum parts_type type);
 void parts_state_resume_textures(struct parts_state *state);
 void parts_state_discard_texture_backups(struct parts_state *state);
+int parts_copy_texture_pixels(struct parts_state *state, Texture *texture, struct parts_texture_pixels *out);
 bool parts_cg_set(struct parts *parts, struct parts_cg *cg, struct string *cg_name);
 bool parts_cg_set_by_index(struct parts *parts, struct parts_cg *cg, int cg_no);
 void parts_text_append(struct parts *parts, struct parts_text *t, struct string *text);

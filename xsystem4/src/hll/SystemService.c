@@ -14,6 +14,7 @@
  * along with this program; if not, see <http://gnu.org/licenses/>.
  */
 
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -457,9 +458,10 @@ static void SystemService_OpenPlayingManual(void) {
 #endif
 }
 
-//static bool SystemService_IsExistSystemMessage(void);
-HLL_QUIET_UNIMPLEMENTED(false, bool, SystemService, IsExistSystemMessage);
-//static bool SystemService_PopSystemMessage(int *message);
+static bool SystemService_IsExistSystemMessage(void)
+{
+	return input_has_system_message();
+}
 
 static void SystemService_RestrainScreensaver(void) { }
 
@@ -579,6 +581,7 @@ SERVICE_VARIABLE_FUNCTIONS(GameVariable, game_variables)
 
 static void SystemService_ModuleInit(void)
 {
+	input_reset_close_hook();
 	load_window_settings();
 }
 
@@ -589,7 +592,6 @@ static void SystemService_SetAndroidViewKeepScreen(bool keep)
 }
 
 static bool view_resizable_mode = false;
-static bool hook_close_app = false;
 static bool show_mipmap_level = false;
 
 static bool SystemService_GetHideMouseCursorByGame(void)
@@ -676,8 +678,7 @@ static bool SystemService_IsOpenedMutex(struct string *mutex_name)
 
 static bool SystemService_PopSystemMessage(int *message)
 {
-	(void)message;
-	return false;
+	return input_pop_system_message(message);
 }
 
 static bool SystemService_PopSystemMessageString(struct string **message)
@@ -693,12 +694,12 @@ static int SystemService_GetPlatformType(void)
 
 static void SystemService_SetHookCloseApp(bool flag)
 {
-	hook_close_app = flag;
+	input_set_close_hook(flag);
 }
 
 static bool SystemService_IsHookCloseApp(void)
 {
-	return hook_close_app;
+	return input_get_close_hook();
 }
 
 static bool SystemService_SaveScreenshot(struct string *file_name, int x, int y, int width, int height)
@@ -724,29 +725,65 @@ static bool SystemService_RenderToSurfaceImageByScale(struct page **surface, int
 	return false;
 }
 
-static struct string *SystemService_EmptyInfo(void)
+static struct string *SystemService_GetOSInfo(void)
 {
+#if defined(__ANDROID__)
+	return cstr_to_string("Android");
+#elif defined(_WIN32)
+	return cstr_to_string("Windows");
+#elif defined(__linux__)
+	return cstr_to_string("Linux");
+#else
 	return string_ref(&EMPTY_STRING);
+#endif
+}
+
+static struct string *SystemService_GetScreenInfo(void)
+{
+	char buf[64];
+	snprintf(buf, sizeof(buf), "%dx%d", config.view_width, config.view_height);
+	return cstr_to_string(buf);
 }
 
 static void SystemService_GetCPUInfo(struct string **vendor, int *sig, int *flag, struct string **brand)
 {
 	if (vendor) {
 		if (*vendor) free_string(*vendor);
-		*vendor = string_ref(&EMPTY_STRING);
+		*vendor = cstr_to_string("Generic");
 	}
 	if (sig) *sig = 0;
 	if (flag) *flag = 0;
 	if (brand) {
 		if (*brand) free_string(*brand);
-		*brand = string_ref(&EMPTY_STRING);
+		*brand = cstr_to_string("xsystem4");
 	}
 }
 
 static void SystemService_GetMemoryInfo(int *max_mem, int *use_mem)
 {
-	if (max_mem) *max_mem = 0;
-	if (use_mem) *use_mem = 0;
+	int total_mb = SDL_GetSystemRAM();
+	int avail_mb = 0;
+#if !defined(_WIN32)
+	FILE *f = fopen("/proc/meminfo", "r");
+	if (f) {
+		char line[256];
+		long avail_kb = 0;
+		while (fgets(line, sizeof(line), f)) {
+			long v;
+			if (sscanf(line, "MemAvailable: %ld kB", &v) == 1) {
+				avail_kb = v;
+				break;
+			}
+		}
+		fclose(f);
+		if (avail_kb > 0)
+			avail_mb = (int)(avail_kb / 1024);
+	}
+#endif
+	if (max_mem)
+		*max_mem = total_mb > 0 ? total_mb : 0;
+	if (use_mem)
+		*use_mem = (total_mb > 0 && avail_mb > 0 && total_mb > avail_mb) ? (total_mb - avail_mb) : 0;
 }
 
 static int SystemService_Debug_GetUseMemorySize(void)
@@ -818,8 +855,8 @@ HLL_LIBRARY(SystemService,
 	    HLL_EXPORT(RenderToSurfaceImageByScale, SystemService_RenderToSurfaceImageByScale),
 	    HLL_EXPORT(GetCPUInfo, SystemService_GetCPUInfo),
 	    HLL_EXPORT(GetMemoryInfo, SystemService_GetMemoryInfo),
-	    HLL_EXPORT(GetOSInfo, SystemService_EmptyInfo),
-	    HLL_EXPORT(GetScreenInfo, SystemService_EmptyInfo),
+	    HLL_EXPORT(GetOSInfo, SystemService_GetOSInfo),
+	    HLL_EXPORT(GetScreenInfo, SystemService_GetScreenInfo),
 	    HLL_EXPORT(Debug_GetUseMemorySize, SystemService_Debug_GetUseMemorySize),
 	    HLL_EXPORT(Debug_GetUseVideoMemorySize, SystemService_Debug_GetUseVideoMemorySize),
 	    HLL_EXPORT(Debug_SetShowMipmapLevel, SystemService_Debug_SetShowMipmapLevel),
@@ -831,17 +868,12 @@ HLL_LIBRARY(SystemService,
 	    HLL_EXPORT(GetGameViewScaleRate, SystemService_GetGameViewScaleRate),
 	    HLL_EXPORT(MoveMouseCursorPosImmediately, SystemService_MoveMouseCursorPosImmediately),
 	    HLL_EXPORT(SetHideMouseCursorByGame, SystemService_SetHideMouseCursorByGame),
-	    HLL_TODO_EXPORT(GetHideMouseCursorByGame, SystemService_GetHideMouseCursorByGame),
 	    HLL_EXPORT(SetUsePower2Texture, SystemService_SetUsePower2Texture),
-	    HLL_TODO_EXPORT(GetUsePower2Texture, SystemService_GetUsePower2Texture),
 	    HLL_EXPORT(SetAntiAliasingMode, SystemService_SetAntiAliasingMode),
-	    HLL_TODO_EXPORT(GetAntiAliasingMode, SystemService_GetAntiAliasingMode),
 	    HLL_EXPORT(SetWindowSetting, SystemService_SetWindowSetting),
 	    HLL_EXPORT(GetWindowSetting, SystemService_GetWindowSetting),
 	    HLL_EXPORT(SetMouseCursorConfig, SystemService_SetMouseCursorConfig),
 	    HLL_EXPORT(GetMouseCursorConfig, SystemService_GetMouseCursorConfig),
-	    HLL_TODO_EXPORT(RunProgram, SystemService_RunProgram),
-	    HLL_TODO_EXPORT(IsOpenedMutex, SystemService_IsOpenedMutex),
 	    HLL_OVERLOAD(GetGameFolderPath, SystemService_ResolveGameFolder),
 	    HLL_EXPORT(GetDate, get_date),
 	    HLL_EXPORT(GetTime, SystemService_GetTime),
@@ -849,9 +881,7 @@ HLL_LIBRARY(SystemService,
 	    HLL_EXPORT(OpenPlayingManual, SystemService_OpenPlayingManual),
 	    HLL_EXPORT(IsExistPlayingManual, SystemService_IsExistPlayingManual),
 	    HLL_EXPORT(IsExistSystemMessage, SystemService_IsExistSystemMessage),
-	    HLL_TODO_EXPORT(PopSystemMessage, SystemService_PopSystemMessage),
 	    HLL_EXPORT(RestrainScreensaver, SystemService_RestrainScreensaver),
-	    HLL_TODO_EXPORT(Debug_GetUseVideoMemorySize, SystemService_Debug_GetUseVideoMemorySize),
 	    HLL_EXPORT(Rance0123456789, SystemService_Rance0123456789),
 	    HLL_EXPORT(XXXXX01XXXXXXXX, SystemService_XXXXX01XXXXXXXX),
 	    HLL_EXPORT(XXX, SystemService_XXX),

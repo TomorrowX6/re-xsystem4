@@ -14,6 +14,8 @@
  * along with this program; if not, see <http://gnu.org/licenses/>.
  */
 
+#include <stdlib.h>
+#include <zlib.h>
 #include <cglm/cglm.h>
 #include "system4.h"
 #include "system4/string.h"
@@ -26,7 +28,7 @@
 #include "parts_internal.h"
 #include "../hll/iarray.h"
 
-#define CURRENT_SAVE_VERSION 27
+#define CURRENT_SAVE_VERSION 28
 
 static struct parts_context *back_scene;
 
@@ -452,9 +454,142 @@ static struct parts_cp_op *load_parts_cp_op(struct iarray_reader *r, int version
 	return op;
 }
 
-static void save_parts_construction_process(struct iarray_writer *w,
-		struct parts_construction_process *cproc)
+#define CP_PIXELS_MAGIC 0x43505031
+#define CP_PIXELS_LIMIT (64u * 1024u * 1024u)
+
+static bool cp_valid_filter(int v, bool is_min)
 {
+	return v == GL_NEAREST || v == GL_LINEAR ||
+		(is_min && v >= GL_NEAREST_MIPMAP_NEAREST && v <= GL_LINEAR_MIPMAP_LINEAR);
+}
+
+static bool cp_valid_wrap(int v)
+{
+	return v == GL_REPEAT || v == GL_CLAMP_TO_EDGE || v == GL_MIRRORED_REPEAT;
+}
+
+static void save_construction_pixels(struct iarray_writer *w, struct parts_state *state,
+		Texture *texture, bool needed)
+{
+	if (!needed) {
+		iarray_write(w, CP_PIXELS_MAGIC);
+		iarray_write(w, 0);
+		return;
+	}
+	struct parts_texture_pixels image;
+	int got = parts_copy_texture_pixels(state, texture, &image);
+	if (got <= 0) {
+		iarray_write(w, CP_PIXELS_MAGIC);
+		iarray_write(w, 2);
+		return;
+	}
+	size_t bytes = (size_t)image.w * image.h * 4;
+	uLongf size = compressBound(bytes);
+	uint8_t *compressed = malloc(size);
+	if (!compressed || compress2(compressed, &size, image.rgba, bytes, Z_BEST_SPEED) != Z_OK ||
+	    size > CP_PIXELS_LIMIT) {
+		WARNING("Failed to snapshot non-replayable ConstructionProcess texture (%dx%d)", image.w, image.h);
+		free(compressed);
+		free(image.rgba);
+		iarray_write(w, CP_PIXELS_MAGIC);
+		iarray_write(w, 2);
+		return;
+	}
+	iarray_write(w, CP_PIXELS_MAGIC);
+	iarray_write(w, 1);
+	iarray_write(w, image.w);
+	iarray_write(w, image.h);
+	iarray_write(w, image.min_filter);
+	iarray_write(w, image.mag_filter);
+	iarray_write(w, image.wrap_s);
+	iarray_write(w, image.wrap_t);
+	iarray_write(w, image.opaque ? 1 : 0);
+	iarray_write(w, (int)bytes);
+	iarray_write(w, (int)size);
+	iarray_write(w, (int)(uint32_t)crc32(0, image.rgba, bytes));
+	for (size_t i = 0; i < size; i += 4) {
+		uint32_t word = 0;
+		for (unsigned j = 0; j < 4 && i + j < size; j++)
+			word |= (uint32_t)compressed[i + j] << (8 * j);
+		iarray_write(w, (int32_t)word);
+	}
+	free(compressed);
+	free(image.rgba);
+}
+
+static int load_construction_pixels(struct iarray_reader *r, Texture *texture)
+{
+	if (iarray_read(r) != CP_PIXELS_MAGIC)
+		return -1;
+	int present = iarray_read(r);
+	if (r->error || present < 0 || present > 2)
+		return -1;
+	if (present == 0 || present == 2)
+		return present;
+
+	int w = iarray_read(r);
+	int h = iarray_read(r);
+	int min_filter = iarray_read(r);
+	int mag_filter = iarray_read(r);
+	int wrap_s = iarray_read(r);
+	int wrap_t = iarray_read(r);
+	int opaque = iarray_read(r);
+	int bytes = iarray_read(r);
+	int packed = iarray_read(r);
+	uint32_t crc = (uint32_t)iarray_read(r);
+	if (r->error || w < 1 || h < 1 || w > 8192 || h > 8192 || bytes < 1 || packed < 1 ||
+	    (size_t)w * h * 4 > CP_PIXELS_LIMIT || (size_t)bytes != (size_t)w * h * 4 ||
+	    (unsigned)packed > CP_PIXELS_LIMIT || !cp_valid_filter(min_filter, true) ||
+	    !cp_valid_filter(mag_filter, false) || !cp_valid_wrap(wrap_s) || !cp_valid_wrap(wrap_t) ||
+	    ((size_t)packed + 3) / 4 > r->size - r->pos) {
+		return -1;
+	}
+	uint8_t *data = malloc(packed);
+	uint8_t *raw = malloc(bytes);
+	if (!data || !raw) {
+		free(data);
+		free(raw);
+		return -1;
+	}
+	for (int i = 0; i < packed; i += 4) {
+		uint32_t word = (uint32_t)iarray_read(r);
+		for (int j = 0; j < 4 && i + j < packed; j++)
+			data[i + j] = (uint8_t)(word >> (8 * j));
+	}
+	uLongf raw_len = (uLongf)bytes;
+	bool ok = !r->error &&
+		uncompress(raw, &raw_len, data, (uLong)packed) == Z_OK &&
+		raw_len == (uLongf)bytes &&
+		(uint32_t)crc32(0, raw, bytes) == crc;
+	free(data);
+	if (ok) {
+		gfx_delete_texture(texture);
+		gfx_init_texture_with_pixels(texture, w, h, raw);
+		texture->opaque = !!opaque;
+		if (texture->handle) {
+			GLint prev_binding = 0;
+			glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_binding);
+			glBindTexture(GL_TEXTURE_2D, texture->handle);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
+			if (min_filter >= GL_NEAREST_MIPMAP_NEAREST && min_filter <= GL_LINEAR_MIPMAP_LINEAR)
+				glGenerateMipmap(GL_TEXTURE_2D);
+			glBindTexture(GL_TEXTURE_2D, (GLuint)prev_binding);
+		}
+		ok = texture->handle != 0;
+	}
+	free(raw);
+	return ok ? 1 : -1;
+}
+
+static void save_parts_construction_process(struct iarray_writer *w, struct parts *parts,
+		struct parts_state *state, struct parts_construction_process *cproc)
+{
+	if (cproc->needs_pixel_snapshot && cproc->needs_build)
+		parts_build_construction_process(parts, cproc);
+
 	unsigned ops_count_pos = iarray_writer_pos(w);
 	iarray_write(w, 0); // size of ops list
 
@@ -466,17 +601,31 @@ static void save_parts_construction_process(struct iarray_writer *w,
 	}
 
 	iarray_write_at(w, ops_count_pos, ops_count);
+	save_construction_pixels(w, state, &cproc->common.texture, cproc->needs_pixel_snapshot);
 }
 
 static void load_parts_construction_process(struct iarray_reader *r, struct parts *parts,
 		struct parts_construction_process *cproc, int version)
 {
 	int ops_count = iarray_read(r);
+	if (r->error || ops_count < 0 || (unsigned)ops_count > r->size - r->pos) {
+		r->error = 1;
+		return;
+	}
 	for (int i = 0; i < ops_count; i++) {
 		struct parts_cp_op *op = load_parts_cp_op(r, version);
 		parts_add_cp_op(cproc, op);
 	}
-	parts_build_construction_process(parts, cproc);
+	int mode = version >= 28 ? load_construction_pixels(r, &cproc->common.texture) : 0;
+	if (mode < 0) {
+		WARNING("Failed to restore ConstructionProcess pixel snapshot");
+		parts_clear_construction_process(cproc);
+		r->error = 1;
+		return;
+	}
+	if (mode == 0)
+		parts_build_construction_process(parts, cproc);
+	cproc->needs_pixel_snapshot = mode > 0;
 }
 
 static void save_parts_flash(struct iarray_writer *w, struct parts_flash *flash)
@@ -727,7 +876,7 @@ static void load_parts_layout_box(struct iarray_reader *r, struct parts_layout_b
 	lb->padding_right = iarray_read(r);
 }
 
-static void save_parts_state(struct iarray_writer *w, struct parts_state *state)
+static void save_parts_state(struct iarray_writer *w, struct parts *parts, struct parts_state *state)
 {
 	iarray_write(w, state->type);
 	iarray_write(w, state->common.w);
@@ -761,7 +910,7 @@ static void save_parts_state(struct iarray_writer *w, struct parts_state *state)
 		save_parts_gauge(w, &state->gauge);
 		break;
 	case PARTS_CONSTRUCTION_PROCESS:
-		save_parts_construction_process(w, &state->cproc);
+		save_parts_construction_process(w, parts, state, &state->cproc);
 		break;
 	case PARTS_FLASH:
 		save_parts_flash(w, &state->flash);
@@ -900,7 +1049,7 @@ static struct parts_motion *load_parts_motion(struct iarray_reader *r)
 	return motion;
 }
 
-static void save_message_window(struct iarray_writer *w, struct parts_message_window *m)
+static void save_message_window(struct iarray_writer *w, struct parts *parts, struct parts_message_window *m)
 {
 	iarray_write(w, m != NULL);
 	if (!m) return;
@@ -934,7 +1083,7 @@ static void save_message_window(struct iarray_writer *w, struct parts_message_wi
 	iarray_write_float(w, m->speed_rate);
 	iarray_write_text_style(w, &m->label.text.ts);
 	iarray_write(w, m->label.text.line_space);
-	save_parts_state(w, &m->key_wait);
+	save_parts_state(w, parts, &m->key_wait);
 }
 
 static void load_message_window(struct iarray_reader *r, struct parts *parts, int version)
@@ -985,7 +1134,7 @@ static void save_parts(struct iarray_writer *w, struct parts *parts)
 	iarray_write(w, parts->no);
 	iarray_write(w, parts->state);
 	for (int i = 0; i < PARTS_NR_STATES; i++) {
-		save_parts_state(w, &parts->states[i]);
+		save_parts_state(w, parts, &parts->states[i]);
 	}
 
 	save_parts_params(w, &parts->local);
@@ -1048,7 +1197,7 @@ static void save_parts(struct iarray_writer *w, struct parts *parts)
 	}
 
 	iarray_write(w, parts->textures_suspended);
-	save_message_window(w, parts->message_box);
+	save_message_window(w, parts, parts->message_box);
 	iarray_write(w, parts->panel != NULL);
 	if (parts->panel) {
 		iarray_write(w, parts->panel->width);

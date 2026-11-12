@@ -906,6 +906,14 @@ bool parts_build_construction_process(struct parts *parts,
 	cproc->needs_build = false;
 	bool ok = false;
 	bool is_rgb_tex = false;
+	struct parts_cp_op *first_op = TAILQ_FIRST(&cproc->ops);
+	if (first_op && (first_op->type == PARTS_CP_CREATE ||
+	                 first_op->type == PARTS_CP_CREATE_PIXEL_ONLY ||
+	                 first_op->type == PARTS_CP_CG)) {
+		cproc->needs_pixel_snapshot = false;
+	} else if (first_op && cproc->common.texture.handle) {
+		gfx_begin_draw_target(&cproc->common.texture);
+	}
 	struct parts_cp_op *op;
 	TAILQ_FOREACH(op, &cproc->ops, entry) {
 		switch (op->type) {
@@ -1099,6 +1107,7 @@ bool PE_BuildPartsConstructionProcessThread(int parts_no, int state)
 bool parts_clear_construction_process(struct parts_construction_process *cproc)
 {
 	cproc->needs_build = false;
+	cproc->needs_pixel_snapshot = false;
 	while (!TAILQ_EMPTY(&cproc->ops)) {
 		struct parts_cp_op *op = TAILQ_FIRST(&cproc->ops);
 		TAILQ_REMOVE(&cproc->ops, op, entry);
@@ -1113,7 +1122,13 @@ bool PE_ClearPartsConstructionProcess(int parts_no, int state)
 		return false;
 	struct parts *parts = parts_get(parts_no);
 	struct parts_construction_process *cproc = parts_get_construction_process(parts, state);
-	return parts_clear_construction_process(cproc);
+	if (cproc->needs_build)
+		parts_build_construction_process(parts, cproc);
+	bool keep_snapshot = (cproc->common.texture.handle != 0 || parts->textures_suspended) &&
+		(cproc->needs_pixel_snapshot || !TAILQ_EMPTY(&cproc->ops));
+	parts_clear_construction_process(cproc);
+	cproc->needs_pixel_snapshot = keep_snapshot;
+	return true;
 }
 
 bool PE_SetPartsConstructionSurfaceArea(int parts_no, int x, int y, int w, int h, int state)

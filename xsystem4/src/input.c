@@ -17,6 +17,9 @@
 #include <stdbool.h>
 #include <time.h>
 #include <SDL.h>
+#ifdef __ANDROID__
+#include <SDL_system.h>
+#endif
 #include "system4.h"
 #include "queue.h"
 #include "gfx/gfx.h"
@@ -35,6 +38,77 @@
 #endif
 
 bool key_state[VK_NR_KEYCODES];
+static bool hook_close_app = false;
+static unsigned pending_close_requests = 0;
+static uint32_t first_unpopped_close_tick = 0;
+static bool kbd_ctrl_down = false;
+static volatile bool touch_ctrl_skip = false;
+
+void input_reset_close_hook(void)
+{
+	hook_close_app = false;
+	pending_close_requests = 0;
+	first_unpopped_close_tick = 0;
+}
+
+void input_set_close_hook(bool enabled)
+{
+	hook_close_app = enabled;
+	if (!enabled) {
+		pending_close_requests = 0;
+		first_unpopped_close_tick = 0;
+	}
+}
+
+bool input_get_close_hook(void)
+{
+	return hook_close_app;
+}
+
+bool input_has_system_message(void)
+{
+	return pending_close_requests != 0;
+}
+
+bool input_pop_system_message(int *message)
+{
+	if (!message || !pending_close_requests)
+		return false;
+	pending_close_requests--;
+	*message = 7; // AppClosing consumed by SystemService.PopSystemMessage
+	return true;
+}
+
+static bool input_hook_close_request(void)
+{
+	if (!hook_close_app)
+		return false;
+	uint32_t now = SDL_GetTicks();
+	if (pending_close_requests == 0) {
+		pending_close_requests = 1;
+		first_unpopped_close_tick = now;
+		return true;
+	}
+	if ((now - first_unpopped_close_tick) >= 1500)
+		return false;
+	return true;
+}
+
+static void sync_ctrl_key_state(void)
+{
+	key_state[VK_CONTROL] = kbd_ctrl_down || touch_ctrl_skip;
+}
+
+void input_set_touch_ctrl_skip(bool enabled)
+{
+	touch_ctrl_skip = enabled;
+	sync_ctrl_key_state();
+}
+
+bool input_get_touch_ctrl_skip(void)
+{
+	return touch_ctrl_skip;
+}
 static enum sact_keycode sdl_keytable[] = {
 	[SDL_SCANCODE_0] = VK_0,
 	[SDL_SCANCODE_1] = VK_1,
@@ -242,14 +316,15 @@ void input_notify_parts_poll(bool allow_press, bool clicking)
 	}
 }
 
-static uint32_t long_touch_start_timestamp;
-static SDL_FRect long_touch_finger_rect;
-#define LONG_TOUCH_DURATION 1000
-
 void input_cancel_long_touch(void)
 {
-	long_touch_start_timestamp = 0;
 }
+
+static bool multi_touch_active = false;
+static bool two_finger_tap_candidate = false;
+static bool two_finger_scrolled = false;
+static uint32_t two_finger_tap_start_tick = 0;
+#define TWO_FINGER_TAP_MAX_MS 300
 
 static float scroll_gesture_y;
 #define SCROLL_GESTURE_SENSITIVITY 0.02f  // 2% of screen height
@@ -269,6 +344,9 @@ bool key_is_down(enum sact_keycode code)
 	if (code < 0 || code >= VK_NR_KEYCODES) {
 		return false;
 	}
+	if (code == VK_CONTROL && touch_ctrl_skip) {
+		key_state[VK_CONTROL] = true;
+	}
 	bool is_mouse_btn = (code == VK_LBUTTON || code == VK_RBUTTON || code == VK_MBUTTON);
 	bool parts_polling = last_parts_poll_timestamp != 0 &&
 		(SDL_GetTicks() - last_parts_poll_timestamp) < 250;
@@ -287,6 +365,8 @@ void key_clear_flag(bool no_ctrl)
 		mouse_down_unobserved[i] = false;
 		deferred_mouse_release[i] = false;
 	}
+	if (touch_ctrl_skip)
+		key_state[VK_CONTROL] = true;
 }
 
 void mouse_get_pos(int *x, int *y)
@@ -343,7 +423,12 @@ static void key_event(SDL_KeyboardEvent *e, bool pressed)
 {
 	enum sact_keycode code = sdl_to_sact_key(e->keysym.scancode, e->keysym.mod);
 	if (code) {
-		key_state[code] = pressed;
+		if (code == VK_CONTROL) {
+			kbd_ctrl_down = pressed;
+			sync_ctrl_key_state();
+		} else {
+			key_state[code] = pressed;
+		}
 		if (pressed && key_handler)
 			key_handler(code);
 	}
@@ -376,12 +461,21 @@ static void mouse_event(SDL_MouseButtonEvent *e)
 static void synthetic_mouse_event(SDL_MouseButtonEvent *e)
 {
 	if (e->state == SDL_PRESSED) {
-		// Touch outside the viewport is treated as right-click.
-		SDL_Point p = { .x = e->x, .y = e->y };
-		if (SDL_PointInRect(&p, &sdl.viewport))
-			key_state[VK_LBUTTON] = true;
-		else
+		if (e->button == SDL_BUTTON_RIGHT) {
 			key_state[VK_RBUTTON] = true;
+			return;
+		}
+		SDL_Point p = { .x = e->x, .y = e->y };
+		if (SDL_PointInRect(&p, &sdl.viewport)) {
+			key_state[VK_LBUTTON] = true;
+		} else {
+#ifdef __ANDROID__
+			const int COMMAND_TOGGLE_CTRL_OVERLAY = 0x8002;
+			SDL_AndroidSendMessage(COMMAND_TOGGLE_CTRL_OVERLAY, 0);
+#else
+			key_state[VK_RBUTTON] = true;
+#endif
+		}
 	} else {
 		key_state[VK_LBUTTON] = false;
 		key_state[VK_RBUTTON] = false;
@@ -658,8 +752,6 @@ static void pop_deferred_synthetic_mouse_event(uint32_t now)
 	} else {
 		synthetic_mouse_up_observed = false;
 		synthetic_mouse_hover_observed = false;
-		long_touch_start_timestamp = 0;
-		key_state[VK_CONTROL] = false;
 	}
 	nr_deferred_synthetic_mouse_events--;
 	for (int i = 0; i < nr_deferred_synthetic_mouse_events; i++) {
@@ -726,12 +818,6 @@ static void fire_deferred_events(bool from_parts_poll, bool allow_press)
 			}
 		}
 	}
-	// Long touch emulates pressing the Ctrl key.
-	if (long_touch_start_timestamp && nr_deferred_synthetic_mouse_events == 0 &&
-	    long_touch_start_timestamp + LONG_TOUCH_DURATION < now) {
-		key_state[VK_LBUTTON] = false;
-		key_state[VK_CONTROL] = true;
-	}
 
 #ifdef __ANDROID__
 	// Fire the deferred keyboard and text input events.
@@ -777,7 +863,8 @@ static void handle_window_event(SDL_Event *e)
 #ifndef __ANDROID__
 		keyboard_focus = false;
 #endif
-		long_touch_start_timestamp = 0;
+		kbd_ctrl_down = false;
+		touch_ctrl_skip = false;
 		key_state[VK_CONTROL] = false;
 		mixer_set_window_focus(false);
 		break;
@@ -788,18 +875,42 @@ static void handle_window_event(SDL_Event *e)
 	}
 }
 
+static void enqueue_synthetic_mouse_button(const SDL_MouseButtonEvent *btn)
+{
+	if (nr_deferred_synthetic_mouse_events == MAX_DEFERRED_SYNTHETIC_MOUSE_EVENTS) {
+		pop_deferred_synthetic_mouse_event(SDL_GetTicks());
+	}
+	if (nr_deferred_synthetic_mouse_events == 0 && btn->state == SDL_PRESSED) {
+		synthetic_mouse_hover_observed = false;
+		if (!key_state[VK_LBUTTON] && !key_state[VK_RBUTTON]) {
+			synthetic_mouse_x = btn->x;
+			synthetic_mouse_y = btn->y;
+			has_synthetic_mouse_pos = true;
+		}
+	}
+	deferred_synthetic_mouse_events[nr_deferred_synthetic_mouse_events] = *btn;
+	deferred_synthetic_mouse_events[nr_deferred_synthetic_mouse_events].timestamp = SDL_GetTicks();
+	nr_deferred_synthetic_mouse_events++;
+}
+
 void handle_window_events(void)
 {
 	SDL_Event e;
 	while (SDL_PollEvent(&e)) {
 		switch (e.type) {
 		case SDL_QUIT:
+			if (input_hook_close_request())
+				break;
+			savedata_flush_on_background();
 			vm_exit(0);
 			break;
 		case SDL_WINDOWEVENT:
 			handle_window_event(&e);
 			break;
 		case SDL_APP_WILLENTERBACKGROUND:
+			kbd_ctrl_down = false;
+			touch_ctrl_skip = false;
+			key_state[VK_CONTROL] = false;
 			savedata_flush_on_background();
 			break;
 		}
@@ -826,6 +937,9 @@ void handle_events(void)
 	while (SDL_PollEvent(&e)) {
 		switch (e.type) {
 		case SDL_QUIT:
+			if (input_hook_close_request())
+				break;
+			savedata_flush_on_background();
 			vm_exit(0);
 			break;
 		case SDL_WINDOWEVENT:
@@ -835,6 +949,9 @@ void handle_events(void)
 			PE_FlushCGCache();
 			break;
 		case SDL_APP_WILLENTERBACKGROUND:
+			kbd_ctrl_down = false;
+			touch_ctrl_skip = false;
+			key_state[VK_CONTROL] = false;
 			savedata_flush_on_background();
 			break;
 		case SDL_APP_DIDENTERFOREGROUND:
@@ -875,13 +992,15 @@ void handle_events(void)
 		case SDL_MOUSEBUTTONUP:
 		case SDL_MOUSEBUTTONDOWN:
 			if (e.button.which == SDL_TOUCH_MOUSEID) {
+				if (multi_touch_active) {
+					has_last_touch_down_pos = false;
+					break;
+				}
 				if (e.button.state == SDL_PRESSED) {
 					last_touch_down_pos.x = e.button.x;
 					last_touch_down_pos.y = e.button.y;
 					has_last_touch_down_pos = true;
 				} else {
-					long_touch_start_timestamp = 0;
-					key_state[VK_CONTROL] = false;
 					if (has_last_touch_down_pos) {
 						int dx = abs(e.button.x - last_touch_down_pos.x);
 						int dy = abs(e.button.y - last_touch_down_pos.y);
@@ -897,20 +1016,7 @@ void handle_events(void)
 						break;
 					}
 				}
-				if (nr_deferred_synthetic_mouse_events == MAX_DEFERRED_SYNTHETIC_MOUSE_EVENTS) {
-					pop_deferred_synthetic_mouse_event(SDL_GetTicks());
-				}
-				if (nr_deferred_synthetic_mouse_events == 0 && e.button.state == SDL_PRESSED) {
-					synthetic_mouse_hover_observed = false;
-					if (!key_state[VK_LBUTTON] && !key_state[VK_RBUTTON]) {
-						synthetic_mouse_x = e.button.x;
-						synthetic_mouse_y = e.button.y;
-						has_synthetic_mouse_pos = true;
-					}
-				}
-				deferred_synthetic_mouse_events[nr_deferred_synthetic_mouse_events] = e.button;
-				deferred_synthetic_mouse_events[nr_deferred_synthetic_mouse_events].timestamp = SDL_GetTicks();
-				nr_deferred_synthetic_mouse_events++;
+				enqueue_synthetic_mouse_button(&e.button);
 			} else {
 				has_synthetic_mouse_pos = false;
 				mouse_event(&e.button);
@@ -919,42 +1025,68 @@ void handle_events(void)
 		case SDL_MOUSEWHEEL:
 			wheel_dir = e.wheel.y;
 			break;
-		case SDL_FINGERDOWN:
-			if (SDL_GetNumTouchFingers(e.tfinger.touchId) >= 2) {
-				// The user is about to start a multi-touch gesture.
+		case SDL_FINGERDOWN: {
+			int num_fingers = SDL_GetNumTouchFingers(e.tfinger.touchId);
+			if (num_fingers >= 2) {
+				// Multi-touch gesture: cancel single-finger mouse state and
+				// track 2-finger tap (right-click) vs 2-finger scroll.
+				multi_touch_active = true;
 				key_state[VK_LBUTTON] = false;
 				key_state[VK_RBUTTON] = false;
-				key_state[VK_CONTROL] = false;
 				nr_deferred_synthetic_mouse_events = 0;
 				synthetic_mouse_hover_observed = false;
 				synthetic_mouse_down_observed = false;
 				synthetic_mouse_up_observed = true;
 				has_last_touch_down_pos = false;
-				long_touch_start_timestamp = 0;
 				scroll_gesture_y = -1.0f;
-				break;
+				if (num_fingers == 2) {
+					two_finger_tap_candidate = true;
+					two_finger_scrolled = false;
+					two_finger_tap_start_tick = SDL_GetTicks();
+				} else {
+					two_finger_tap_candidate = false;
+				}
+			} else {
+				multi_touch_active = false;
+				two_finger_tap_candidate = false;
 			}
-			long_touch_start_timestamp = SDL_GetTicks();
-			// Movement within this rect (1% of the screen size from the touch
-			// start position) will be ignored.
-			long_touch_finger_rect = (SDL_FRect) {
-				.x = e.tfinger.x - 0.01,
-				.y = e.tfinger.y - 0.01,
-				.w = 0.02,
-				.h = 0.02
-			};
 			break;
+		}
 		case SDL_FINGERMOTION:
-			if (SDL_PointInFRect(&(SDL_FPoint){ e.tfinger.x, e.tfinger.y }, &long_touch_finger_rect))
-				break;
-			// Cancel the timer only if Ctrl emulation has not already started.
-			if (!key_state[VK_CONTROL])
-				long_touch_start_timestamp = 0;
 			break;
-		case SDL_FINGERUP:
-			long_touch_start_timestamp = 0;
-			key_state[VK_CONTROL] = false;
+		case SDL_FINGERUP: {
+			int rem_fingers = SDL_GetNumTouchFingers(e.tfinger.touchId);
+			if (rem_fingers == 0) {
+				if (two_finger_tap_candidate && !two_finger_scrolled &&
+				    (SDL_GetTicks() - two_finger_tap_start_tick) <= TWO_FINGER_TAP_MAX_MS) {
+					int rx = has_synthetic_mouse_pos ? synthetic_mouse_x
+						: (sdl.viewport.x + sdl.viewport.w / 2);
+					int ry = has_synthetic_mouse_pos ? synthetic_mouse_y
+						: (sdl.viewport.y + sdl.viewport.h / 2);
+					if (sdl.viewport.w > 0 && sdl.viewport.h > 0) {
+						rx = max(sdl.viewport.x, min(sdl.viewport.x + sdl.viewport.w - 1, rx));
+						ry = max(sdl.viewport.y, min(sdl.viewport.y + sdl.viewport.h - 1, ry));
+					}
+					SDL_MouseButtonEvent rpress = {
+						.type = SDL_MOUSEBUTTONDOWN,
+						.which = SDL_TOUCH_MOUSEID,
+						.button = SDL_BUTTON_RIGHT,
+						.state = SDL_PRESSED,
+						.clicks = 1,
+						.x = rx,
+						.y = ry,
+					};
+					SDL_MouseButtonEvent rrelease = rpress;
+					rrelease.type = SDL_MOUSEBUTTONUP;
+					rrelease.state = SDL_RELEASED;
+					enqueue_synthetic_mouse_button(&rpress);
+					enqueue_synthetic_mouse_button(&rrelease);
+				}
+				two_finger_tap_candidate = false;
+				two_finger_scrolled = false;
+			}
 			break;
+		}
 		case SDL_MULTIGESTURE:
 			if (e.mgesture.numFingers == 2) {
 				if (scroll_gesture_y < 0.0f)
@@ -963,6 +1095,8 @@ void handle_events(void)
 				if (dy * dy > SCROLL_GESTURE_SENSITIVITY * SCROLL_GESTURE_SENSITIVITY) {
 					wheel_dir = dy < 0 ? 1 : -1;  // Swipe up to scroll down.
 					scroll_gesture_y = e.mgesture.y;
+					two_finger_scrolled = true;
+					two_finger_tap_candidate = false;
 				}
 			}
 			break;

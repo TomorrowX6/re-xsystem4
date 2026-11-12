@@ -11,6 +11,7 @@ object GameModifierBridge {
     private const val PREFS_NAME = "game_modifier_prefs"
     private const val CONFIG_FILE_NAME = "modifier_config.json"
     private const val KEY_FLOATING_ENABLED = "floating_enabled"
+    private const val KEY_CTRL_OVERLAY_VISIBLE = "ctrl_overlay_visible"
     private const val KEY_DISABLE_STREAMER_MODE = "disable_streamer_mode"
     private const val KEY_LOCK_MASK = "lock_mask"
     private const val FULL_UNLOCK_ASSET = "full_unlock_saves.zip"
@@ -87,6 +88,7 @@ object GameModifierBridge {
         }
         return JSONObject().apply {
             put(KEY_FLOATING_ENABLED, prefs.getBoolean(KEY_FLOATING_ENABLED, false))
+            put(KEY_CTRL_OVERLAY_VISIBLE, prefs.getBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
             put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             put(KEY_LOCK_MASK, mask)
         }
@@ -119,6 +121,7 @@ object GameModifierBridge {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
             .putBoolean(KEY_FLOATING_ENABLED, json.optBoolean(KEY_FLOATING_ENABLED, false))
+            .putBoolean(KEY_CTRL_OVERLAY_VISIBLE, json.optBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
             .putBoolean(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             .putInt(KEY_LOCK_MASK, mask)
             .commit()
@@ -131,6 +134,16 @@ object GameModifierBridge {
     fun setFloatingEnabled(context: Context, enabled: Boolean) {
         val json = readConfigJson(context)
         json.put(KEY_FLOATING_ENABLED, enabled)
+        writeConfigJson(context, json)
+    }
+
+    fun isCtrlOverlayVisible(context: Context): Boolean {
+        return readConfigJson(context).optBoolean(KEY_CTRL_OVERLAY_VISIBLE, false)
+    }
+
+    fun setCtrlOverlayVisible(context: Context, visible: Boolean) {
+        val json = readConfigJson(context)
+        json.put(KEY_CTRL_OVERLAY_VISIBLE, visible)
         writeConfigJson(context, json)
     }
 
@@ -338,4 +351,10 @@ object GameModifierBridge {
 
     @JvmStatic
     external fun nativeWriteStreamerMode(configPath: String, enabled: Boolean): Boolean
+
+    @JvmStatic
+    external fun nativeSetCtrlSkip(enabled: Boolean)
+
+    @JvmStatic
+    external fun nativeGetCtrlSkip(): Boolean
 }
