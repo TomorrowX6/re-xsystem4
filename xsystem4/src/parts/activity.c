@@ -409,8 +409,15 @@ static void load_state(struct parts *p, struct ex_tree *tree, int state)
 				item(tree, "左下", 0, 0), item(tree, "左下", 1, 0),
 				item(tree, "右下", 0, 0), item(tree, "右下", 1, 0), state);
 	} else if (!strcmp(kind, "横向计量パーツ")) {
-		PE_SetHGaugeCG(no, str(tree, "ＣＧ名"), state);
+		struct string *cg = str(tree, "ＣＧ名");
+		if (cg->size) PE_SetHGaugeCG(no, cg, state);
+		PE_SetHGaugeReverse(no, !!number(tree, "反转", 0), state);
 		PE_SetHGaugeRate(no, number(tree, "分子", 0), number(tree, "分母", 100), state);
+	} else if (!strcmp(kind, "纵向计量パーツ")) {
+		struct string *cg = str(tree, "ＣＧ名");
+		if (cg->size) PE_SetVGaugeCG(no, cg, state);
+		PE_SetVGaugeReverse(no, !!number(tree, "反转", 0), state);
+		PE_SetVGaugeRate(no, number(tree, "分子", 0), number(tree, "分母", 100), state);
 	} else if (!strcmp(kind, "数字パーツ")) {
 		PE_SetNumeralFont(no, number(tree, "字体类型", 0), number(tree, "字体尺寸", 16),
 				item(tree, "字体色", 0, 255), item(tree, "字体色", 1, 255), item(tree, "字体色", 2, 255),

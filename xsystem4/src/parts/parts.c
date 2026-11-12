@@ -407,9 +407,9 @@ void parts_state_reset(struct parts_state *state, enum parts_type type)
 	case PARTS_VGAUGE:
 		state->gauge.cg_no = -1;
 		state->gauge.cg_name = string_ref(&EMPTY_STRING);
-		state->gauge.rate = 0.0f;
-		state->gauge.numerator = 0.0f;
-		state->gauge.denominator = 1.0f;
+		state->gauge.rate = 1.0f;
+		state->gauge.numerator = 100.0f;
+		state->gauge.denominator = 100.0f;
 		break;
 	case PARTS_3DLAYER:
 		state->layer3d.plugin = -1;
@@ -2026,7 +2026,11 @@ bool PE_SetHGaugeCG(int parts_no, struct string *cg_name, int state)
 
 	struct parts *parts = parts_get(parts_no);
 	struct parts_gauge *g = parts_get_hgauge(parts, state);
-	return parts_gauge_set_cg(parts, g, cg_name);
+	if (!parts_gauge_set_cg(parts, g, cg_name))
+		return false;
+	if (g->rate != 1.0f)
+		parts_hgauge_set_rate(parts, g, g->rate);
+	return true;
 }
 
 bool PE_SetHGaugeCG_by_index(int parts_no, int cg_no, int state)
@@ -2036,7 +2040,11 @@ bool PE_SetHGaugeCG_by_index(int parts_no, int cg_no, int state)
 
 	struct parts *parts = parts_get(parts_no);
 	struct parts_gauge *g = parts_get_hgauge(parts, state);
-	return parts_gauge_set_cg_by_index(parts, g, cg_no);
+	if (!parts_gauge_set_cg_by_index(parts, g, cg_no))
+		return false;
+	if (g->rate != 1.0f)
+		parts_hgauge_set_rate(parts, g, g->rate);
+	return true;
 }
 
 bool PE_SetVGaugeCG(int parts_no, struct string *cg_name, int state)
@@ -2046,7 +2054,11 @@ bool PE_SetVGaugeCG(int parts_no, struct string *cg_name, int state)
 
 	struct parts *parts = parts_get(parts_no);
 	struct parts_gauge *g = parts_get_vgauge(parts, state);
-	return parts_gauge_set_cg(parts, g, cg_name);
+	if (!parts_gauge_set_cg(parts, g, cg_name))
+		return false;
+	if (g->rate != 1.0f)
+		parts_vgauge_set_rate(parts, g, g->rate);
+	return true;
 }
 
 bool PE_SetVGaugeCG_by_index(int parts_no, int cg_no, int state)
@@ -2056,7 +2068,11 @@ bool PE_SetVGaugeCG_by_index(int parts_no, int cg_no, int state)
 
 	struct parts *parts = parts_get(parts_no);
 	struct parts_gauge *g = parts_get_vgauge(parts, state);
-	return parts_gauge_set_cg_by_index(parts, g, cg_no);
+	if (!parts_gauge_set_cg_by_index(parts, g, cg_no))
+		return false;
+	if (g->rate != 1.0f)
+		parts_vgauge_set_rate(parts, g, g->rate);
+	return true;
 }
 
 void parts_hgauge_set_rate(struct parts *parts, struct parts_gauge *g, float rate)
@@ -2065,9 +2081,20 @@ void parts_hgauge_set_rate(struct parts *parts, struct parts_gauge *g, float rat
 		WARNING("HGauge texture uninitialized");
 		return;
 	}
-	int pixels = rate * g->cg.w;
-	gfx_copy_with_alpha_map(&g->common.texture, 0, 0, &g->cg, 0, 0, pixels, g->cg.h);
-	gfx_fill_amap(&g->common.texture, pixels, 0, g->cg.w - pixels, g->cg.h, 0);
+	int w = g->cg.w;
+	int h = g->cg.h;
+	int pixels = max(0, min(w, (int)(rate * w)));
+	if (!g->reverse) {
+		if (pixels > 0)
+			gfx_copy_with_alpha_map(&g->common.texture, 0, 0, &g->cg, 0, 0, pixels, h);
+		if (w - pixels > 0)
+			gfx_fill_amap(&g->common.texture, pixels, 0, w - pixels, h, 0);
+	} else {
+		if (w - pixels > 0)
+			gfx_fill_amap(&g->common.texture, 0, 0, w - pixels, h, 0);
+		if (pixels > 0)
+			gfx_copy_with_alpha_map(&g->common.texture, w - pixels, 0, &g->cg, w - pixels, 0, pixels, h);
+	}
 	parts_dirty(parts);
 	g->rate = rate;
 }
@@ -2078,11 +2105,50 @@ void parts_vgauge_set_rate(struct parts *parts, struct parts_gauge *g, float rat
 		WARNING("VGauge texture uninitialized");
 		return;
 	}
-	int pixels = rate * g->cg.h;
-	gfx_copy_with_alpha_map(&g->common.texture, 0, pixels, &g->cg, 0, pixels, g->cg.w, g->cg.h - pixels);
-	gfx_fill_amap(&g->common.texture, 0, 0, g->cg.w, pixels, 0);
+	int w = g->cg.w;
+	int h = g->cg.h;
+	int pixels = max(0, min(h, (int)(rate * h)));
+	if (!g->reverse) {
+		if (h - pixels > 0)
+			gfx_fill_amap(&g->common.texture, 0, 0, w, h - pixels, 0);
+		if (pixels > 0)
+			gfx_copy_with_alpha_map(&g->common.texture, 0, h - pixels, &g->cg, 0, h - pixels, w, pixels);
+	} else {
+		if (pixels > 0)
+			gfx_copy_with_alpha_map(&g->common.texture, 0, 0, &g->cg, 0, 0, w, pixels);
+		if (h - pixels > 0)
+			gfx_fill_amap(&g->common.texture, 0, pixels, w, h - pixels, 0);
+	}
 	parts_dirty(parts);
 	g->rate = rate;
+}
+
+void PE_SetHGaugeReverse(int parts_no, bool reverse, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+
+	struct parts *parts = parts_get(parts_no);
+	struct parts_gauge *g = parts_get_hgauge(parts, state);
+	if (g->reverse == reverse)
+		return;
+	g->reverse = reverse;
+	if (g->common.texture.handle)
+		parts_hgauge_set_rate(parts, g, g->rate);
+}
+
+void PE_SetVGaugeReverse(int parts_no, bool reverse, int state)
+{
+	if (!parts_state_valid(--state))
+		return;
+
+	struct parts *parts = parts_get(parts_no);
+	struct parts_gauge *g = parts_get_vgauge(parts, state);
+	if (g->reverse == reverse)
+		return;
+	g->reverse = reverse;
+	if (g->common.texture.handle)
+		parts_vgauge_set_rate(parts, g, g->rate);
 }
 
 bool PE_SetHGaugeRate(int parts_no, float numerator, float denominator, int state)

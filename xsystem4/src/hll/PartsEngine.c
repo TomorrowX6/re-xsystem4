@@ -983,13 +983,6 @@ static struct string *PartsEngine_Parts_GetHGaugeCG(int parts_no, int state)
 	return string_dup(p->states[state].gauge.cg_name);
 }
 
-static void PartsEngine_Parts_SetHGaugeReverse(int parts_no, bool enable, int state)
-{
-	if (!parts_state_valid(--state))
-		return;
-	parts_get_hgauge(parts_get(parts_no), state)->reverse = enable;
-}
-
 static bool PartsEngine_Parts_IsHGaugeReverse(int parts_no, int state)
 {
 	if (!parts_state_valid(--state))
@@ -1013,13 +1006,6 @@ static struct string *PartsEngine_Parts_GetVGaugeCG(int parts_no, int state)
 	if (!p || p->states[state].type != PARTS_VGAUGE || !p->states[state].gauge.cg_name)
 		return string_ref(&EMPTY_STRING);
 	return string_dup(p->states[state].gauge.cg_name);
-}
-
-static void PartsEngine_Parts_SetVGaugeReverse(int parts_no, bool enable, int state)
-{
-	if (!parts_state_valid(--state))
-		return;
-	parts_get_vgauge(parts_get(parts_no), state)->reverse = enable;
 }
 
 static bool PartsEngine_Parts_IsVGaugeReverse(int parts_no, int state)
@@ -2707,14 +2693,14 @@ HLL_LIBRARY(PartsEngine,
 	    HLL_EXPORT(Parts_SetHGaugeRate, PE_SetHGaugeRate),
 	    HLL_EXPORT(Parts_GetHGaugeNumerator, PE_GetHGaugeNumerator),
 	    HLL_EXPORT(Parts_GetHGaugeDenominator, PE_GetHGaugeDenominator),
-	    HLL_EXPORT(Parts_SetHGaugeReverse, PartsEngine_Parts_SetHGaugeReverse),
+	    HLL_EXPORT(Parts_SetHGaugeReverse, PE_SetHGaugeReverse),
 	    HLL_EXPORT(Parts_IsHGaugeReverse, PartsEngine_Parts_IsHGaugeReverse),
 	    HLL_EXPORT(Parts_SetVGaugeCG, PE_SetVGaugeCG),
 	    HLL_EXPORT(Parts_GetVGaugeCG, PartsEngine_Parts_GetVGaugeCG),
 	    HLL_EXPORT(Parts_SetVGaugeRate, PE_SetVGaugeRate),
 	    HLL_EXPORT(Parts_GetVGaugeNumerator, PE_GetVGaugeNumerator),
 	    HLL_EXPORT(Parts_GetVGaugeDenominator, PE_GetVGaugeDenominator),
-	    HLL_EXPORT(Parts_SetVGaugeReverse, PartsEngine_Parts_SetVGaugeReverse),
+	    HLL_EXPORT(Parts_SetVGaugeReverse, PE_SetVGaugeReverse),
 	    HLL_EXPORT(Parts_IsVGaugeReverse, PartsEngine_Parts_IsVGaugeReverse),
 	    HLL_EXPORT(Parts_SetHGaugeSurfaceArea, PE_SetHGaugeSurfaceArea),
 	    HLL_EXPORT(GetHGaugeSurfaceArea, PartsEngine_GetHGaugeSurfaceArea),

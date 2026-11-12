@@ -28,7 +28,7 @@
 #include "parts_internal.h"
 #include "../hll/iarray.h"
 
-#define CURRENT_SAVE_VERSION 28
+#define CURRENT_SAVE_VERSION 29
 
 static struct parts_context *back_scene;
 
@@ -192,20 +192,42 @@ static void save_parts_gauge(struct iarray_writer *w, struct parts_gauge *gauge)
 {
 	iarray_write(w, gauge->cg_no);
 	iarray_write_float(w, gauge->rate);
+	iarray_write_float(w, gauge->numerator);
+	iarray_write_float(w, gauge->denominator);
+	iarray_write(w, gauge->reverse);
+	iarray_write_string_or_null(w, gauge->cg_name);
 }
 
 static void load_parts_gauge(struct iarray_reader *r, struct parts *parts,
-		struct parts_gauge *gauge, bool vert)
+		struct parts_gauge *gauge, bool vert, int version)
 {
 	gauge->cg_no = iarray_read(r);
 	gauge->rate = iarray_read_float(r);
+	struct string *cg_name = NULL;
+	if (version >= 29) {
+		gauge->numerator = iarray_read_float(r);
+		gauge->denominator = iarray_read_float(r);
+		gauge->reverse = !!iarray_read(r);
+		cg_name = iarray_read_string_or_null(r);
+	} else {
+		gauge->numerator = gauge->rate * 100.0f;
+		gauge->denominator = 100.0f;
+		gauge->reverse = false;
+	}
 
-	if (gauge->cg_no >= 0)
+	if (cg_name && cg_name->size)
+		parts_gauge_set_cg(parts, gauge, cg_name);
+	else if (gauge->cg_no >= 0)
 		parts_gauge_set_cg_by_index(parts, gauge, gauge->cg_no);
-	if (vert)
-		parts_vgauge_set_rate(parts, gauge, gauge->rate);
-	else
-		parts_hgauge_set_rate(parts, gauge, gauge->rate);
+	if (cg_name)
+		free_string(cg_name);
+
+	if (gauge->common.texture.handle) {
+		if (vert)
+			parts_vgauge_set_rate(parts, gauge, gauge->rate);
+		else
+			parts_hgauge_set_rate(parts, gauge, gauge->rate);
+	}
 }
 
 static void save_parts_cp_op(struct iarray_writer *w, struct parts_cp_op *op)
@@ -957,10 +979,10 @@ static void load_parts_state(struct iarray_reader *r, struct parts *parts,
 		load_parts_numeral(r, parts, &state->num, version);
 		break;
 	case PARTS_HGAUGE:
-		load_parts_gauge(r, parts, &state->gauge, false);
+		load_parts_gauge(r, parts, &state->gauge, false, version);
 		break;
 	case PARTS_VGAUGE:
-		load_parts_gauge(r, parts, &state->gauge, true);
+		load_parts_gauge(r, parts, &state->gauge, true, version);
 		break;
 	case PARTS_CONSTRUCTION_PROCESS:
 		load_parts_construction_process(r, parts, &state->cproc, version);

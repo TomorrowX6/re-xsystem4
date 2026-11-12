@@ -43,6 +43,12 @@ enum emitter_direction_type {
 	EMITTER_DIRECTION_PARENT         = 2,
 	EMITTER_DIRECTION_PARENT_REVERSE = 3,
 	EMITTER_DIRECTION_DISK           = 4,
+	EMITTER_DIRECTION_RADIAL         = 5,
+};
+
+enum emitter_end_pos_type {
+	EMITTER_END_POS_NONE  = 0,
+	EMITTER_END_POS_FIXED = 1,
 };
 
 enum emitter_create_pos_type {
@@ -641,7 +647,7 @@ static struct parts_flat_asset *flat_asset_acquire(struct string *filename)
 		if (fl->libraries[i].type != FLAT_LIB_EMITTER)
 			continue;
 		struct flat_emitter *em = &fl->libraries[i].emitter;
-		if (em->end_pos_type != 0)
+		if (em->end_pos_type < 0 || em->end_pos_type > 1)
 			WARNING("flat: emitter '%s': unsupported end_pos_type %d",
 					display_sjis0(em->library_name->text), em->end_pos_type);
 		if (em->pos_track_mode < 0 || em->pos_track_mode > 2)
@@ -1020,32 +1026,30 @@ static void emitter_interpolate_rotation(float t, struct flat_emitter *em,
 }
 
 static void emitter_calc_create_position(struct flat_emitter *em,
-		struct mt19937 *mt, vec2 out)
+		struct mt19937 *mt, vec3 out)
 {
 	switch (em->create_pos_type) {
 	case EMITTER_CREATE_POS_RECT:
 		out[0] = mt_next_signed(mt) * em->create_pos_length;
 		out[1] = mt_next_signed(mt) * em->create_pos_length2;
+		out[2] = 0.0f;
 		return;
-	case EMITTER_CREATE_POS_SPHERE: {
-		vec3 v;
-		random_unit_vec3(mt, v);
-		out[0] = v[0];
-		out[1] = v[1];
+	case EMITTER_CREATE_POS_SPHERE:
+		random_unit_vec3(mt, out);
 		break;
-	}
 	case EMITTER_CREATE_POS_CIRCLE:
 		out[0] = mt_next_signed(mt);
 		out[1] = mt_next_signed(mt);
-		glm_vec2_normalize(out);
+		out[2] = 0.0f;
+		glm_vec3_normalize(out);
 		break;
 	default:
-		glm_vec2_zero(out);
+		glm_vec3_zero(out);
 		break;
 	}
 	float dist = mt_next(mt) * (em->create_pos_length - em->create_pos_length2)
 			+ em->create_pos_length2;
-	glm_vec2_scale(out, dist, out);
+	glm_vec3_scale(out, dist, out);
 }
 
 // 3D rejection sampling:
@@ -1069,7 +1073,7 @@ static void randomize_direction_within_cone(vec3 v, float angle_deg, struct mt19
 }
 
 static void emitter_calc_direction(struct flat_emitter *em,
-		struct mt19937 *mt, vec2 parent_vel, vec2 out)
+		struct mt19937 *mt, vec2 parent_vel, vec3 create_pos, vec2 out)
 {
 	vec3 dir;
 	switch (em->direction_type) {
@@ -1098,12 +1102,16 @@ static void emitter_calc_direction(struct flat_emitter *em,
 		glm_vec3_rotate(dir, phi, normal);
 		break;
 	}
+	case EMITTER_DIRECTION_RADIAL:
+		glm_vec3_copy(create_pos, dir);
+		break;
 	case EMITTER_DIRECTION_FIXED:
 	default:
 		glm_vec3_copy((vec3){ em->direction_x, em->direction_y, em->direction_z }, dir);
 		break;
 	}
-	randomize_direction_within_cone(dir, em->direction_angle, mt);
+	if (em->direction_type != EMITTER_DIRECTION_RADIAL)
+		randomize_direction_within_cone(dir, em->direction_angle, mt);
 	// Project to 2D by dropping Z without renormalizing in 2D, so
 	// directions tilted out of the XY plane translate to slower
 	// on-screen motion.
@@ -1112,8 +1120,8 @@ static void emitter_calc_direction(struct flat_emitter *em,
 	out[1] = dir[1];
 }
 
-static void emitter_calc_trajectory(int age, struct flat_emitter *em,
-		vec2 dir, int fps, float move_rand_factor, vec2 out)
+static float emitter_calc_displacement(int age, struct flat_emitter *em,
+		int fps, float move_rand_factor)
 {
 	float t = (float)age / fps;
 	float accel = em->acceleration * move_rand_factor;
@@ -1138,6 +1146,105 @@ static void emitter_calc_trajectory(int age, struct flat_emitter *em,
 		else
 			displacement += move_length * norm_t;
 	}
+	return displacement;
+}
+
+static void eval_quadratic_bezier_arclen(vec2 p0, vec2 p1, vec2 p2, int step_idx, vec2 out)
+{
+	if (step_idx > 1024) {
+		glm_vec2_zero(out);
+		return;
+	}
+	vec2 pts[1024];
+	const float inv_1024 = 1.0f / 1024.0f;
+	for (int k = 0; k < 1024; k++) {
+		float s = (float)k * inv_1024;
+		float om = 1.0f - s;
+		float b0 = om * om;
+		float b1 = 2.0f * s * om;
+		float b2 = s * s;
+		pts[k][0] = b0 * p0[0] + b1 * p1[0] + b2 * p2[0];
+		pts[k][1] = b0 * p0[1] + b1 * p1[1] + b2 * p2[1];
+	}
+
+	float seg_lens[1023];
+	float total_len = 0.0f;
+	for (int k = 0; k < 1023; k++) {
+		float dx = pts[k + 1][0] - pts[k][0];
+		float dy = pts[k + 1][1] - pts[k][1];
+		seg_lens[k] = sqrtf(dx * dx + dy * dy);
+		total_len += seg_lens[k];
+	}
+
+	float unit_len = total_len * inv_1024;
+	float target_len = (float)step_idx * unit_len;
+	float accum = 0.0f;
+	for (int k = 0; k < 1023; k++) {
+		accum += seg_lens[k];
+		if (target_len == accum) {
+			glm_vec2_copy(pts[k + 1], out);
+			return;
+		}
+		if (accum > target_len) {
+			if (k == 1022 || unit_len == 0.0f || (pts[k][0] == 0.0f && pts[k][1] == 0.0f)) {
+				glm_vec2_copy(pts[k + 1], out);
+			} else {
+				float frac = (target_len - accum) / unit_len;
+				out[0] = pts[k + 1][0] + (pts[k][0] - pts[k + 1][0]) * frac;
+				out[1] = pts[k + 1][1] + (pts[k][1] - pts[k + 1][1]) * frac;
+			}
+			return;
+		}
+	}
+	glm_vec2_zero(out);
+}
+
+static void emitter_calc_trajectory(int age, struct flat_emitter *em,
+		vec2 dir, vec3 create_pos, vec2 track_pos,
+		int fps, float pixels_per_meter, float move_rand_factor, vec2 out)
+{
+	if (em->end_pos_type == EMITTER_END_POS_FIXED && pixels_per_meter != 0.0f) {
+		float end_disp = emitter_calc_displacement(em->particle_lifetime, em, fps, move_rand_factor);
+		vec2 create_px = {
+			create_pos[0] * pixels_per_meter,
+			create_pos[1] * pixels_per_meter,
+		};
+		vec2 p0 = {
+			track_pos[0] + create_px[0],
+			track_pos[1] + create_px[1],
+		};
+		vec2 p1 = {
+			p0[0] + dir[0] * end_disp * pixels_per_meter,
+			p0[1] + dir[1] * end_disp * pixels_per_meter,
+		};
+		vec2 p2 = { em->end_pos_x, em->end_pos_y };
+		if (em->pos_track_mode == 1) {
+			p2[0] += track_pos[0];
+			p2[1] += track_pos[1];
+		}
+
+		float u = em->particle_lifetime > 0
+				? max(0.0f, min(1.0f, (float)age / em->particle_lifetime))
+				: 0.0f;
+		float accel = em->acceleration * move_rand_factor;
+		float norm_s;
+		if (accel > 0.0f) {
+			norm_s = u * u;
+		} else if (accel < 0.0f) {
+			float om = 1.0f - u;
+			norm_s = 1.0f - om * om;
+		} else {
+			norm_s = u;
+		}
+		int step_idx = (int)(norm_s * 1024.0f);
+		vec2 b_pos;
+		eval_quadratic_bezier_arclen(p0, p1, p2, step_idx, b_pos);
+		out[0] = (b_pos[0] - create_px[0] - track_pos[0]) / pixels_per_meter;
+		out[1] = (b_pos[1] - create_px[1] - track_pos[1]) / pixels_per_meter;
+		return;
+	}
+
+	float displacement = emitter_calc_displacement(age, em, fps, move_rand_factor);
 	glm_vec2_scale(dir, displacement, out);
 }
 
@@ -1264,6 +1371,23 @@ void parts_flat_foreach_emitter_particle(struct parts_flat *f, int emitter_lib_i
 		}
 	}
 
+	vec2 track_pos = { 0, 0 };
+	if (em->end_pos_type == EMITTER_END_POS_FIXED) {
+		if (em->pos_track_mode == 1) {
+			const struct flat_key_data_graphic *cur = parts_flat_key(timeline, birth_frame + age, instance);
+			if (cur) {
+				track_pos[0] = cur->pos_x;
+				track_pos[1] = cur->pos_y;
+			}
+		} else if (em->pos_track_mode == 2) {
+			const struct flat_key_data_graphic *birth = parts_flat_key(timeline, birth_frame, instance);
+			if (birth) {
+				track_pos[0] = birth->pos_x;
+				track_pos[1] = birth->pos_y;
+			}
+		}
+	}
+
 	struct mt19937 mt;
 	mt19937_init(&mt, (uint32_t)em->rand_seed * (uint32_t)(birth_frame + 1));
 
@@ -1275,14 +1399,15 @@ void parts_flat_foreach_emitter_particle(struct parts_flat *f, int emitter_lib_i
 	for (int i = 0; i < count; i++) {
 		struct flat_emitter_particle p;
 		emitter_interpolate_scale(t, em, &mt, p.scale);
-		vec2 create_pos;
+		vec3 create_pos;
 		emitter_calc_create_position(em, &mt, create_pos);
 		emitter_interpolate_rotation(t, em, &mt, p.rot);
 		vec2 dir;
-		emitter_calc_direction(em, &mt, parent_vel, dir);
+		emitter_calc_direction(em, &mt, parent_vel, create_pos, dir);
 		float move_rand_factor = 1.0f - (mt_next(&mt) - 0.5f) * em->move_rand * 0.01f;
 		vec2 traj;
-		emitter_calc_trajectory(age, em, dir, fps, move_rand_factor, traj);
+		emitter_calc_trajectory(age, em, dir, create_pos, track_pos,
+				fps, pixels_per_meter, move_rand_factor, traj);
 
 		if (em->align_to_direction && (dir[0] != 0 || dir[1] != 0))
 			p.rot[2] += glm_deg(atan2f(dir[1], dir[0])) + 90;
