@@ -34,6 +34,7 @@
 #include "system4/savefile.h"
 #include "system4/string.h"
 
+#include "modifier.h"
 #include "savedata.h"
 #include "vm.h"
 #include "vm/heap.h"
@@ -933,8 +934,10 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		free(path);
 		retval = load_globals_from_gsave(save, keyname, group_name, n);
 		gsave_free(save);
-		if (retval)
+		if (retval) {
 			track_global_save(keyname, filename, group_name);
+			modifier_on_globals_loaded();
+		}
 		return retval;
 	}
 	if (error == SAVEFILE_INVALID_SIGNATURE) {
@@ -943,6 +946,7 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		if (retval) {
 			free(path);
 			track_global_save(keyname, filename, group_name);
+			modifier_on_globals_loaded();
 			return retval;
 		}
 	} else {
@@ -962,8 +966,10 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 			free(path);
 			retval = load_globals_from_gsave(bak_save, keyname, group_name, n);
 			gsave_free(bak_save);
-			if (retval)
+			if (retval) {
 				track_global_save(keyname, filename, group_name);
+				modifier_on_globals_loaded();
+			}
 			return retval;
 		}
 	}

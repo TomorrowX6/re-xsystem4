@@ -55,6 +55,7 @@ static GLuint pass_tex1 = 0;
 static int pass_draw_filter = -1;
 static int pass_use_clipper = -1;
 static bool pass_blend_enabled = true;
+static bool pass_flash_blend = false;
 static int pass_clip_no = 0;
 static uint64_t pass_clip_gen = 0;
 static struct parts_context *pass_clip_ctx = NULL;
@@ -130,9 +131,17 @@ void parts_render_pass_end(void)
 	glUseProgram(0);
 }
 
-void parts_render_pass_rebind(void)
+bool parts_render_pass_suspend(void)
 {
-	if (parts_pass_active)
+	if (!parts_pass_active)
+		return false;
+	parts_render_pass_end();
+	return true;
+}
+
+void parts_render_pass_resume(bool was_active)
+{
+	if (was_active)
 		parts_render_pass_begin();
 }
 
@@ -210,7 +219,6 @@ static bool get_alpha_clipper_info(int alpha_clipper, GLuint *tex_out, vec4 **in
 		struct parts_state *c_state = &clipper->states[clipper->state];
 		if (c_state->type == PARTS_CONSTRUCTION_PROCESS && c_state->cproc.needs_build && !clipper->textures_suspended) {
 			parts_build_construction_process(clipper, &c_state->cproc);
-			parts_render_pass_rebind();
 		}
 		struct parts_common *c_common = &c_state->common;
 		mat4 clip_mw;
@@ -270,7 +278,7 @@ static void parts_render_texture(struct texture *texture, mat4 mw_transform, Rec
 	sub_mw[2][2] = 0.0f;
 	sub_mw[3][2] = 0.0f;
 
-	bool want_blend = !(texture->opaque && blend_rate >= 1.0f &&
+	bool want_blend = pass_flash_blend || !(texture->opaque && blend_rate >= 1.0f &&
 			draw_filter == PARTS_DRAW_FILTER_NORMAL && !has_clipper);
 	if (want_blend != pass_blend_enabled) {
 		if (want_blend)
@@ -866,15 +874,19 @@ static void parts_render_flash(struct parts *parts, struct parts_flash *f)
 			pass_draw_filter = PARTS_DRAW_FILTER_NORMAL;
 		}
 		// set blend mode
+		pass_flash_blend = false;
 		switch (obj->blend_mode) {
 		case PARTS_FLASH_BLEND_MULTIPLY:
 			glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE);
+			pass_flash_blend = true;
 			break;
 		case PARTS_FLASH_BLEND_SCREEN:
 			glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ZERO, GL_ONE);
+			pass_flash_blend = true;
 			break;
 		case PARTS_FLASH_BLEND_ADD:
 			glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
+			pass_flash_blend = true;
 			break;
 		default:
 			break;
@@ -890,6 +902,7 @@ static void parts_render_flash(struct parts *parts, struct parts_flash *f)
 		default:
 			ERROR("unknown tag %d", tag->type);
 		}
+		pass_flash_blend = false;
 		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 	}
 }
@@ -1058,7 +1071,6 @@ static void parts_render_state(struct parts *parts, struct parts_state *state)
 			if (!parts_cg_on_screen(parts, &state->common))
 				break;
 			parts_build_construction_process(parts, &state->cproc);
-			parts_render_pass_rebind();
 		}
 		if (state->common.texture.handle)
 			parts_render_cg(parts, &state->common);

@@ -22,6 +22,7 @@
 #include "system4/utfsjis.h"
 
 #include "xsystem4.h"
+#include "gfx/gl.h"
 #include "vm.h"
 #include "asset_manager.h"
 #include "parts.h"
@@ -904,6 +905,10 @@ bool parts_build_construction_process(struct parts *parts,
 {
 	parts_frame_did_heavy_load = true;
 	cproc->needs_build = false;
+	bool resume_pass = parts_render_pass_suspend();
+	glEnable(GL_BLEND);
+	glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
 	bool ok = false;
 	bool is_rgb_tex = false;
 	struct parts_cp_op *first_op = TAILQ_FIRST(&cproc->ops);
@@ -1039,6 +1044,7 @@ done:
 	gfx_end_draw_target();
 	if (ok && is_rgb_tex)
 		cproc->common.texture.opaque = true;
+	parts_render_pass_resume(resume_pass);
 	return ok;
 }
 

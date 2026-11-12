@@ -114,8 +114,12 @@ class GameModifierActivity : Activity() {
         streamerSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (updatingSwitches) return@setOnCheckedChangeListener
             GameModifierBridge.setDisableStreamerModeEnabled(this, isChecked)
-            if (!isGameProcessRunning(this) && ::currentTarget.isInitialized) {
-                GameModifierBridge.writeStreamerModeForDir(currentTarget.saveDir, !isChecked)
+            if (!isGameProcessRunning(this)) {
+                if (targets.isNotEmpty()) {
+                    targets.forEach { GameModifierBridge.writeStreamerModeForDir(it.saveDir, !isChecked) }
+                } else if (::currentTarget.isInitialized) {
+                    GameModifierBridge.writeStreamerModeForDir(currentTarget.saveDir, !isChecked)
+                }
             }
             refreshSummaryText()
             Toast.makeText(

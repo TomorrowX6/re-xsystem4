@@ -25,11 +25,13 @@
 #include "modifier.h"
 #include "parts.h"
 #include "savedata.h"
+#include "xsystem4.h"
 
 extern bool key_state[VK_NR_KEYCODES];
 static int s_pulse_key0_frames = 0;
 static char *s_pending_cheat_gbk = NULL;
 static int s_cheat_wait_frames = 0;
+static bool s_pending_clear_card_cache = false;
 
 /* Lock bitmask flags */
 #define LOCK_PARTY_MAX_HP       (1 << 0)
@@ -55,13 +57,13 @@ static int s_cheat_wait_frames = 0;
 
 static pthread_mutex_t g_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_live_lock_mask = LOCK_DISABLE_STREAMER_MODE;
+static bool g_force_refresh_streamer_off = false;
 static char *g_pending_action_json = NULL;
 static char *g_cached_live_state_json = NULL;
 
 /* =========================================================================
- * Out-of-Game gsave (.asd) Helpers
+ * Cross-Platform & Out-of-Game gsave (.asd) Helpers
  * ========================================================================= */
-#ifdef __ANDROID__
 
 static struct gsave_global *gs_find_global(struct gsave *gs, const char *name1, const char *name2)
 {
@@ -92,6 +94,67 @@ static struct gsave_keyval *gs_get_record_kv(struct gsave *gs, int32_t rec_idx, 
 	}
 	return NULL;
 }
+
+static bool write_game_config_streamer_mode(const char *config_path, bool streamer_mode_enabled)
+{
+	if (!config_path || !config_path[0] || !file_exists(config_path))
+		return false;
+	bool prev_gbk = sys4_text_is_gbk;
+	if (!ain)
+		sys4_set_text_gbk(true);
+	enum savefile_error serr;
+	struct gsave *gs = gsave_read(config_path, &serr);
+	if (!gs) {
+		if (!ain)
+			sys4_set_text_gbk(prev_gbk);
+		return false;
+	}
+	struct gsave_global *g_cfg = gs_find_global(gs, "g_gameConfig", NULL);
+	int32_t cfg_rec = g_cfg ? g_cfg->value : -1;
+	struct gsave_keyval *kv = (cfg_rec >= 0) ? gs_get_record_kv(gs, cfg_rec, "m_isSummaryMode", NULL) : NULL;
+	if (!kv) {
+		gsave_free(gs);
+		if (!ain)
+			sys4_set_text_gbk(prev_gbk);
+		return false;
+	}
+	int32_t target = streamer_mode_enabled ? 1 : 0;
+	if (kv->value == target) {
+		gsave_free(gs);
+		if (!ain)
+			sys4_set_text_gbk(prev_gbk);
+		return true;
+	}
+	kv->value = target;
+
+	char *tmp_path = NULL;
+	FILE *fp = atomic_save_open(config_path, "wb", &tmp_path);
+	bool ok = false;
+	if (fp) {
+		if (gsave_write(gs, fp, false, 1) == SAVEFILE_SUCCESS &&
+		    atomic_save_commit(fp, config_path, tmp_path, true))
+			ok = true;
+		else
+			atomic_save_abort(fp, tmp_path);
+	}
+	gsave_free(gs);
+	if (!ain)
+		sys4_set_text_gbk(prev_gbk);
+	return ok;
+}
+
+static void persist_streamer_mode_to_savedir(bool streamer_mode_enabled)
+{
+	if (!config.save_dir || !config.save_dir[0])
+		return;
+	char *cfg_path = savedir_path("GameConfig.asd");
+	if (!cfg_path)
+		return;
+	write_game_config_streamer_mode(cfg_path, streamer_mode_enabled);
+	free(cfg_path);
+}
+
+#ifdef __ANDROID__
 
 static int32_t gs_get_field_int(struct gsave *gs, int32_t rec_idx, const char *name1, const char *name2, int32_t def_val)
 {
@@ -644,46 +707,22 @@ static bool write_global_save_mod_str(const char *global_path, const char *colle
 
 static int read_game_config_streamer_mode(const char *config_path)
 {
-	if (!config_path || !config_path[0]) return -1;
-	sys4_set_text_gbk(true);
+	if (!config_path || !config_path[0] || !file_exists(config_path)) return -1;
+	bool prev_gbk = sys4_text_is_gbk;
+	if (!ain) sys4_set_text_gbk(true);
 	enum savefile_error serr;
 	struct gsave *gs = gsave_read(config_path, &serr);
-	if (!gs) return -1;
+	if (!gs) {
+		if (!ain) sys4_set_text_gbk(prev_gbk);
+		return -1;
+	}
 	struct gsave_global *g_cfg = gs_find_global(gs, "g_gameConfig", NULL);
 	int32_t cfg_rec = g_cfg ? g_cfg->value : -1;
 	int32_t val = gs_get_field_int(gs, cfg_rec, "m_isSummaryMode", NULL, -1);
 	gsave_free(gs);
+	if (!ain) sys4_set_text_gbk(prev_gbk);
 	if (val < 0) return -1;
 	return val != 0 ? 1 : 0;
-}
-
-static bool write_game_config_streamer_mode(const char *config_path, bool streamer_mode_enabled)
-{
-	if (!config_path || !config_path[0]) return false;
-	sys4_set_text_gbk(true);
-	enum savefile_error serr;
-	struct gsave *gs = gsave_read(config_path, &serr);
-	if (!gs) return false;
-	struct gsave_global *g_cfg = gs_find_global(gs, "g_gameConfig", NULL);
-	int32_t cfg_rec = g_cfg ? g_cfg->value : -1;
-	if (cfg_rec < 0 || !gs_get_record_kv(gs, cfg_rec, "m_isSummaryMode", NULL)) {
-		gsave_free(gs);
-		return false;
-	}
-	gs_set_field_int(gs, cfg_rec, "m_isSummaryMode", NULL, streamer_mode_enabled ? 1 : 0);
-
-	char *tmp_path = NULL;
-	FILE *fp = atomic_save_open(config_path, "wb", &tmp_path);
-	bool ok = false;
-	if (fp) {
-		if (gsave_write(gs, fp, false, 1) == SAVEFILE_SUCCESS &&
-		    atomic_save_commit(fp, config_path, tmp_path, true))
-			ok = true;
-		else
-			atomic_save_abort(fp, tmp_path);
-	}
-	gsave_free(gs);
-	return ok;
 }
 
 #endif /* __ANDROID__ */
@@ -692,12 +731,16 @@ static bool write_game_config_streamer_mode(const char *config_path, bool stream
  * Live In-Game VM Memory Helpers (Executed on VM Thread in modifier_on_frame)
  * ========================================================================= */
 
-static bool vm_is_ready(void)
+static bool vm_globals_ready(void)
 {
 	return ain != NULL && heap != NULL && heap_size > 0 &&
 	       heap[0].ref > 0 && heap[0].page != NULL &&
-	       heap[0].page->type == GLOBAL_PAGE &&
-	       call_stack_ptr > 0;
+	       heap[0].page->type == GLOBAL_PAGE;
+}
+
+static bool vm_is_ready(void)
+{
+	return vm_globals_ready() && call_stack_ptr > 0;
 }
 
 static struct page *vm_safe_get_page(int slot)
@@ -709,7 +752,7 @@ static struct page *vm_safe_get_page(int slot)
 
 static int vm_find_global_idx(const char *name1, const char *name2)
 {
-	if (!vm_is_ready() || !ain->globals) return -1;
+	if (!vm_globals_ready() || !ain->globals) return -1;
 	for (int i = 0; i < ain->nr_globals; i++) {
 		const char *n1 = ain->globals[i].name;
 		const char *n2 = ain->globals[i].name2;
@@ -783,21 +826,164 @@ static void vm_set_player_info_name(struct page *gc, const char *gbk_str)
 	}
 }
 
-static void vm_queue_cheat_code_gbk(const char *gbk_str)
+static int vm_clear_array_slot(int slot)
 {
-	if (!gbk_str || !gbk_str[0]) return;
-	free(s_pending_cheat_gbk);
-	s_pending_cheat_gbk = strdup(gbk_str);
-	s_cheat_wait_frames = 180;
+	struct page *old = vm_safe_get_page(slot);
+	if (!old || old->type != ARRAY_PAGE || old->nr_vars <= 0)
+		return 0;
+	int cleared = old->nr_vars;
+	struct page *empty = NULL;
+	if (ain && ain->version >= 11) {
+		empty = alloc_page(ARRAY_PAGE, old->a_type, 0);
+		empty->array = old->array;
+	}
+	for (int i = 0; i < old->nr_vars; i++) {
+		variable_fini(old->values[i], variable_type(old, i, NULL, NULL), false);
+	}
+	free_page(old);
+	heap_set_page(slot, empty);
+	return cleared;
+}
+
+static int vm_clear_kvmap_field(struct page *cache_sub, const char *map_field)
+{
+	if (!cache_sub || cache_sub->type != STRUCT_PAGE)
+		return 0;
+	struct page *kvmap = vm_get_field_page(cache_sub, map_field, NULL);
+	if (!kvmap || kvmap->type != STRUCT_PAGE)
+		return 0;
+	union vm_value *m_data = vm_get_struct_member(kvmap, "m_data", NULL);
+	if (!m_data)
+		return 0;
+	return vm_clear_array_slot(m_data->i);
+}
+
+static bool vm_is_in_card_cache_callstack(void)
+{
+	if (!ain || !ain->functions || call_stack_ptr <= 0)
+		return false;
+	for (int i = 0; i < call_stack_ptr; i++) {
+		int32_t fno = call_stack[i].fno;
+		if (fno < 0 || fno >= ain->nr_functions)
+			continue;
+		const char *fn = ain->functions[fno].name;
+		if (!fn)
+			continue;
+		if (!strncmp(fn, "CardCache@", 10) ||
+		    !strncmp(fn, "CardConstruct", 13) ||
+		    !strncmp(fn, "KeyValueMap<", 12)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * g_cardCache (global[286], group = -1) caches constructed CAS process arrays
+ * across the entire process lifetime — even across returning to title or
+ * loading another save! When m_isSummaryMode was 1, nude cards cached white
+ * streamer curtains ('卡牌／主播') in Front.m_procCardBasic, FrontItem,
+ * BackCard, BackCardListInfo, etc. Clearing those KeyValueMap m_data arrays
+ * forces immediate reconstruction with uncensored CGs.
+ */
+static int vm_clear_card_cache(void)
+{
+	struct page *cc = vm_get_global_page("g_cardCache", NULL);
+	if (!cc || cc->type != STRUCT_PAGE)
+		return 0;
+	if (vm_is_in_card_cache_callstack()) {
+		s_pending_clear_card_cache = true;
+		return 0;
+	}
+	s_pending_clear_card_cache = false;
+	int total = 0;
+	struct page *front = vm_get_field_page(cc, "Front", NULL);
+	total += vm_clear_kvmap_field(front, "m_procOrg");
+	total += vm_clear_kvmap_field(front, "m_procCardBasic");
+	total += vm_clear_kvmap_field(vm_get_field_page(cc, "FrontItem", NULL), "m_proc");
+	total += vm_clear_kvmap_field(vm_get_field_page(cc, "FrontExtra", NULL), "m_proc");
+	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackSkill", NULL), "m_proc");
+	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackCard", NULL), "m_proc");
+	total += vm_clear_kvmap_field(vm_get_field_page(cc, "BackCardListInfo", NULL), "m_proc");
+	return total;
+}
+
+static void vm_set_streamer_mode(int enabled, bool persist_disk, bool force_clear_cache)
+{
+	int target = enabled ? 1 : 0;
+	bool changed = false;
+	struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
+	if (cfg) {
+		int32_t prev = vm_get_field_int(cfg, "m_isSummaryMode", NULL, -1);
+		if (prev != target) {
+			vm_set_field_int(cfg, "m_isSummaryMode", NULL, target);
+			changed = true;
+		}
+	}
+	if (changed || force_clear_cache) {
+		vm_clear_card_cache();
+	}
+	if (persist_disk) {
+		persist_streamer_mode_to_savedir(target != 0);
+	}
+}
+
+void modifier_on_globals_loaded(void)
+{
+	if (!vm_globals_ready())
+		return;
+	pthread_mutex_lock(&g_mod_mutex);
+	int mask = g_live_lock_mask;
+	pthread_mutex_unlock(&g_mod_mutex);
+	if (mask & LOCK_DISABLE_STREAMER_MODE) {
+		vm_set_streamer_mode(0, true, false);
+	}
+}
+
+static int32_t vm_get_tt(int idx, int32_t def_val)
+{
+	struct page *tt = vm_get_global_page("tt", NULL);
+	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return def_val;
+	return tt->values[idx].i;
+}
+
+static void vm_set_tt(int idx, int32_t val)
+{
+	struct page *tt = vm_get_global_page("tt", NULL);
+	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return;
+	tt->values[idx].i = val;
+}
+
+/*
+ * In 日不落 MOD, Scenes::RunCharacterSetting gates almost all cheat codes behind
+ * tt[1224] == 1 (which challenge modes / base phase A reset to 0, showing
+ * "作弊码禁用！当前状态或模式下无法使用！"). Setting tt[1224] = 1 unlocks the gate
+ * cleanly without wiping the player's tt[6655] bonus score to -99999.
+ */
+static void vm_unlock_mod_cheat_gate(void)
+{
+	struct page *tt = vm_get_global_page("tt", NULL);
+	if (tt && tt->type == ARRAY_PAGE && tt->nr_vars > 1224) {
+		tt->values[1224].i = 1;
+	}
 }
 
 static void vm_queue_cheat_code_utf8(const char *utf8_str)
 {
 	if (!utf8_str || !utf8_str[0]) return;
-	if (!strcmp(utf8_str, "灌注Eins陈谢谢喵") || !strcmp(utf8_str, "关注Eins陈谢谢喵")) {
-		struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
-		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
+	if (!strcmp(utf8_str, "关闭主播模式") ||
+	    !strcmp(utf8_str, "灌注Eins陈谢谢喵") ||
+	    !strcmp(utf8_str, "关注Eins陈谢谢喵")) {
+		pthread_mutex_lock(&g_mod_mutex);
+		g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
+		pthread_mutex_unlock(&g_mod_mutex);
+		vm_set_streamer_mode(0, true, true);
+		return;
 	}
+	if (!strcmp(utf8_str, "1123029976")) {
+		utf8_str = "界徐盛";
+	}
+	vm_unlock_mod_cheat_gate();
 	if (sys4_text_is_gbk)
 		sys4_set_text_gbk(true);
 	char *gbk = utf2sjis(utf8_str, 0);
@@ -859,6 +1045,7 @@ static void vm_step_pending_cheat(void)
 		if (in_join && scs_ss) {
 			key_state[VK_0] = false;
 			s_pulse_key0_frames = 0;
+			vm_unlock_mod_cheat_gate();
 			union vm_value *cur_v = vm_get_struct_member(scs_page, "m_current", NULL);
 			if (cur_v) {
 				vm_set_string_slot(cur_v->i, s_pending_cheat_gbk);
@@ -892,20 +1079,6 @@ static void vm_step_pending_cheat(void)
 		s_pending_cheat_gbk = NULL;
 		s_cheat_wait_frames = 0;
 	}
-}
-
-static int32_t vm_get_tt(int idx, int32_t def_val)
-{
-	struct page *tt = vm_get_global_page("tt", NULL);
-	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return def_val;
-	return tt->values[idx].i;
-}
-
-static void vm_set_tt(int idx, int32_t val)
-{
-	struct page *tt = vm_get_global_page("tt", NULL);
-	if (!tt || tt->type != ARRAY_PAGE || idx < 0 || idx >= tt->nr_vars) return;
-	tt->values[idx].i = val;
 }
 
 static void vm_boost_card_array(struct page *arr, int set_count, int add_count, int atk_bonus, int hp_bonus, int *total_cards)
@@ -1028,7 +1201,6 @@ static void vm_execute_pending_action(const char *json_str)
 	if (!act) return;
 
 	struct page *gc    = vm_get_global_page("g_gameContext", NULL);
-	struct page *cfg   = vm_get_global_page("g_gameConfig", NULL);
 	struct page *pcp   = vm_get_global_page("g_playerCommonParam", NULL);
 	struct page *pb    = vm_get_global_page("g_partyBonus", NULL);
 	struct page *party = vm_get_global_page("g_party", NULL);
@@ -1220,20 +1392,29 @@ static void vm_execute_pending_action(const char *json_str)
 	}
 
 	if ((it = cJSON_GetObjectItem(act, "streamerMode")) && cJSON_IsNumber(it)) {
-		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, it->valueint != 0 ? 1 : 0);
+		int en = it->valueint != 0 ? 1 : 0;
+		pthread_mutex_lock(&g_mod_mutex);
+		if (en == 0)
+			g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
+		else
+			g_live_lock_mask &= ~LOCK_DISABLE_STREAMER_MODE;
+		pthread_mutex_unlock(&g_mod_mutex);
+		vm_set_streamer_mode(en, true, true);
 	}
 	if ((it = cJSON_GetObjectItem(act, "cheatCode")) && cJSON_IsString(it) &&
 	    it->valuestring && it->valuestring[0]) {
 		vm_queue_cheat_code_utf8(it->valuestring);
 	} else if ((it = cJSON_GetObjectItem(act, "fillStreamerPassphrase")) &&
 	           (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
-		if (cfg) vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
-		vm_set_player_info_name(gc, GBK_STREAMER_PASSPHRASE);
-		vm_queue_cheat_code_gbk(GBK_STREAMER_PASSPHRASE);
+		pthread_mutex_lock(&g_mod_mutex);
+		g_live_lock_mask |= LOCK_DISABLE_STREAMER_MODE;
+		pthread_mutex_unlock(&g_mod_mutex);
+		vm_set_streamer_mode(0, true, true);
 	}
 	if (!s_pending_cheat_gbk &&
 	    (it = cJSON_GetObjectItem(act, "triggerKey0")) &&
 	    (cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0))) {
+		vm_unlock_mod_cheat_gate();
 		s_pulse_key0_frames = 8;
 		key_state[VK_0] = true;
 	}
@@ -1253,7 +1434,7 @@ static void vm_enforce_locks(int mask)
 	if (mask & LOCK_DISABLE_STREAMER_MODE) {
 		struct page *cfg = vm_get_global_page("g_gameConfig", NULL);
 		if (cfg && vm_get_field_int(cfg, "m_isSummaryMode", NULL, 0) != 0) {
-			vm_set_field_int(cfg, "m_isSummaryMode", NULL, 0);
+			vm_set_streamer_mode(0, true, true);
 		}
 	}
 
@@ -1512,9 +1693,16 @@ void modifier_on_frame(void)
 	pthread_mutex_lock(&g_mod_mutex);
 	char *pending = g_pending_action_json;
 	g_pending_action_json = NULL;
-	int lock_mask = g_live_lock_mask;
+	bool force_streamer_off = g_force_refresh_streamer_off;
+	g_force_refresh_streamer_off = false;
 	pthread_mutex_unlock(&g_mod_mutex);
 
+	if (s_pending_clear_card_cache) {
+		vm_clear_card_cache();
+	}
+	if (force_streamer_off) {
+		vm_set_streamer_mode(0, true, true);
+	}
 	if (pending) {
 		vm_execute_pending_action(pending);
 		free(pending);
@@ -1526,12 +1714,17 @@ void modifier_on_frame(void)
 		if (--s_pulse_key0_frames == 0)
 			key_state[VK_0] = false;
 	}
+
+	pthread_mutex_lock(&g_mod_mutex);
+	int lock_mask = g_live_lock_mask;
+	pthread_mutex_unlock(&g_mod_mutex);
+
 	if (lock_mask) {
 		vm_enforce_locks(lock_mask);
 	}
 
 	/* Refresh live snapshot when action executed or every 30 frames */
-	if (pending || (s_frame_tick % 30 == 1)) {
+	if (pending || force_streamer_off || (s_frame_tick % 30 == 1)) {
 		char *snap = vm_build_live_state_json(lock_mask);
 		pthread_mutex_lock(&g_mod_mutex);
 		free(g_cached_live_state_json);
@@ -1612,8 +1805,14 @@ JNIEXPORT void JNICALL
 Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeSetLiveLocks(
 	JNIEnv *env, jclass clazz, jint mask)
 {
+	(void)env;
+	(void)clazz;
 	pthread_mutex_lock(&g_mod_mutex);
+	int prev = g_live_lock_mask;
 	g_live_lock_mask = (int)mask;
+	if (!(prev & LOCK_DISABLE_STREAMER_MODE) && (mask & LOCK_DISABLE_STREAMER_MODE)) {
+		g_force_refresh_streamer_off = true;
+	}
 	pthread_mutex_unlock(&g_mod_mutex);
 }
 
