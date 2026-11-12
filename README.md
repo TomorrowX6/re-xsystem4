@@ -181,5 +181,6 @@ The repository includes a GitHub Actions workflow ([`.github/workflows/build.yml
 
 - [nunuhara/xsystem4](https://github.com/nunuhara/xsystem4) & [nunuhara/libsys4](https://github.com/nunuhara/libsys4): Core cross-platform System 4 engine and file format parsers.
 - [kichikuou/xsystem4-android](https://github.com/kichikuou/xsystem4-android): Android port framework for xsystem4.
+- [xiexiahai/xsystem4-rance10-android](https://github.com/xiexiahai/xsystem4-rance10-android): Project Features & Enhancements
 
 Licensed under the [GNU General Public License v2.0 (GPL-2.0)](xsystem4/COPYING).
