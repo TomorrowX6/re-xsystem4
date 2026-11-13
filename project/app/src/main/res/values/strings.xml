@@ -2,18 +2,19 @@
     <string name="app_name" translatable="false">re:xsystem4</string>
     <string name="action_refresh">Refresh</string>
     <string name="action_install_from_directory">Import Game Directory</string>
-    <string name="action_install_from_zip">Import from ZIP</string>
+    <string name="action_install_from_zip">Import from Archive</string>
     <string name="action_save_manager">Save Manager</string>
     <string name="action_game_modifier">Game Modifier</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">Open Source Licenses</string>
-    <string name="choose_a_file">Select Game ZIP Archive</string>
+    <string name="choose_a_file">Select Game Archive (.zip / .rar / .7z)</string>
     <string name="ok">OK</string>
     <string name="cancel">Cancel</string>
     <string name="error">Error</string>
     <string name="install_dialog_title">Importing game…</string>
     <string name="install_progress">%s</string>
     <string name="import_copy_progress">Copied %1$d MB\n%2$s</string>
+    <string name="import_extract_progress">Extracted %1$d MB\n%2$s</string>
     <string name="import_no_space">Insufficient storage space. Please free up space and try again (full games typically require at least 4 GB).</string>
     <string name="directory_no_game">Please select a game directory containing AliceStart.ini / System40.ini and a .ain file.</string>
     <string name="directory_import_error">Import failed. Please check folder permissions, game file integrity, and available storage.</string>
@@ -21,8 +22,8 @@
     <string name="toast_no_ini">No AliceStart.ini or System40.ini found in %s.</string>
     <string name="uninstall_dialog_message">Remove imported game files for \"%s\"? Save data will be kept.</string>
     <string name="uninstall_dialog_title">Remove Game Files</string>
-    <string name="zip_extraction_error">Failed to import ZIP archive. Please check the file and available storage.</string>
-    <string name="zip_no_ini">No game configuration file found in the ZIP archive.</string>
+    <string name="zip_extraction_error">Failed to extract archive. Please check file integrity, password protection, and available storage.</string>
+    <string name="zip_no_ini">No game configuration file (AliceStart.ini / System40.ini) found in the archive.</string>
     <string name="loading_game">Loading…</string>
 
     <string name="save_manager_switch_dir">Switch Dir</string>
@@ -30,7 +31,7 @@
     <string name="save_manager_export">Export Saves</string>
     <string name="save_manager_refresh">Refresh</string>
     <string name="save_manager_clear">Clear Saves</string>
-    <string name="save_manager_empty">No save files in the current directory.\nTap \"Import Saves\" above to import from a ZIP archive, folder, or individual files.</string>
+    <string name="save_manager_empty">No save files in the current directory.\nTap \"Import Saves\" above to import from an archive, folder, or individual files.</string>
     <string name="save_manager_refreshed">Save list refreshed</string>
     <string name="save_manager_default_dir_label">Rance10 (Default)</string>
     <string name="save_manager_current_dir">Current Directory: %1$s</string>
@@ -55,7 +56,7 @@
     <string name="save_dir_invalid_name">Invalid directory name</string>
 
     <string name="save_import_title">Import Saves from External Storage</string>
-    <string name="save_import_opt_zip">Import from ZIP Archive (.zip)</string>
+    <string name="save_import_opt_zip">Import from Archive (.zip / .rar / .7z)</string>
     <string name="save_import_opt_dir">Import from External Folder</string>
     <string name="save_import_opt_files">Import Individual Save Files (.asd / .sav, etc.)</string>
 
@@ -64,10 +65,10 @@
     <string name="save_export_opt_zip">Export All Saves as ZIP Archive (.zip)</string>
     <string name="save_export_opt_dir">Export All Saves to External Folder</string>
 
-    <string name="save_chooser_import_zip">Select Save ZIP Archive</string>
+    <string name="save_chooser_import_zip">Select Save Archive (.zip / .rar / .7z)</string>
     <string name="save_chooser_import_files">Select Save Files to Import</string>
 
-    <string name="save_progress_import_zip">Importing saves from ZIP…</string>
+    <string name="save_progress_import_zip">Importing saves from archive…</string>
     <string name="save_progress_import_dir">Importing saves from external folder…</string>
     <string name="save_progress_import_files">Importing selected save files…</string>
     <string name="save_progress_export_zip">Exporting saves to ZIP…</string>
@@ -76,7 +77,7 @@
 
     <string name="save_import_done_title">Import Complete</string>
     <string name="save_import_failed_title">Import Failed</string>
-    <string name="save_import_zip_done_msg">Successfully imported %1$d save files from ZIP into %2$s.</string>
+    <string name="save_import_zip_done_msg">Successfully imported %1$d save files from archive into %2$s.</string>
     <string name="save_import_dir_done_msg">Successfully imported %1$d save files from external folder.</string>
     <string name="save_import_files_done_msg">Successfully imported %1$d save files.</string>
 
@@ -112,16 +113,16 @@
     <string name="save_cleared_toast">Cleared all saves in current directory</string>
 
     <string name="action_install_game">Install Base Game</string>
-    <string name="game_opt_zip">Install Base Game from ZIP (.zip)</string>
+    <string name="game_opt_zip">Install Base Game from Archive (.zip / .rar / .7z)</string>
     <string name="game_opt_dir">Install Base Game from Folder</string>
     <string name="action_install_mod">Install MOD</string>
     <string name="mod_no_game_installed">Please import the base game before installing a MOD.</string>
     <string name="mod_select_game_title">Select Game for MOD</string>
     <string name="mod_dialog_title">MOD Manager (%1$s)</string>
-    <string name="mod_opt_zip">Install MOD from ZIP (.zip)</string>
+    <string name="mod_opt_zip">Install MOD from Archive (.zip / .rar / .7z)</string>
     <string name="mod_opt_dir">Install MOD from Folder</string>
     <string name="mod_opt_restore_vanilla">Restore Vanilla Game (Uninstall MOD)</string>
-    <string name="mod_choose_zip">Select MOD ZIP Archive (.zip)</string>
+    <string name="mod_choose_zip">Select MOD Archive (.zip / .rar / .7z)</string>
     <string name="mod_invalid_package">No valid MOD files found (expected .ain / .afa / .ex files).</string>
     <string name="mod_install_error">Failed to install MOD. Please check file integrity and available storage.</string>
     <string name="mod_installed_toast">MOD installed</string>

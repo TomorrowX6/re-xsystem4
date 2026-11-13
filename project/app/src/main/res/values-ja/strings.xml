@@ -1,18 +1,19 @@
 <resources>
     <string name="action_refresh">更新</string>
     <string name="action_install_from_directory">フォルダからインポート</string>
-    <string name="action_install_from_zip">ZIPからインポート</string>
+    <string name="action_install_from_zip">アーカイブからインポート</string>
     <string name="action_save_manager">セーブ管理</string>
     <string name="action_game_modifier">ゲーム改造</string>
     <string name="action_github">GitHub</string>
     <string name="action_licenses">オープンソースライセンス</string>
-    <string name="choose_a_file">ゲームのZIPファイルを選択</string>
+    <string name="choose_a_file">ゲームのアーカイブを選択 (.zip / .rar / .7z)</string>
     <string name="ok">OK</string>
     <string name="cancel">キャンセル</string>
     <string name="error">エラー</string>
     <string name="install_dialog_title">ゲームをインポート中…</string>
     <string name="install_progress">%s</string>
     <string name="import_copy_progress">%1$d MB コピー済み\n%2$s</string>
+    <string name="import_extract_progress">%1$d MB 展開済み\n%2$s</string>
     <string name="import_no_space">ストレージの空き容量が不足しています。空き容量を確保してから再度お試しください（通常4GB以上必要です）。</string>
     <string name="directory_no_game">AliceStart.ini / System40.ini と .ain ファイルを含むゲームフォルダを選択してください。</string>
     <string name="directory_import_error">インポートに失敗しました。フォルダの読み取り権限、ゲームファイル、空き容量を確認してください。</string>
@@ -20,8 +21,8 @@
     <string name="toast_no_ini">%s に AliceStart.ini または System40.ini がありません。</string>
     <string name="uninstall_dialog_message">「%s」のゲームデータを削除しますか？（セーブデータは保持されます）</string>
     <string name="uninstall_dialog_title">ゲームデータの削除</string>
-    <string name="zip_extraction_error">ZIPの展開に失敗しました。ファイルと空き容量を確認してください。</string>
-    <string name="zip_no_ini">ZIP内にゲーム設定ファイルが見つかりません。</string>
+    <string name="zip_extraction_error">アーカイブの展開に失敗しました。ファイルの破損・パスワード保護・空き容量を確認してください。</string>
+    <string name="zip_no_ini">アーカイブ内にゲーム設定ファイル (AliceStart.ini / System40.ini) が見つかりません。</string>
     <string name="loading_game">読み込み中…</string>
 
     <string name="save_manager_switch_dir">切替</string>
@@ -29,7 +30,7 @@
     <string name="save_manager_export">外部へエクスポート</string>
     <string name="save_manager_refresh">一覧更新</string>
     <string name="save_manager_clear">全削除</string>
-    <string name="save_manager_empty">現在のセーブディレクトリは空です。\n上の「外部からインポート」からZIP・フォルダ・個別ファイルをインポートできます。</string>
+    <string name="save_manager_empty">現在のセーブディレクトリは空です。\n上の「外部からインポート」からアーカイブ・フォルダ・個別ファイルをインポートできます。</string>
     <string name="save_manager_refreshed">セーブ一覧を更新しました</string>
     <string name="save_manager_default_dir_label">Rance10 (デフォルト)</string>
     <string name="save_manager_current_dir">現在のディレクトリ：%1$s</string>
@@ -54,7 +55,7 @@
     <string name="save_dir_invalid_name">無効なディレクトリ名です</string>
 
     <string name="save_import_title">外部からセーブをインポート</string>
-    <string name="save_import_opt_zip">ZIPアーカイブからインポート (.zip)</string>
+    <string name="save_import_opt_zip">アーカイブからインポート (.zip / .rar / .7z)</string>
     <string name="save_import_opt_dir">外部フォルダからインポート</string>
     <string name="save_import_opt_files">個別セーブファイルをインポート (.asd / .sav 等)</string>
 
@@ -63,10 +64,10 @@
     <string name="save_export_opt_zip">全セーブをZIPアーカイブとして出力 (.zip)</string>
     <string name="save_export_opt_dir">全セーブを外部フォルダへ出力</string>
 
-    <string name="save_chooser_import_zip">セーブZIPファイルを選択</string>
+    <string name="save_chooser_import_zip">セーブアーカイブを選択 (.zip / .rar / .7z)</string>
     <string name="save_chooser_import_files">インポートするセーブファイルを選択</string>
 
-    <string name="save_progress_import_zip">ZIPからセーブをインポート中…</string>
+    <string name="save_progress_import_zip">アーカイブからセーブをインポート中…</string>
     <string name="save_progress_import_dir">外部フォルダからインポート中…</string>
     <string name="save_progress_import_files">選択したファイルをインポート中…</string>
     <string name="save_progress_export_zip">セーブをZIPへエクスポート中…</string>
@@ -75,7 +76,7 @@
 
     <string name="save_import_done_title">インポート完了</string>
     <string name="save_import_failed_title">インポート失敗</string>
-    <string name="save_import_zip_done_msg">ZIPから %1$d 個のセーブファイルを %2$s にインポートしました。</string>
+    <string name="save_import_zip_done_msg">アーカイブから %1$d 個のセーブファイルを %2$s にインポートしました。</string>
     <string name="save_import_dir_done_msg">外部フォルダから %1$d 個のセーブファイルをインポートしました。</string>
     <string name="save_import_files_done_msg">%1$d 個のセーブファイルをインポートしました。</string>
 
@@ -111,16 +112,16 @@
     <string name="save_cleared_toast">現在のディレクトリのセーブを全て削除しました</string>
 
     <string name="action_install_game">ゲーム本体をインストール</string>
-    <string name="game_opt_zip">ZIPからゲーム本体をインストール (.zip)</string>
+    <string name="game_opt_zip">アーカイブからゲーム本体をインストール (.zip / .rar / .7z)</string>
     <string name="game_opt_dir">フォルダからゲーム本体をインストール</string>
     <string name="action_install_mod">MODインストール</string>
     <string name="mod_no_game_installed">先にゲーム本体をインポートしてください。</string>
     <string name="mod_select_game_title">MOD適用先のゲームを選択</string>
     <string name="mod_dialog_title">MOD管理 (%1$s)</string>
-    <string name="mod_opt_zip">ZIPからMODをインストール (.zip)</string>
+    <string name="mod_opt_zip">アーカイブからMODをインストール (.zip / .rar / .7z)</string>
     <string name="mod_opt_dir">フォルダからMODをインストール</string>
     <string name="mod_opt_restore_vanilla">バニラに戻す (MOD解除)</string>
-    <string name="mod_choose_zip">MODのZIPファイルを選択 (.zip)</string>
+    <string name="mod_choose_zip">MODのアーカイブを選択 (.zip / .rar / .7z)</string>
     <string name="mod_invalid_package">有効なMODファイル（.ain / .afa / .ex 等）が見つかりません。</string>
     <string name="mod_install_error">MODのインストールに失敗しました。ファイルと空き容量を確認してください。</string>
     <string name="mod_installed_toast">MODをインストールしました</string>

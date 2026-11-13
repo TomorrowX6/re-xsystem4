@@ -147,8 +147,7 @@ class LauncherActivity : Activity(), GameListObserver {
                 renderInstallState(gameList.installState)
             }
             INSTALL_REQUEST -> {
-                val input = contentResolver.openInputStream(uri) ?: return
-                gameList.install(input)
+                gameList.installArchive(uri)
                 renderInstallState(gameList.installState)
             }
             MOD_DIRECTORY_REQUEST -> {
@@ -158,8 +157,7 @@ class LauncherActivity : Activity(), GameListObserver {
             }
             MOD_ZIP_REQUEST -> {
                 val target = pendingModTarget ?: if (gameList.size > 0) gameList[0] else return
-                val input = contentResolver.openInputStream(uri) ?: return
-                gameList.installModZip(target, input)
+                gameList.installModArchive(target, uri)
                 renderInstallState(gameList.installState)
             }
         }
@@ -223,8 +221,11 @@ class LauncherActivity : Activity(), GameListObserver {
                 when (which) {
                     0 -> {
                         pendingModTarget = target
-                        val i = Intent(Intent.ACTION_GET_CONTENT)
-                        i.type = "application/zip"
+                        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
                         startActivityForResult(Intent.createChooser(i, getString(R.string.mod_choose_zip)), MOD_ZIP_REQUEST)
                     }
                     1 -> {
@@ -254,8 +255,11 @@ class LauncherActivity : Activity(), GameListObserver {
 
     private fun chooseZip() {
         if (gameList.installState is InstallState.Installing) return
-        val i = Intent(Intent.ACTION_GET_CONTENT)
-        i.type = "application/zip"
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
         startActivityForResult(Intent.createChooser(i, getString(R.string.choose_a_file)), INSTALL_REQUEST)
     }
 

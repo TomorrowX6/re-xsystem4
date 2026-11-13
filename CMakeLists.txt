@@ -133,6 +133,64 @@ ExternalProject_Add(
 ExternalProject_Add_StepDependencies(libsndfile configure libvorbis)
 
 ExternalProject_Add(
+  xz
+  URL https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.xz
+  URL_HASH SHA256=4ce24038fd4221e0d13bc1a2de7a4db56e90b92b3bf75321f6c14be73f65de4b
+  CMAKE_ARGS ${COMMON_CMAKE_ARGS}
+             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+             -DBUILD_SHARED_LIBS=OFF
+             -DXZ_TOOL_XZ=OFF
+             -DXZ_TOOL_XZDEC=OFF
+             -DXZ_TOOL_LZMADEC=OFF
+             -DXZ_TOOL_LZMAINFO=OFF
+             -DXZ_TOOL_SCRIPTS=OFF
+             -DXZ_DOC=OFF
+             -DXZ_NLS=OFF
+)
+
+ExternalProject_Add(
+  libarchive
+  URL https://github.com/libarchive/libarchive/releases/download/v3.8.11/libarchive-3.8.11.tar.xz
+  URL_HASH SHA256=a3dc0872b1b39da34dc18ef1b944f0f11ffd37425d70ae04be679279f1cf43d2
+  CMAKE_ARGS ${COMMON_CMAKE_ARGS}
+             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+             -DBUILD_SHARED_LIBS=OFF
+             -DENABLE_TAR=OFF
+             -DENABLE_CPIO=OFF
+             -DENABLE_CAT=OFF
+             -DENABLE_UNZIP=OFF
+             -DENABLE_TEST=OFF
+             -DENABLE_OPENSSL=OFF
+             -DENABLE_NETTLE=OFF
+             -DENABLE_MBEDTLS=OFF
+             -DENABLE_LIBB2=OFF
+             -DENABLE_LZ4=OFF
+             -DENABLE_LZO=OFF
+             -DENABLE_ZSTD=OFF
+             -DENABLE_BZip2=OFF
+             -DENABLE_LIBXML2=OFF
+             -DENABLE_EXPAT=OFF
+             -DENABLE_PCREPOSIX=OFF
+             -DENABLE_PCRE2POSIX=OFF
+             -DENABLE_ICONV=OFF
+             -DENABLE_ACL=OFF
+             -DENABLE_XATTR=OFF
+             -DENABLE_LZMA=ON
+             -DENABLE_ZLIB=ON
+)
+
+ExternalProject_Add_StepDependencies(libarchive configure xz)
+
+ExternalProject_Add(
+  archive_jni
+  SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/archive_jni
+  CMAKE_ARGS ${COMMON_CMAKE_ARGS}
+  BUILD_ALWAYS YES
+)
+
+ExternalProject_Add_StepDependencies(archive_jni configure libarchive)
+
+ExternalProject_Add(
   xsystem4
   SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/xsystem4
   CMAKE_ARGS ${COMMON_CMAKE_ARGS}
@@ -148,6 +206,7 @@ install(
   FILES ${stagingDir}/lib/libxsystem4.so
         ${stagingDir}/lib/libSDL2.so
         ${stagingDir}/lib/libcglm.so
+        ${stagingDir}/lib/libarchive_jni.so
   DESTINATION ${androidProjectDir}/app/src/main/jniLibs/${CMAKE_ANDROID_ARCH_ABI})
 
 install(

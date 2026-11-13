@@ -1,15 +1,16 @@
 package io.github.kichikuou.xsystem4
 
-import android.annotation.TargetApi
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,12 +18,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.InputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
-import java.util.zip.ZipInputStream
 
 interface GameListObserver {
     fun onInstallProgress(path: String)
@@ -43,6 +42,15 @@ data class Item(val name: String, val path: File, val homedir: File, val savedir
             var iniFile = File(dir, "System40.ini")
             if (!iniFile.exists())
                 iniFile = File(dir, "AliceStart.ini")
+            if (!iniFile.exists()) {
+                val ignoreCaseIni = dir.listFiles()?.firstOrNull {
+                    it.isFile && (it.name.equals("System40.ini", ignoreCase = true) ||
+                        it.name.equals("AliceStart.ini", ignoreCase = true))
+                }
+                if (ignoreCaseIni != null) {
+                    iniFile = ignoreCaseIni
+                }
+            }
             if (!iniFile.exists()) {
                 val err = context.getString(R.string.toast_no_ini, dir.path)
                 Log.w("GameList", err)
@@ -220,31 +228,29 @@ class GameList(activity: Activity) {
         }
     }
 
-    fun install(input: InputStream) {
-        if (installJob?.isActive == true) {
-            closeRejectedInput(input)
-            return
-        }
+    fun installArchive(uri: Uri) {
+        if (installJob?.isActive == true) return
         installState = InstallState.Installing(null)
+        val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
             try {
-                input.use { installInput ->
-                    val storagePath = storageDirs[0]
-                    val path = withContext(Dispatchers.IO) {
-                        doInstall(installInput, storagePath) { msg ->
-                            withContext(Dispatchers.Main) {
+                val storagePath = storageDirs[0]
+                val path = withContext(Dispatchers.IO) {
+                    doInstallArchive(uri, storagePath) { msg ->
+                        mainHandler.post {
+                            if (installJob?.isActive == true) {
                                 setInstallProgress(msg)
                             }
                         }
                     }
-                    val homedir = File(storagePath, ".xsystem4")
-                    items.add(Item.fromDirectory(path, homedir, context))
                 }
+                val homedir = File(storagePath, ".xsystem4")
+                items.add(Item.fromDirectory(path, homedir, context))
                 setInstallSucceeded()
             } catch (e: InstallFailureException) {
                 setInstallFailed(e.msgId)
             } catch (e: Exception) {
-                Log.e("GameList", "Failed to extract ZIP", e)
+                Log.e("GameList", "Failed to extract game archive", e)
                 setInstallFailed(R.string.zip_extraction_error)
             }
         }
@@ -271,43 +277,44 @@ class GameList(activity: Activity) {
         observer?.onInstallFailure(msgId)
     }
 
-    private fun closeRejectedInput(input: InputStream) {
-        try {
-            input.close()
-        } catch (e: IOException) {
-            Log.w("GameList", "Failed to close rejected install input", e)
-        }
-    }
-
-    @TargetApi(Build.VERSION_CODES.N)
-    private suspend fun doInstall(
-        input: InputStream,
+    private fun doInstallArchive(
+        uri: Uri,
         storagePath: File,
-        progressCallback: suspend (String) -> Unit
+        progressCallback: (String) -> Unit
     ): File {
         val tempDir = File(storagePath, ".install_temp")
         tempDir.deleteRecursively()
-        val tempDirCanonical = tempDir.canonicalFile
-        val zip = ZipInputStream(input.buffered(), Charset.forName("GBK"))
         var gameRoot: File? = null
         try {
-            zip.use {
-                while (true) {
-                    val entry = zip.nextEntry ?: break
-                    if (entry.isDirectory || NativeGameImport.skip(entry.name)) {
-                        continue
+            ArchiveExtractor.extractUriToDirectory(
+                context = context,
+                uri = uri,
+                destDir = tempDir,
+                tempScratchParent = storagePath,
+                shouldSkip = { rel -> NativeGameImport.skip(rel) },
+                throwInstallFailureOnNoSpace = true,
+                checkCancelled = {
+                    if (installJob?.isActive == false) {
+                        throw CancellationException()
                     }
-                    val path = resolveZipEntryPath(tempDir, tempDirCanonical, entry.name)
-                    Log.i("GameList", "Extracting ${entry.name}")
-                    progressCallback(entry.name)
-                    path.parentFile?.mkdirs()
-                    path.outputStream().buffered().use { zip.copyTo(it) }
-
-                    if (path.name == "System40.ini" || path.name == "AliceStart.ini") {
-                        gameRoot = path.parentFile
+                },
+                onEntryAccepted = { outFile, _ ->
+                    if (outFile.name.equals("System40.ini", ignoreCase = true) ||
+                        outFile.name.equals("AliceStart.ini", ignoreCase = true)
+                    ) {
+                        gameRoot = outFile.parentFile
                     }
+                },
+                onProgress = { totalBytes, entryPath ->
+                    progressCallback(
+                        context.getString(
+                            R.string.import_extract_progress,
+                            totalBytes / (1024L * 1024L),
+                            entryPath
+                        )
+                    )
                 }
-            }
+            )
             val srcDir = gameRoot ?: throw InstallFailureException(R.string.zip_no_ini)
             val ainFile = srcDir.listFiles()?.firstOrNull { it.isFile && it.name.endsWith(".ain", true) }
                 ?: throw InstallFailureException(R.string.directory_no_game)
@@ -324,14 +331,6 @@ class GameList(activity: Activity) {
         } finally {
             tempDir.deleteRecursively()
         }
-    }
-
-    private fun resolveZipEntryPath(tempDir: File, tempDirCanonical: File, entryName: String): File {
-        val path = File(tempDir, entryName.replace('\\', File.separatorChar)).canonicalFile
-        if (path == tempDirCanonical || !path.path.startsWith(tempDirCanonical.path + File.separator)) {
-            throw IOException("ZIP entry escapes install directory: ${entryName}")
-        }
-        return path
     }
 
     fun uninstall(item: Item) {
@@ -391,37 +390,42 @@ class GameList(activity: Activity) {
         }
     }
 
-    fun installModZip(targetItem: Item, input: InputStream) {
-        if (installJob?.isActive == true) {
-            closeRejectedInput(input)
-            return
-        }
+    fun installModArchive(targetItem: Item, uri: Uri) {
+        if (installJob?.isActive == true) return
         installState = InstallState.Installing(null)
+        val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
             val storagePath = targetItem.path.parentFile ?: storageDirs[0]
             val tempDir = File(storagePath, ".mod_install_temp")
             try {
-                input.use { installInput ->
-                    withContext(Dispatchers.IO) {
-                        tempDir.deleteRecursively()
-                        val tempDirCanonical = tempDir.canonicalFile
-                        val zip = ZipInputStream(installInput.buffered(), Charset.forName("GBK"))
-                        zip.use {
-                            while (true) {
-                                val entry = zip.nextEntry ?: break
-                                if (entry.isDirectory || NativeGameImport.skip(entry.name)) {
-                                    continue
+                withContext(Dispatchers.IO) {
+                    tempDir.deleteRecursively()
+                    ArchiveExtractor.extractUriToDirectory(
+                        context = context,
+                        uri = uri,
+                        destDir = tempDir,
+                        tempScratchParent = storagePath,
+                        shouldSkip = { rel -> NativeGameImport.skip(rel) },
+                        throwInstallFailureOnNoSpace = true,
+                        checkCancelled = {
+                            if (installJob?.isActive == false) {
+                                throw CancellationException()
+                            }
+                        },
+                        onProgress = { totalBytes, entryPath ->
+                            val msg = context.getString(
+                                R.string.import_extract_progress,
+                                totalBytes / (1024L * 1024L),
+                                entryPath
+                            )
+                            mainHandler.post {
+                                if (installJob?.isActive == true) {
+                                    setInstallProgress(msg)
                                 }
-                                val path = resolveZipEntryPath(tempDir, tempDirCanonical, entry.name)
-                                withContext(Dispatchers.Main) {
-                                    setInstallProgress(entry.name)
-                                }
-                                path.parentFile?.mkdirs()
-                                path.outputStream().buffered().use { out -> zip.copyTo(out) }
                             }
                         }
-                        applyModStagingToGameDir(tempDir, targetItem.path)
-                    }
+                    )
+                    applyModStagingToGameDir(tempDir, targetItem.path)
                 }
                 val idx = items.indexOfFirst { it.path == targetItem.path }
                 if (idx >= 0) {
@@ -431,7 +435,7 @@ class GameList(activity: Activity) {
             } catch (e: InstallFailureException) {
                 setInstallFailed(e.msgId)
             } catch (e: Exception) {
-                Log.e("GameList", "Failed to install MOD from ZIP", e)
+                Log.e("GameList", "Failed to install MOD from archive", e)
                 setInstallFailed(R.string.mod_install_error)
             } finally {
                 withContext(Dispatchers.IO) {

@@ -32,13 +32,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.io.InputStream
-import java.nio.charset.Charset
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 private const val REQ_IMPORT_ZIP = 101
@@ -441,7 +438,7 @@ class SaveManagerActivity : Activity() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivityForResult(Intent.createChooser(intent, getString(R.string.save_chooser_import_zip)), REQ_IMPORT_ZIP)
     }
@@ -530,31 +527,7 @@ class SaveManagerActivity : Activity() {
         activeJob = scope.launch {
             try {
                 val count = withContext(Dispatchers.IO) {
-                    val tempDir = File(filesDir, ".save_import_tmp")
-                    tempDir.deleteRecursively()
-                    tempDir.mkdirs()
-                    val tempCanonical = tempDir.canonicalFile
-
-                    try {
-                        contentResolver.openInputStream(uri)?.use { rawInput ->
-                            extractZipToTemp(rawInput, tempDir, tempCanonical)
-                        } ?: throw IOException("Failed to open ZIP stream")
-
-                        val normalizedRoot = findNormalizedSaveRoot(tempDir)
-                        var copied = 0
-                        normalizedRoot.walkTopDown().forEach { src ->
-                            if (src.isFile && !src.name.startsWith(".")) {
-                                val relPath = src.relativeTo(normalizedRoot).path
-                                val dst = File(targetDir, relPath)
-                                dst.parentFile?.mkdirs()
-                                src.copyTo(dst, overwrite = true)
-                                copied++
-                            }
-                        }
-                        copied
-                    } finally {
-                        tempDir.deleteRecursively()
-                    }
+                    extractSaveArchiveToTarget(uri, targetDir)
                 }
                 dismissProgress()
                 refreshFileList()
@@ -563,39 +536,58 @@ class SaveManagerActivity : Activity() {
                     getString(R.string.save_import_zip_done_msg, count, currentTarget.dirName)
                 )
             } catch (e: Exception) {
-                Log.e("SaveManager", "Failed to import saves from ZIP", e)
+                Log.e("SaveManager", "Failed to import saves from archive", e)
                 dismissProgress()
                 showMessageDialog(
                     getString(R.string.save_import_failed_title),
-                    e.localizedMessage ?: getString(R.string.error)
+                    formatArchiveImportError(e)
                 )
             }
         }
     }
 
-    private fun extractZipToTemp(rawInput: InputStream, tempDir: File, tempCanonical: File) {
-        val zip = ZipInputStream(rawInput.buffered(), Charset.forName("GBK"))
-        zip.use {
-            while (true) {
-                val entry = zip.nextEntry ?: break
-                if (entry.isDirectory) continue
-                val cleanName = entry.name.replace('\\', '/').trimStart('/')
-                val parts = cleanName.split('/').filter { it.isNotEmpty() }
-                if (parts.isEmpty()) continue
-                if (parts.any { it == "__MACOSX" || it == ".DS_Store" || it == ".." }) continue
-
-                val outFile = File(tempDir, parts.joinToString(File.separator))
-                val outCanonical = outFile.canonicalFile
-                val rootPrefix = tempCanonical.path + File.separator
-                if (!outCanonical.path.startsWith(rootPrefix)) {
-                    throw IOException("Invalid ZIP entry path: ${entry.name}")
-                }
-                outCanonical.parentFile?.mkdirs()
-                outCanonical.outputStream().buffered().use { out ->
-                    zip.copyTo(out)
+    private fun extractSaveArchiveToTarget(uri: Uri, targetDir: File): Int {
+        val tempDir = File(filesDir, ".save_import_tmp")
+        tempDir.deleteRecursively()
+        tempDir.mkdirs()
+        try {
+            ArchiveExtractor.extractUriToDirectory(
+                context = this,
+                uri = uri,
+                destDir = tempDir,
+                tempScratchParent = cacheDir
+            )
+            val normalizedRoot = findNormalizedSaveRoot(tempDir)
+            var copied = 0
+            normalizedRoot.walkTopDown().forEach { src ->
+                if (src.isFile && !src.name.startsWith(".")) {
+                    val relPath = src.relativeTo(normalizedRoot).path
+                    val dst = File(targetDir, relPath)
+                    dst.parentFile?.mkdirs()
+                    src.copyTo(dst, overwrite = true)
+                    copied++
                 }
             }
+            return copied
+        } finally {
+            tempDir.deleteRecursively()
         }
+    }
+
+    private fun formatArchiveImportError(e: Exception): String {
+        val raw = e.message ?: ""
+        val lang = Locale.getDefault().language
+        if (raw.startsWith("ENCRYPTED:")) {
+            return when {
+                lang.startsWith("zh") -> "不支持带密码加密的压缩包，请先去除密码或解压后再导入。"
+                lang.startsWith("ja") -> "パスワード付きアーカイブには対応していません。パスワードを解除して再度お試しください。"
+                else -> "Password-protected archives are not supported."
+            }
+        }
+        if (raw.startsWith("ENOSPC:")) {
+            return getString(R.string.import_no_space)
+        }
+        return e.localizedMessage ?: getString(R.string.error)
     }
 
     private fun findNormalizedSaveRoot(tempDir: File): File {
@@ -715,27 +707,8 @@ class SaveManagerActivity : Activity() {
                         val fileName = queryDisplayName(uri) ?: "save_${System.currentTimeMillis()}.asd"
                         val safeName = File(fileName).name
                         if (safeName.isEmpty()) continue
-                        if (safeName.endsWith(".zip", ignoreCase = true) && uris.size == 1) {
-                            val tempDir = File(filesDir, ".save_import_tmp")
-                            tempDir.deleteRecursively()
-                            tempDir.mkdirs()
-                            try {
-                                contentResolver.openInputStream(uri)?.use { rawInput ->
-                                    extractZipToTemp(rawInput, tempDir, tempDir.canonicalFile)
-                                }
-                                val root = findNormalizedSaveRoot(tempDir)
-                                root.walkTopDown().forEach { src ->
-                                    if (src.isFile && !src.name.startsWith(".")) {
-                                        val rel = src.relativeTo(root).path
-                                        val dst = File(targetDir, rel)
-                                        dst.parentFile?.mkdirs()
-                                        src.copyTo(dst, overwrite = true)
-                                        imported++
-                                    }
-                                }
-                            } finally {
-                                tempDir.deleteRecursively()
-                            }
+                        if (ArchiveExtractor.isSupportedArchiveName(safeName)) {
+                            imported += extractSaveArchiveToTarget(uri, targetDir)
                         } else {
                             val dst = File(targetDir, safeName)
                             contentResolver.openInputStream(uri)?.use { input ->

@@ -97,37 +97,17 @@ class GameModifierActivity : Activity() {
         title = tr("游戏修改器", "ゲーム改造", "Game Modifier")
 
         findViewById<TextView>(R.id.label_floating_modifier).text = tr("悬浮窗修改器", "フローティング改造", "Floating Modifier")
-        findViewById<TextView>(R.id.label_disable_streamer_mode).text = tr("关闭主播模式 (日不落MOD)", "配信者モード無効化 (MOD)", "Disable Streamer Mode (MOD)")
         findViewById<Button>(R.id.btn_mod_full_unlock).text = tr("全解锁存档", "全解放セーブ", "Full Unlock")
         findViewById<Button>(R.id.btn_mod_global_save).text = tr("全局存档修改", "全体セーブ改造", "Global Save")
         findViewById<Button>(R.id.btn_mod_floating_cfg).text = tr("实时锁定设置", "リアルタイムロック", "Live Locks")
 
         val floatingSwitch = findViewById<Switch>(R.id.switch_floating_modifier)
-        val streamerSwitch = findViewById<Switch>(R.id.switch_disable_streamer_mode)
         syncTopSwitches()
 
         floatingSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (updatingSwitches) return@setOnCheckedChangeListener
             GameModifierBridge.setFloatingEnabled(this, isChecked)
             refreshSummaryText()
-        }
-        streamerSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (updatingSwitches) return@setOnCheckedChangeListener
-            GameModifierBridge.setDisableStreamerModeEnabled(this, isChecked)
-            if (!isGameProcessRunning(this)) {
-                if (targets.isNotEmpty()) {
-                    targets.forEach { GameModifierBridge.writeStreamerModeForDir(it.saveDir, !isChecked) }
-                } else if (::currentTarget.isInitialized) {
-                    GameModifierBridge.writeStreamerModeForDir(currentTarget.saveDir, !isChecked)
-                }
-            }
-            refreshSummaryText()
-            Toast.makeText(
-                this,
-                if (isChecked) tr("已开启关闭主播模式（进入游戏自动解除和谐）", "配信者モード無効化をONにしました", "Disabled Streamer Mode")
-                else tr("已恢复默认主播模式设置", "配信者モード無効化をOFFにしました", "Streamer Mode lock off"),
-                Toast.LENGTH_SHORT
-            ).show()
         }
 
         adapter = ModSaveSlotAdapter(this, emptyList())
@@ -170,8 +150,6 @@ class GameModifierActivity : Activity() {
         try {
             findViewById<Switch>(R.id.switch_floating_modifier)?.isChecked =
                 GameModifierBridge.isFloatingEnabled(this)
-            findViewById<Switch>(R.id.switch_disable_streamer_mode)?.isChecked =
-                GameModifierBridge.isDisableStreamerModeEnabled(this)
         } finally {
             updatingSwitches = false
         }
@@ -236,13 +214,12 @@ class GameModifierActivity : Activity() {
         val saveDir = currentTarget.saveDir
         val hasGlobal = File(saveDir, "GlobalSave.asd").isFile || File(saveDir, "Collection.asd").isFile
         val floatOn = GameModifierBridge.isFloatingEnabled(this)
-        val streamerOff = GameModifierBridge.isDisableStreamerModeEnabled(this)
         val lockCount = GameModifierBridge.getLiveLockCount(this)
 
         findViewById<TextView>(R.id.mod_target_title).text =
             getString(R.string.save_manager_current_dir, currentTarget.displayName)
         findViewById<TextView>(R.id.mod_target_summary).text = tr(
-            "进度存档 ${currentEntries.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗：${if (floatOn) "开" else "关"} · 主播模式：${if (streamerOff) "已关闭" else "默认"} (锁定 $lockCount 项)",
+            "进度存档 ${currentEntries.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗：${if (floatOn) "开" else "关"} · 实时锁定：$lockCount 项",
             "セーブ ${currentEntries.size} 個 · 全体：${if (hasGlobal) "あり" else "なし"} · ロック $lockCount 項目",
             "${currentEntries.size} saves · Global: ${if (hasGlobal) "Yes" else "No"} · Locks: $lockCount"
         )

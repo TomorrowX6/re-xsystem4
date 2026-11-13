@@ -59,9 +59,9 @@ object GameModifierBridge {
             try {
                 val json = JSONObject(cfgFile.readText())
                 val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
-                    json.optBoolean(KEY_DISABLE_STREAMER_MODE, true)
+                    json.optBoolean(KEY_DISABLE_STREAMER_MODE, false)
                 } else {
-                    true
+                    false
                 }
                 val rawMask = json.optInt(KEY_LOCK_MASK, 0)
                 val mask = if (disableStreamer) {
@@ -77,9 +77,9 @@ object GameModifierBridge {
         }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val disableStreamer = if (prefs.contains(KEY_DISABLE_STREAMER_MODE)) {
-            prefs.getBoolean(KEY_DISABLE_STREAMER_MODE, true)
+            prefs.getBoolean(KEY_DISABLE_STREAMER_MODE, false)
         } else {
-            true
+            false
         }
         val rawMask = prefs.getInt(KEY_LOCK_MASK, 0)
         val mask = if (disableStreamer) {
@@ -98,9 +98,9 @@ object GameModifierBridge {
 
     private fun writeConfigJson(context: Context, json: JSONObject) {
         val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
-            json.optBoolean(KEY_DISABLE_STREAMER_MODE, true)
+            json.optBoolean(KEY_DISABLE_STREAMER_MODE, false)
         } else {
-            (json.optInt(KEY_LOCK_MASK, LOCK_DISABLE_STREAMER_MODE) and LOCK_DISABLE_STREAMER_MODE) != 0
+            (json.optInt(KEY_LOCK_MASK, 0) and LOCK_DISABLE_STREAMER_MODE) != 0
         }
         val rawMask = json.optInt(KEY_LOCK_MASK, 0)
         val mask = if (disableStreamer) {
@@ -174,7 +174,7 @@ object GameModifierBridge {
     }
 
     fun getSavedLockMask(context: Context): Int {
-        return readConfigJson(context).optInt(KEY_LOCK_MASK, LOCK_DISABLE_STREAMER_MODE)
+        return readConfigJson(context).optInt(KEY_LOCK_MASK, 0)
     }
 
     fun getLiveLockCount(context: Context): Int {
@@ -205,7 +205,7 @@ object GameModifierBridge {
     }
 
     fun isDisableStreamerModeEnabled(context: Context): Boolean {
-        return readConfigJson(context).optBoolean(KEY_DISABLE_STREAMER_MODE, true)
+        return readConfigJson(context).optBoolean(KEY_DISABLE_STREAMER_MODE, false)
     }
 
     fun setDisableStreamerModeEnabled(context: Context, enabled: Boolean) {
