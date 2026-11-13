@@ -117,13 +117,45 @@ bool asset_exists(enum asset_type type, int id)
 	return assets[type]->exists_by_id(assets[type], id);
 }
 
+static bool asset_cg_format_special_org_fallback(const char *name, char *buf, size_t buf_size)
+{
+	const char *needle = sys4_text_is_gbk
+		? "\xcc\xd8\xca\xe2\xcb\xf9\xca\xf4"  /* 特殊所属 (GBK) */
+		: "\x93\xc1\x8e\xea\x8f\x8a\x91\xae"; /* 特殊所属 (SJIS) */
+	const char *repl = sys4_text_is_gbk
+		? "\xc6\xe4\xcb\xfb\xcb\xf9\xca\xf4"          /* 其他所属 (GBK) */
+		: "\x82\xbb\x82\xcc\x91\xbc\x8f\x8a\x91\xae"; /* その他所属 (SJIS) */
+	size_t needle_len = 8;
+	size_t repl_len = sys4_text_is_gbk ? 8 : 10;
+
+	for (const char *p = name; *p; p = sjis_skip_char(p)) {
+		if (!memcmp(p, needle, needle_len)) {
+			size_t prefix_len = (size_t)(p - name);
+			const char *suffix = p + needle_len;
+			size_t suffix_len = strlen(suffix);
+			if (prefix_len + repl_len + suffix_len + 1 > buf_size)
+				return false;
+			memcpy(buf, name, prefix_len);
+			memcpy(buf + prefix_len, repl, repl_len);
+			memcpy(buf + prefix_len + repl_len, suffix, suffix_len + 1);
+			return true;
+		}
+	}
+	return false;
+}
+
 bool asset_exists_by_name(enum asset_type type, const char *name, int *id_out)
 {
 	if (!assets[type] || !name || !name[0])
 		return false;
 	if (!assets[type]->exists_by_name)
 		ERROR("exists_by_name not supported on this archive type");
-	return assets[type]->exists_by_name(assets[type], name, id_out);
+	if (assets[type]->exists_by_name(assets[type], name, id_out))
+		return true;
+	char fallback[512];
+	if (type == ASSET_CG && asset_cg_format_special_org_fallback(name, fallback, sizeof(fallback)))
+		return assets[type]->exists_by_name(assets[type], fallback, id_out);
+	return false;
 }
 
 struct archive_data *asset_get(enum asset_type type, int id)
@@ -139,7 +171,13 @@ struct archive_data *asset_get_by_name(enum asset_type type, const char *name, i
 		return NULL;
 	if (!assets[type]->get_by_name)
 		ERROR("get_by_name not supported on this archive type");
-	return assets[type]->get_by_name(assets[type], name, id_out);
+	struct archive_data *data = assets[type]->get_by_name(assets[type], name, id_out);
+	if (data)
+		return data;
+	char fallback[512];
+	if (type == ASSET_CG && asset_cg_format_special_org_fallback(name, fallback, sizeof(fallback)))
+		return assets[type]->get_by_name(assets[type], fallback, id_out);
+	return NULL;
 }
 
 struct cg *asset_cg_load(int id)

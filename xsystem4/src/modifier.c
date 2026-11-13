@@ -1557,9 +1557,116 @@ static void vm_set_streamer_mode(int enabled, bool persist_disk, bool force_clea
 	s_last_observed_summary_mode = target;
 }
 
+/*
+ * CardConstructProcessCacheFront@0 populates Front.m_procOrg only for
+ * organization IDs 1..10. When a save contains cross-version MOD cards absent
+ * from Rance10EX.ex ("卡牌数据"), PlayerCard@OrganizationId::get returns 0,
+ * causing m_procOrg.Get(0) to return null (no 208x312 CreateBase canvas and
+ * no card frame/star/skill base ops -> 0x0 "空卡牌"). Clone org ID 7 ("其他")
+ * into key 0 once so OrganizationId == 0 cards build a full 208x312 base.
+ */
+static void vm_ensure_card_org_fallback_proc(void)
+{
+	if (!vm_globals_ready() || vm_is_in_card_cache_callstack())
+		return;
+	struct page *cc = vm_get_global_page("g_cardCache", NULL);
+	if (!cc || cc->type != STRUCT_PAGE)
+		return;
+	struct page *front = vm_get_field_page(cc, "Front", NULL);
+	if (!front || front->type != STRUCT_PAGE)
+		return;
+	struct page *proc_org = vm_get_field_page(front, "m_procOrg", NULL);
+	if (!proc_org || proc_org->type != STRUCT_PAGE)
+		return;
+	union vm_value *m_data_mem = vm_get_struct_member(proc_org, "m_data", NULL);
+	if (!m_data_mem)
+		return;
+	int m_data_slot = m_data_mem->i;
+	struct page *m_data = vm_safe_get_page(m_data_slot);
+	if (!m_data || m_data->type != ARRAY_PAGE || m_data->nr_vars <= 0)
+		return;
+
+	int src_pair_slot = -1;
+	int fallback_pair_slot = -1;
+	int insert_pos = m_data->nr_vars;
+	for (int i = 0; i < m_data->nr_vars; i++) {
+		int pslot = m_data->values[i].i;
+		struct page *pair = vm_safe_get_page(pslot);
+		if (!pair || pair->type != STRUCT_PAGE)
+			continue;
+		union vm_value *kv = vm_get_struct_member(pair, "key", NULL);
+		if (!kv)
+			continue;
+		struct page *val_arr = vm_get_field_page(pair, "val", NULL);
+		bool valid_val = (val_arr && val_arr->type == ARRAY_PAGE && val_arr->nr_vars > 0);
+		if (kv->i == 0) {
+			if (valid_val)
+				return;
+			insert_pos = -1 - i;
+		} else if (kv->i > 0 && insert_pos == m_data->nr_vars) {
+			insert_pos = i;
+		}
+		if (valid_val) {
+			if (kv->i == 7)
+				src_pair_slot = pslot;
+			if (fallback_pair_slot < 0)
+				fallback_pair_slot = pslot;
+		}
+	}
+
+	if (src_pair_slot < 0)
+		src_pair_slot = fallback_pair_slot;
+	if (src_pair_slot < 0)
+		return;
+
+	struct page *src_pair = vm_safe_get_page(src_pair_slot);
+	if (!src_pair)
+		return;
+	struct page *cloned_pair = copy_page(src_pair);
+	if (!cloned_pair)
+		return;
+	vm_set_field_int(cloned_pair, "key", NULL, 0);
+	int new_pair_slot = heap_alloc_page(cloned_pair);
+
+	m_data = vm_safe_get_page(m_data_slot);
+	if (!m_data || m_data->type != ARRAY_PAGE) {
+		heap_unref(new_pair_slot);
+		return;
+	}
+	if (insert_pos < 0) {
+		int existing_idx = -1 - insert_pos;
+		if (existing_idx >= 0 && existing_idx < m_data->nr_vars) {
+			variable_set(m_data, existing_idx, AIN_STRUCT, vm_int(new_pair_slot));
+		} else {
+			heap_unref(new_pair_slot);
+			return;
+		}
+	} else {
+		int old_nr = m_data->nr_vars;
+		if (insert_pos > old_nr)
+			insert_pos = old_nr;
+		struct page *next = alloc_page(ARRAY_PAGE, m_data->a_type, old_nr + 1);
+		next->array = m_data->array;
+		if (insert_pos > 0)
+			memcpy(next->values, m_data->values, (size_t)insert_pos * sizeof(*next->values));
+		next->values[insert_pos].i = new_pair_slot;
+		if (insert_pos < old_nr)
+			memcpy(next->values + insert_pos + 1, m_data->values + insert_pos,
+			       (size_t)(old_nr - insert_pos) * sizeof(*next->values));
+		free_page(m_data);
+		heap_set_page(m_data_slot, next);
+	}
+
+	vm_clear_card_cache();
+	s_pending_live_ui_refresh = true;
+}
+
 void modifier_on_globals_loaded(void)
 {
-	if (!vm_globals_ready() || !vm_has_mod_streamer_mode())
+	if (!vm_globals_ready())
+		return;
+	vm_ensure_card_org_fallback_proc();
+	if (!vm_has_mod_streamer_mode())
 		return;
 	pthread_mutex_lock(&g_mod_mutex);
 	int mask = g_live_lock_mask;
@@ -2355,6 +2462,7 @@ void modifier_on_frame(void)
 #endif
 
 	vm_restore_temp_rcs_overrides(false);
+	vm_ensure_card_org_fallback_proc();
 
 	pthread_mutex_lock(&g_mod_mutex);
 	char *pending = g_pending_action_json;

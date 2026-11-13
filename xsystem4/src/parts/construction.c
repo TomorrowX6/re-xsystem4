@@ -586,9 +586,47 @@ static bool build_create_pixel_only(struct parts *parts, struct parts_constructi
 	return true;
 }
 
+static struct cg *cproc_load_cg_with_fallback(const char *name)
+{
+	if (!name || !name[0])
+		return NULL;
+	struct cg *cg = asset_cg_load_by_name(name, NULL);
+	if (cg)
+		return cg;
+
+	const char *fallback = NULL;
+	if (sys4_text_is_gbk) {
+		/* 卡牌／物品／ -> 卡牌／物品／？？？ */
+		if (!strncmp(name, "\xbf\xa8\xc5\xc6\xa3\xaf\xce\xef\xc6\xb7\xa3\xaf", 12)) {
+			fallback = "\xbf\xa8\xc5\xc6\xa3\xaf\xce\xef\xc6\xb7\xa3\xaf\xa3\xbf\xa3\xbf\xa3\xbf";
+		/* 卡牌／ -> 卡牌／？？？ */
+		} else if (!strncmp(name, "\xbf\xa8\xc5\xc6\xa3\xaf", 6)) {
+			fallback = "\xbf\xa8\xc5\xc6\xa3\xaf\xa3\xbf\xa3\xbf\xa3\xbf";
+		/* シス／卡牌／技能／ -> シス／卡牌／技能／？ */
+		} else if (!strncmp(name, "\xa5\xb7\xa5\xb9\xa3\xaf\xbf\xa8\xc5\xc6\xa3\xaf\xbc\xbc\xc4\xdc\xa3\xaf", 18)) {
+			fallback = "\xa5\xb7\xa5\xb9\xa3\xaf\xbf\xa8\xc5\xc6\xa3\xaf\xbc\xbc\xc4\xdc\xa3\xaf\xa3\xbf";
+		}
+	} else {
+		/* カード／アイテム／ -> カード／アイテム／？？？ */
+		if (!strncmp(name, "\x83\x4a\x81\x5b\x83\x68\x81\x5e\x83\x41\x83\x43\x83\x65\x83\x80\x81\x5e", 18)) {
+			fallback = "\x83\x4a\x81\x5b\x83\x68\x81\x5e\x83\x41\x83\x43\x83\x65\x83\x80\x81\x5e\x81\x48\x81\x48\x81\x48";
+		/* カード／ -> カード／？？？ */
+		} else if (!strncmp(name, "\x83\x4a\x81\x5b\x83\x68\x81\x5e", 8)) {
+			fallback = "\x83\x4a\x81\x5b\x83\x68\x81\x5e\x81\x48\x81\x48\x81\x48";
+		/* シス／カード／スキル／ -> シス／カード／スキル／？ */
+		} else if (!strncmp(name, "\x83\x56\x83\x58\x81\x5e\x83\x4a\x81\x5b\x83\x68\x81\x5e\x83\x58\x83\x4c\x83\x8b\x81\x5e", 22)) {
+			fallback = "\x83\x56\x83\x58\x81\x5e\x83\x4a\x81\x5b\x83\x68\x81\x5e\x83\x58\x83\x4c\x83\x8b\x81\x5e\x81\x48";
+		}
+	}
+
+	if (fallback && strcmp(name, fallback) != 0)
+		return asset_cg_load_by_name(fallback, NULL);
+	return NULL;
+}
+
 static bool build_cg(struct parts *parts, struct parts_construction_process *cproc, struct parts_cp_cg *op)
 {
-	struct cg *cg = asset_cg_load_by_name(op->name->text, NULL);
+	struct cg *cg = cproc_load_cg_with_fallback(op->name->text);
 	if (!cg)
 		return false;
 	gfx_delete_texture(&cproc->common.texture);
@@ -726,7 +764,7 @@ static Texture *cproc_get_cached_texture(struct string *cg_name)
 		}
 	}
 
-	struct cg *cg = asset_cg_load_by_name(cg_name->text, NULL);
+	struct cg *cg = cproc_load_cg_with_fallback(cg_name->text);
 	if (!cg)
 		return NULL;
 
@@ -758,8 +796,10 @@ static bool build_draw_cut_cg(struct parts_construction_process *cproc, struct p
 	if (!src)
 		return false;
 
+	int sw = op->sw > 0 ? op->sw : src->w;
+	int sh = op->sh > 0 ? op->sh : src->h;
 	gfx_copy_stretch_blend_amap(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			src, op->sx, op->sy, op->sw, op->sh);
+			src, op->sx, op->sy, sw, sh);
 	return true;
 }
 
@@ -772,8 +812,10 @@ static bool build_copy_cut_cg(struct parts_construction_process *cproc, struct p
 	if (!src)
 		return false;
 
+	int sw = op->sw > 0 ? op->sw : src->w;
+	int sh = op->sh > 0 ? op->sh : src->h;
 	gfx_copy_stretch_with_alpha_map(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			src, op->sx, op->sy, op->sw, op->sh);
+			src, op->sx, op->sy, sw, sh);
 	return true;
 }
 
@@ -786,8 +828,10 @@ static bool build_only_alpha_cut_cg(struct parts_construction_process *cproc, st
 	if (!src)
 		return false;
 
+	int sw = op->sw > 0 ? op->sw : src->w;
+	int sh = op->sh > 0 ? op->sh : src->h;
 	gfx_copy_stretch_amap(&cproc->common.texture, op->dx, op->dy, op->dw, op->dh,
-			src, op->sx, op->sy, op->sw, op->sh);
+			src, op->sx, op->sy, sw, sh);
 	return true;
 }
 
@@ -985,19 +1029,19 @@ bool parts_build_construction_process(struct parts *parts,
 			break;
 		case PARTS_CP_DRAW_CUT_CG:
 		case PARTS_CP_ALPHA_BLEND_CUT_CG:
-			if (!build_draw_cut_cg(cproc, &op->cut_cg))
+			if (!build_draw_cut_cg(cproc, &op->cut_cg) && !cproc->common.texture.handle)
 				goto done;
 			break;
 		case PARTS_CP_COPY_CUT_CG:
-			if (!build_copy_cut_cg(cproc, &op->cut_cg))
+			if (!build_copy_cut_cg(cproc, &op->cut_cg) && !cproc->common.texture.handle)
 				goto done;
 			break;
 		case PARTS_CP_ONLY_ALPHA_CUT_CG:
-			if (!build_only_alpha_cut_cg(cproc, &op->cut_cg))
+			if (!build_only_alpha_cut_cg(cproc, &op->cut_cg) && !cproc->common.texture.handle)
 				goto done;
 			break;
 		case PARTS_CP_BLEND_CG:
-			if (!build_blend_cg(cproc, &op->cg))
+			if (!build_blend_cg(cproc, &op->cg) && !cproc->common.texture.handle)
 				goto done;
 			break;
 		case PARTS_CP_DRAW_TEXT:
