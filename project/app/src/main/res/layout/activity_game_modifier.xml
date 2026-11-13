@@ -51,7 +51,7 @@
         android:paddingLeft="16dp"
         android:paddingRight="16dp"
         android:paddingTop="4dp"
-        android:paddingBottom="4dp">
+        android:paddingBottom="2dp">
 
         <TextView
             android:id="@+id/label_floating_modifier"
@@ -63,6 +63,31 @@
 
         <Switch
             android:id="@+id/switch_floating_modifier"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="true" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/label_ctrl_overlay"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Ctrl 快进悬浮键"
+            android:textAppearance="?android:attr/textAppearanceSmall" />
+
+        <Switch
+            android:id="@+id/switch_ctrl_overlay"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:checked="true" />

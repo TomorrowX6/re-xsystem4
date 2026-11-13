@@ -12,6 +12,8 @@ object GameModifierBridge {
     private const val CONFIG_FILE_NAME = "modifier_config.json"
     private const val KEY_FLOATING_ENABLED = "floating_enabled"
     private const val KEY_FLOATING_DEFAULT_ON_V1 = "floating_default_on_v1"
+    private const val KEY_CTRL_OVERLAY_ENABLED = "ctrl_overlay_enabled"
+    private const val KEY_CTRL_DEFAULT_ON_V1 = "ctrl_default_on_v1"
     private const val KEY_CTRL_OVERLAY_VISIBLE = "ctrl_overlay_visible"
     private const val KEY_DISABLE_STREAMER_MODE = "disable_streamer_mode"
     private const val KEY_LOCK_MASK = "lock_mask"
@@ -72,6 +74,7 @@ object GameModifierBridge {
             try {
                 val json = JSONObject(cfgFile.readText())
                 val migratedV1 = json.optBoolean(KEY_FLOATING_DEFAULT_ON_V1, false)
+                val ctrlMigratedV1 = json.optBoolean(KEY_CTRL_DEFAULT_ON_V1, false)
                 val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
                     json.optBoolean(KEY_DISABLE_STREAMER_MODE, false)
                 } else {
@@ -85,12 +88,29 @@ object GameModifierBridge {
                 }
                 json.put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
                 json.put(KEY_LOCK_MASK, mask)
+                var needsSave = false
                 if (!migratedV1) {
                     json.put(KEY_FLOATING_ENABLED, true)
                     json.put(KEY_FLOATING_DEFAULT_ON_V1, true)
-                    writeConfigJson(context, json)
+                    needsSave = true
                 } else if (!json.has(KEY_FLOATING_ENABLED)) {
                     json.put(KEY_FLOATING_ENABLED, true)
+                }
+                if (!ctrlMigratedV1) {
+                    json.put(KEY_CTRL_OVERLAY_ENABLED, true)
+                    json.put(KEY_CTRL_OVERLAY_VISIBLE, true)
+                    json.put(KEY_CTRL_DEFAULT_ON_V1, true)
+                    needsSave = true
+                } else {
+                    if (!json.has(KEY_CTRL_OVERLAY_ENABLED)) {
+                        json.put(KEY_CTRL_OVERLAY_ENABLED, true)
+                    }
+                    if (!json.optBoolean(KEY_CTRL_OVERLAY_ENABLED, true)) {
+                        json.put(KEY_CTRL_OVERLAY_VISIBLE, false)
+                    }
+                }
+                if (needsSave) {
+                    writeConfigJson(context, json)
                 }
                 return json
             } catch (_: Throwable) {
@@ -98,7 +118,10 @@ object GameModifierBridge {
         }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val migratedV1 = prefs.getBoolean(KEY_FLOATING_DEFAULT_ON_V1, false)
+        val ctrlMigratedV1 = prefs.getBoolean(KEY_CTRL_DEFAULT_ON_V1, false)
         val floatingEnabled = if (!migratedV1) true else prefs.getBoolean(KEY_FLOATING_ENABLED, true)
+        val ctrlEnabled = if (!ctrlMigratedV1) true else prefs.getBoolean(KEY_CTRL_OVERLAY_ENABLED, true)
+        val ctrlVisible = if (!ctrlMigratedV1) true else (ctrlEnabled && prefs.getBoolean(KEY_CTRL_OVERLAY_VISIBLE, true))
         val disableStreamer = if (prefs.contains(KEY_DISABLE_STREAMER_MODE)) {
             prefs.getBoolean(KEY_DISABLE_STREAMER_MODE, false)
         } else {
@@ -113,12 +136,14 @@ object GameModifierBridge {
         val json = JSONObject().apply {
             put(KEY_FLOATING_ENABLED, floatingEnabled)
             put(KEY_FLOATING_DEFAULT_ON_V1, true)
-            put(KEY_CTRL_OVERLAY_VISIBLE, prefs.getBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
+            put(KEY_CTRL_OVERLAY_ENABLED, ctrlEnabled)
+            put(KEY_CTRL_DEFAULT_ON_V1, true)
+            put(KEY_CTRL_OVERLAY_VISIBLE, ctrlVisible)
             put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             put(KEY_LOCK_MASK, mask)
             put(KEY_CONFIG_SEQ, prefs.getInt(KEY_CONFIG_SEQ, 0))
         }
-        if (!migratedV1) {
+        if (!migratedV1 || !ctrlMigratedV1) {
             writeConfigJson(context, json)
         }
         return json
@@ -126,6 +151,8 @@ object GameModifierBridge {
 
     private fun writeConfigJson(context: Context, json: JSONObject) {
         val floatingEnabled = json.optBoolean(KEY_FLOATING_ENABLED, true)
+        val ctrlEnabled = json.optBoolean(KEY_CTRL_OVERLAY_ENABLED, true)
+        val ctrlVisible = ctrlEnabled && json.optBoolean(KEY_CTRL_OVERLAY_VISIBLE, true)
         val disableStreamer = if (json.has(KEY_DISABLE_STREAMER_MODE)) {
             json.optBoolean(KEY_DISABLE_STREAMER_MODE, false)
         } else {
@@ -140,6 +167,9 @@ object GameModifierBridge {
         val nextSeq = json.optInt(KEY_CONFIG_SEQ, 0) + 1
         json.put(KEY_FLOATING_ENABLED, floatingEnabled)
         json.put(KEY_FLOATING_DEFAULT_ON_V1, true)
+        json.put(KEY_CTRL_OVERLAY_ENABLED, ctrlEnabled)
+        json.put(KEY_CTRL_DEFAULT_ON_V1, true)
+        json.put(KEY_CTRL_OVERLAY_VISIBLE, ctrlVisible)
         json.put(KEY_DISABLE_STREAMER_MODE, disableStreamer)
         json.put(KEY_LOCK_MASK, mask)
         json.put(KEY_CONFIG_SEQ, nextSeq)
@@ -157,7 +187,9 @@ object GameModifierBridge {
         prefs.edit()
             .putBoolean(KEY_FLOATING_ENABLED, floatingEnabled)
             .putBoolean(KEY_FLOATING_DEFAULT_ON_V1, true)
-            .putBoolean(KEY_CTRL_OVERLAY_VISIBLE, json.optBoolean(KEY_CTRL_OVERLAY_VISIBLE, false))
+            .putBoolean(KEY_CTRL_OVERLAY_ENABLED, ctrlEnabled)
+            .putBoolean(KEY_CTRL_DEFAULT_ON_V1, true)
+            .putBoolean(KEY_CTRL_OVERLAY_VISIBLE, ctrlVisible)
             .putBoolean(KEY_DISABLE_STREAMER_MODE, disableStreamer)
             .putInt(KEY_LOCK_MASK, mask)
             .putInt(KEY_CONFIG_SEQ, nextSeq)
@@ -197,13 +229,27 @@ object GameModifierBridge {
         writeConfigJson(context, json)
     }
 
+    fun isCtrlOverlayEnabled(context: Context): Boolean {
+        return readConfigJson(context).optBoolean(KEY_CTRL_OVERLAY_ENABLED, true)
+    }
+
+    fun setCtrlOverlayEnabled(context: Context, enabled: Boolean) {
+        val json = readConfigJson(context)
+        json.put(KEY_CTRL_OVERLAY_ENABLED, enabled)
+        json.put(KEY_CTRL_OVERLAY_VISIBLE, enabled)
+        writeConfigJson(context, json)
+    }
+
     fun isCtrlOverlayVisible(context: Context): Boolean {
-        return readConfigJson(context).optBoolean(KEY_CTRL_OVERLAY_VISIBLE, false)
+        val json = readConfigJson(context)
+        return json.optBoolean(KEY_CTRL_OVERLAY_ENABLED, true) &&
+            json.optBoolean(KEY_CTRL_OVERLAY_VISIBLE, true)
     }
 
     fun setCtrlOverlayVisible(context: Context, visible: Boolean) {
         val json = readConfigJson(context)
-        json.put(KEY_CTRL_OVERLAY_VISIBLE, visible)
+        val enabled = json.optBoolean(KEY_CTRL_OVERLAY_ENABLED, true)
+        json.put(KEY_CTRL_OVERLAY_VISIBLE, enabled && visible)
         writeConfigJson(context, json)
     }
 

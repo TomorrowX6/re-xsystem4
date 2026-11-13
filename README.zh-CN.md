@@ -8,38 +8,46 @@
 
 **re:xsystem4** 是基于 [xsystem4](https://github.com/nunuhara/xsystem4) 与 [xsystem4-android](https://github.com/kichikuou/xsystem4-android) 深度定制和扩展的 AliceSoft **System 4.x** Android 原生引擎。
 
-本项目通过纯 C/C++、SDL2 与 OpenGL ES 3.0 在 Android `arm64-v8a` 设备上直接解释执行 AIN 字节码并渲染原版资源，无需借助 Wine、Winlator 或任何 x86/x64 指令转译层。除兼容传统 System 4.0 游戏外，重点针对后期大型作品（如《兰斯10 -决战- / Rance X》）所使用的 **AIN v12**、**PartsEngine v12**、**FLAT v15 骨骼与粒子动画**、**SealEngine 3D**、**APEG 视频流** 以及 **SaveData v26** 进行了完整实现与移动端深度优化。
+本项目通过纯 C/C++、SDL2 与 OpenGL ES 3.0 在 Android `arm64-v8a` 设备上直接解释执行 AIN 字节码并渲染原版资源，无需借助 Wine、Winlator 或任何 x86/x64 指令转译层。除兼容传统 System 4.0 游戏外，重点针对后期大型作品（如《兰斯10 -决战- / Rance X》及「日不落 MOD」等大型扩展 MOD）所使用的 **AIN v12**、**PartsEngine v12**、**FLAT v15 骨骼与粒子动画**、**SealEngine 3D**、**APEG 视频流** 以及 **SaveData v26** 进行了完整实现与移动端深度优化。
 
 ---
 
 ## 核心特性
 
-### 1. AIN v12 虚拟机与 HLL 扩展
-- **AIN v12 字节码支持**：完整解析并执行 AIN v12 新增操作码、委托（Delegate / `DG_*`）、局部引用管理、结构体深拷贝与反射接口。
+### 1. AIN v12 虚拟机、HLL 扩展与大型 MOD 深度兼容
+- **AIN v12 字节码支持**：完整解析并执行 AIN v12 操作码、委托（Delegate / `DG_*`）、局部引用管理、结构体深拷贝、`CALLFUNC` `struct_page` 继承与反射接口。
 - **HLL 模块覆盖**：完整实现并扩展 `PartsEngine`（804/804 函数全覆盖）、`SealEngine`、`ADVEngine`、`SaveData`、`RSave`、`APEG`、`SoundEngine`、`FileOperation`、`FileDialog`、`MsgSkip`、`Math`、`PassRegister`、`BanMisc` 等核心 HLL 库。
+- **大型 MOD 深度适配**：
+  - 将归档索引编码进 AFA 资源 ID，并按条目 `FILETIME` 时间戳与 MOD 优先级精确解析同名 AFA 资源，确保汉化包与热更补丁（如 `CG6`）完整生效且与大型 MOD 无缝共存。
+  - 优先解析规范 `.ex` 数据表，支持增量 MOD 补丁分层覆盖以及 Shift-JIS / GBK / UTF-8 多编码文本与字体自动回退渲染。
+  - 跨版本 MOD 存档兼容增强：加固 `resume` 结构体偏移变化容错，并对跨版本存档中缺失 `.ex` 条目的卡牌自动渲染兜底卡面。
 
 ### 2. PartsEngine 渲染与 3D 变换管线
 - **FLAT v15 动画与粒子系统**：
-  - 支持 zlib 压缩的 `ELNA` / `FLAT` v15 动画时间轴、骨骼关键帧插值、脚本帧触发及图文混合图层。
-  - 实现嵌套祖先关键帧出生矩阵继承（`parent_key_mode == 2`）与实时粒子位置跟随。
-  - 支持发光路线图层（Additive Blending 加法混合）与 `.flat` 原点偏移校正。
+  - 支持 zlib 压缩的 `ELNA` / `FLAT` v15 动画时间轴、骨骼关键帧插值、脚本帧触发、径向/定终点粒子发射器轨迹及 `.flat` 二进制缓存加速。
+  - 实现嵌套祖先关键帧出生矩阵继承（`parent_key_mode == 2`）、祖先 Alpha 裁剪蒙版继承以及发光路线图层（Additive Blending 加法混合）。
 - **3D 透视旋转与背面剔除**：
   - 支持 UI 部件（如卡牌翻转动画）的 X/Y/Z 三轴欧拉角透视旋转矩阵、父子节点 3D 变换级联以及正反面自动翻转剔除。
-- **构建工序（Construction Process）滤镜**：
-  - 完整支持文本排版绘制、表面裁剪复制、色彩填充、Alpha 混合、高斯模糊、灰阶化、色相/饱和度/明度（HSL/HSV）调整等构建工序指令。
+- **构建工序（Construction Process / `cproc`）管线**：
+  - 完整支持文本排版绘制、表面裁剪复制、色彩填充、Alpha 混合、高斯模糊、灰阶化、HSL/HSV 调整、像素快照（`m_procOrg` 保留）与血条/计量槽裁剪。
 - **编辑器图层过滤与精准命中测试**：
-  - 自动过滤不应在运行期显示的编辑器占位组件（如 `CheckBox`、`RadioButton`、`■ボタン上敷き` 等辅助层）。
-  - 剔除 `alpha == 0` 隐藏部件与透明 `.flat` 容器的无效碰撞，解决透明遮挡层导致的局部触控失灵问题。
+  - 自动过滤不应在运行期显示的编辑器占位组件（`CheckBox`、`RadioButton`、`■ボタン上敷き` 等），并剔除 `alpha == 0` 隐藏部件与透明 `.flat` 容器的无效碰撞。
 
-### 3. 多媒体与性能优化
-- **OpenGL ES 3.0 硬件加速**：基于 GLES 3.0 着色器管线与离屏帧缓冲（FBO）合成，支持 16 KB 页面对齐（Android 15+ 兼容）。
-- **APEG 视频解码**：内置 MPEG-1 视频流与 Ogg Vorbis 音频同步解码器，修复宏块解码越界与过场动画切换时的绿屏闪烁问题。
-- **帧内内存回收与快进节流**：在游戏主循环中及时清理延迟释放纹理（Deferred Texture Garbage Collection），并对持续快进对话（MsgSkip / Ctrl）时的贴图重绘进行节流优化，避免长时间快进引发的卡顿与发热。
+### 3. 性能调度与多媒体优化
+- **OpenGL ES 3.0 硬件加速**：基于 GLES 3.0 着色器管线与离屏帧缓冲（FBO）合成，提交渲染任务后立即执行 `glFlush()` 提前驱动 GPU 并行渲染，兼容 Android 15+ 16 KB 页面对齐。
+- **Android 线程调度与高刷帧率节奏（Frame Pacing）**：
+  - 渲染主线程提升至 `THREAD_PRIORITY_URGENT_DISPLAY`（`-8`，`50us` 定时器精度），音频混音回调线程提升至 `ANDROID_PRIORITY_URGENT_AUDIO`（`-16`）。
+  - 接入 Android 12+ **ADPF（`APerformanceHintManager`）** 动态性能提示，在重负载帧即时引导 CPU 提频；配合 `eglPresentationTimeANDROID` 与无缝 `Surface.setFrameRate` 在 60Hz/120Hz 高刷屏上稳定对齐 60fps VSync。
+  - 应用切入后台时自动休眠音频混音线程，彻底消除后台解码耗电。
+- **APEG 视频解码与内存回收**：内置 MPEG-1 视频流与 Ogg Vorbis 音频同步解码器，主循环实时回收延迟纹理（Deferred Texture GC），加速 `SceneParty` 编成界面卡牌加载并对快进（`MsgSkip` / `Ctrl`）贴图重建节流。
 
-### 4. 移动端触控与内置存档管理器
-- **双阶段触控事件队列**：重构 Android 触控采样与 C 层事件分发管线，保证高频连点、快速切页时的按下/抬起坐标与帧序严格一致。
-- **PC 原版存档双向兼容**：完整实现 `SaveData`（v26 `.asd`）递归序列化与 `RSave`（`.rsd`）读写，手机端存档可与 PC 原版直接互通。
-- **内置存档管理器**：支持从外部 ZIP 压缩包、外部文件夹或单文件导入存档，支持将内部存档打包导出为 ZIP 或导出到外部文件夹，并支持对单个存档执行导出、备份副本、重命名与删除。
+### 4. 多格式解压引擎、MOD 管理、存档管理与游戏修改器
+- **原生 `.zip` / `.rar` / `.7z` 流式解压引擎**：集成 `libarchive` + `xz`（`liblzma`），原生支持 ZIP / Zip64、RAR4 / RAR5（含大型 MOD 常用的固实压缩与大字典）及 7z（LZMA / LZMA2 / PPMd / BCJ），自动识别 UTF-8 / UTF-16LE / GBK 中文与日文文件名。
+- **无损 MOD 管理器**：支持从 `.zip` / `.rar` / `.7z` 压缩包或文件夹安装完整/增量 MOD，自动备份原版被覆盖文件，随时一键 **「还原原版游戏（卸载 MOD）」**。
+- **内置存档管理器**：PC 原版存档双向互通（`SaveData` v26 `.asd` 与 `RSave` `.rsd`，关键全局存档 `fsync` 原子写入）；支持从 `.zip` / `.rar` / `.7z` 压缩包、外部文件夹或单文件导入存档，支持打包导出为 ZIP 或外部文件夹，以及单文件备份、重命名与删除。
+- **独立修改器与局内悬浮窗修改器（默认开启）**：
+  - **局内悬浮窗修改器**：进入游戏默认显示可自由拖动的悬浮球，支持 11 项实时战斗/全局锁定（满生命、无限 AP、999 连击、锁定回合为 1、敌方 1 血秒杀、敌方 0 攻防、全员蓄力必暴、技能无限次数、无限打火机、资源不低于 999、宝箱 100% 掉落）、持久化 **「关闭主播模式」**（适配日不落 MOD 0.49+ 并双端即时原子保存）、免外接键盘 **「输入作弊码」**、可拖动 **`⏩ Ctrl`** 快进锁定悬浮键（默认开启），以及资源/部队/四国兵力/卡牌与角色星级实时编辑。
+  - **独立「游戏修改器」页面**：支持离线修改全局存档（`GlobalSave.asd` / `Collection.asd`）与各进度存档槽位（`SaveData*.asd`）、一键安装/还原全解锁存档（自动 `.modbak` 备份），以及配置局内悬浮窗与 **`⏩ Ctrl` 快进悬浮键**总开关（关闭后游戏内同时禁止唤起）。
 
 ---
 
@@ -48,7 +56,7 @@
 | 项目 | 最低配置要求 | 推荐配置 |
 | :--- | :--- | :--- |
 | **处理器架构** | `arm64-v8a`（64 位 ARM） | 骁龙 8 系列 / 天玑 8000+ 或同级芯片 |
-| **操作系统** | Android 8.0（API 26）及以上 | Android 11.0 及以上 |
+| **操作系统** | Android 8.0（API 26）及以上 | Android 12.0（API 31）及以上（支持 ADPF 动态调频与无缝帧率） |
 | **图形接口** | OpenGL ES 3.0 | OpenGL ES 3.2 |
 | **运行内存** | 4 GB RAM | 6 GB RAM 及以上 |
 | **存储空间** | 取决于游戏体积（大型作品建议预留 5 GB 以上） | UFS 3.0+ 闪存 |
@@ -63,39 +71,41 @@
 
 ---
 
-## 游戏导入与存档管理指南
+## 游戏、MOD、存档与修改器使用指南
 
-要运行游戏，需准备好 PC 原版完整游戏文件（需包含 `AliceStart.ini` 或 `System40.ini` 配置文件、`*.ain` 脚本文件，以及对应的 `*.afa` / `*.ald` 资源包、`Data/`、`Movie/` 等子目录）。
+要运行游戏，需准备好 PC 原版完整游戏文件（包含 `AliceStart.ini` 或 `System40.ini` 配置文件、`*.ain` 脚本文件，以及对应的 `*.afa` / `*.ald` 资源包、`Data/`、`Movie/` 等目录）。
 
-### 方式一：导入游戏目录（推荐）
-1. 将完整的 PC 游戏文件夹复制到手机内部存储的任意目录（例如 `/sdcard/Download/Rance10/`）。
-2. 打开 **re:xsystem4**，点击主界面的 **「导入游戏目录」** 按钮。
-3. 根据系统提示授予存储访问权限，并在弹出的目录选择器中选中该游戏文件夹即可完成导入。
+### 1. 安装游戏本体（`安装游戏本体`）
+点击主界面的 **「安装游戏本体」** 按钮，任选以下方式：
+- **从压缩包安装游戏本体（`.zip` / `.rar` / `.7z`）**：直接选择 `.zip`、`.rar` 或 `.7z` 游戏压缩包（根目录或单层子目录内含 `AliceStart.ini` / `System40.ini`），应用会流式解压并自动注册游戏。
+- **从文件夹安装游戏本体**：将解压好的 PC 游戏文件夹复制到手机存储（如 `/sdcard/Download/Rance10/`），在目录选择器中选中该文件夹即可导入。
 
-### 方式二：从 ZIP 压缩包导入
-1. 将游戏文件夹打包为 `.zip` 格式压缩包（压缩包根目录可直接放置 `AliceStart.ini` / `System40.ini`，或包含单层游戏主目录）。
-2. 打开 **re:xsystem4**，点击主界面的 **「从ZIP导入」** 按钮。
-3. 选择手机中的 `.zip` 文件，应用会自动将其解压至应用数据目录并识别游戏。
+### 2. 安装或卸载 MOD（`安装 MOD`）
+1. 先完成原版游戏导入，然后点击主界面的 **「安装 MOD」** 并选择目标游戏。
+2. 支持从 **`.zip` / `.rar` / `.7z` 压缩包** 或 **外部文件夹** 安装完整包或增量补丁，覆盖前会自动备份原版文件。
+3. 需要恢复原版时，在同一菜单点击 **「还原原版游戏 (卸载 MOD)」** 即可一键无损还原。
 
-### 存档管理器（外部导入 / 内部导出 / 存档管理）
-主界面在 **「从ZIP导入」** 与 **「GitHub」** 之间内置了 **「存档管理器」**：
-- **外部导入存档**：支持从外部 `.zip` 压缩包、外部文件夹、单个或多个存档文件（如 `GlobalSave.asd`、`Collection.asd`、`SaveData*.asd` 等）一键导入至应用内部存档目录。
-- **内部导出存档**：支持将内部存档一键打包导出为 `.zip` 压缩包，或直接导出至手机任意外部文件夹。
-- **存档管理**：支持按游戏切换或新建存档目录，查看存档文件类型、大小与修改时间，以及对单个存档执行导出、备份（`.bak`）、重命名与删除。
+### 3. 存档管理器（`存档管理器`）
+- **外部导入存档**：支持从外部 `.zip` / `.rar` / `.7z` 压缩包、外部文件夹、单个或多个存档文件（`GlobalSave.asd`、`Collection.asd`、`SaveData*.asd` 等）一键导入。
+- **内部导出存档**：支持将内部存档打包导出为 `.zip` 压缩包，或直接导出至任意外部文件夹。
+- **存档管理**：支持按游戏/MOD 切换或新建存档目录，查看存档分类标签、体积与修改时间，并对单个存档执行导出、备份（`.bak`）、重命名与删除。
+
+### 4. 游戏修改器（`游戏修改器` 与局内悬浮窗）
+- **局内悬浮窗修改器**：默认开启（游戏画面左上角可拖动图标），支持随时开关实时锁定项、一键关闭 MOD 主播模式（重启自动保持）、输入 MOD 作弊码、呼出 **`⏩ Ctrl`** 快进悬浮键，以及实时修改资源、部队、四国兵力与卡牌星级。
+- **主界面「游戏修改器」**：支持在未启动游戏时离线修改全局存档与进度存档、一键导入全解锁存档，或开启/关闭局内悬浮窗与 **`⏩ Ctrl`** 快进悬浮键（默认开启，关闭后游戏内亦禁止唤起）。
 
 ---
 
 ## 触控操作说明
 
-游戏运行期间支持以下触控手势模拟鼠标与键盘操作：
-
 | 游戏内操作 | 触控手势 |
 | :--- | :--- |
 | **鼠标左键点击 / 确认** | 单指轻触画面目标位置 |
 | **鼠标右键点击 / 返回 / 呼出菜单** | 单指轻触游戏画面左右两侧黑边区域，或双指同时轻触屏幕 |
-| **对话快进（对应键盘 Ctrl 键）** | 单指长按屏幕不放 |
+| **对话快进（对应键盘 `Ctrl` 键）** | 单指长按屏幕不放，或点击 **`⏩ Ctrl`** 悬浮键一键锁定快进 |
 | **鼠标滚轮上下滚动（历史文本 / 列表翻页）** | 双指在屏幕上向下 / 向上滑动 |
-| **鼠标光标悬停移动** | 单指在屏幕上按住并滑动 |
+| **光标悬停移动 / 编成卡牌滑动拖拽** | 单指在屏幕上按住并滑动 |
+| **退出确认弹窗** | 系统返回手势 / 返回键（触发游戏原生 `SetHookCloseApp` 退出确认） |
 
 ---
 
@@ -109,10 +119,11 @@
 ├── build-shared-libs.sh    # 编译 Android JNI 原生动态库 (.so) 的入口脚本
 ├── collect-licenses.sh     # 收集第三方依赖开源许可证脚本
 ├── cmake/                  # 拉取 FreeType 与 SDL2 的 CMake 模块
-├── xsystem4/               # 深度扩展后的 xsystem4 引擎与 libsys4 核心源码
+├── archive_jni/            # 基于 libarchive + xz (liblzma) 的原生 .zip / .rar / .7z 流式解压库
+├── xsystem4/               # 深度扩展后的 xsystem4 引擎、修改器核心与 libsys4 源码
 │   ├── include/            # 引擎头文件
-│   ├── src/                # 虚拟机、渲染管线、音频、视频、HLL 模块与 PartsEngine 实现
-│   ├── shaders/            # OpenGL ES 着色器源码
+│   ├── src/                # 虚拟机、渲染管线、ADPF 帧率调度、音视频、HLL、PartsEngine 与修改器实现
+│   ├── shaders/            # OpenGL ES 3.0 着色器源码
 │   └── subprojects/
 │       └── libsys4/        # AIN、AFA、FLAT、EX、ACF、存档等格式解析库
 └── project/                # Android Gradle 应用工程
@@ -120,9 +131,9 @@
         ├── build.gradle    # Android 应用构建与签名配置
         └── src/main/
             ├── AndroidManifest.xml
-            ├── java/io/github/kichikuou/xsystem4/  # 启动器、存档管理器、目录/ZIP 导入与 SDLActivity 封装
+            ├── java/io/github/kichikuou/xsystem4/  # 启动器、MOD/存档管理、修改器、解压器与 Activity 封装
             ├── jniLibs/arm64-v8a/                  # 编译生成的原生动态库输出目录
-            └── res/                                # 界面布局、图标与字符串资源
+            └── res/                                # 界面布局、图标、全解锁存档包与多语言资源
 ```
 
 ---
@@ -133,7 +144,7 @@
 在 Linux（推荐 Ubuntu 22.04 / 24.04）或 macOS 环境下构建，需安装以下工具：
 - **JDK 17**
 - **Android SDK**（Platform API 34+、Build-Tools 34.0.0+）
-- **Android NDK**（推荐 r26d 或 r27c）
+- **Android NDK**（推荐 r26d – r29）
 - **CMake**（3.22 及以上）与 **Ninja**
 - 构建工具链：`flex`、`bison`、`pkg-config`、`autoconf`、`automake`、`libtool`、`python3`、`git`
 
@@ -161,14 +172,14 @@ sudo apt-get install -y ninja-build bison flex autoconf automake libtool pkg-con
    ```bash
    ./build-shared-libs.sh
    ```
-   该脚本会通过 CMake 自动下载并交叉编译 `libwebp`、`libjpeg-turbo`、`libpng`、`libogg`、`libvorbis`、`libsndfile`、`freetype`、`SDL2`、`cglm`、`libffi`、`libdeflate` 以及 `xsystem4` 核心库，并将生成的 `.so` 文件输出至 `project/app/src/main/jniLibs/arm64-v8a/`。
+   该脚本会通过 CMake 自动下载并交叉编译 `libwebp`、`libjpeg-turbo`、`libpng`、`libogg`、`libvorbis`、`libsndfile`、`freetype`、`SDL2`、`cglm`、`libffi`、`libdeflate`、`xz`（`liblzma`）、`libarchive`、`archive_jni` 以及 `xsystem4` 核心库，并将生成的 `.so` 文件输出至 `project/app/src/main/jniLibs/arm64-v8a/`。
 
 4. **打包 Android APK**：
    ```bash
    cd project
    ./gradlew assembleRelease
    ```
-   生成的 APK 位于 `project/app/build/outputs/apk/release/app-release.apk`。
+   生成的签名 APK 位于 `project/app/build/outputs/apk/release/app-release.apk`。
 
 ### 3. CI 自动签名配置
 本仓库内置了 GitHub Actions 工作流（[`.github/workflows/build.yml`](.github/workflows/build.yml)）。若需在 Fork 仓库中启用 Release 自动签名，请在仓库的 `Settings -> Secrets and variables -> Actions` 中配置以下 Secrets（未配置时会自动生成临时签名密钥完成构建）：
@@ -183,5 +194,6 @@ sudo apt-get install -y ninja-build bison flex autoconf automake libtool pkg-con
 
 - [nunuhara/xsystem4](https://github.com/nunuhara/xsystem4) & [nunuhara/libsys4](https://github.com/nunuhara/libsys4)：跨平台 System 4 引擎及文件格式解析基础实现。
 - [kichikuou/xsystem4-android](https://github.com/kichikuou/xsystem4-android)：xsystem4 的 Android 移植框架基础。
+- [xiexiahai/xsystem4-rance10-android](https://github.com/xiexiahai/xsystem4-rance10-android)：项目特性参考与增强致谢。
 
 本项目遵循 [GNU General Public License v2.0 (GPL-2.0)](xsystem4/COPYING) 协议开源。

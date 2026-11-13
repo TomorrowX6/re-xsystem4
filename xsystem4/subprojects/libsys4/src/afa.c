@@ -72,7 +72,7 @@ static struct afa_entry *afa_get_entry_by_name(struct afa_archive *ar, const cha
 	return ht_get(ar->name_index, name, NULL);
 }
 
-static struct afa_entry *afa_get_entry_by_basename(struct afa_archive *ar, const char *name)
+struct afa_entry *afa_lookup_by_basename(struct afa_archive *ar, const char *name)
 {
 	if (!ar->basename_index) {
 		ar->basename_index = ht_create(ar->nr_files * 3 / 2);
@@ -87,6 +87,11 @@ static struct afa_entry *afa_get_entry_by_basename(struct afa_archive *ar, const
 	struct afa_entry *entry = ht_get(ar->basename_index, basename, NULL);
 	free(basename);
 	return entry;
+}
+
+static struct afa_entry *afa_get_entry_by_basename(struct afa_archive *ar, const char *name)
+{
+	return afa_lookup_by_basename(ar, name);
 }
 
 static struct afa_entry *afa_get_entry_by_number(struct afa_archive *ar, int no)
@@ -174,7 +179,7 @@ struct archive_data *afa_entry_to_descriptor(struct afa_archive *ar, struct afa_
 	return data;
 }
 
-static struct archive_data *afa_get_by_entry(struct afa_archive *ar, struct afa_entry *entry)
+struct archive_data *afa_load_entry(struct afa_archive *ar, struct afa_entry *entry)
 {
 	if (!entry)
 		return NULL;
@@ -184,6 +189,11 @@ static struct archive_data *afa_get_by_entry(struct afa_archive *ar, struct afa_
 		return NULL;
 	}
 	return data;
+}
+
+static struct archive_data *afa_get_by_entry(struct afa_archive *ar, struct afa_entry *entry)
+{
+	return afa_load_entry(ar, entry);
 }
 
 static struct archive_data *afa_get(struct archive *_ar, int no)

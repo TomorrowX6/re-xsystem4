@@ -355,36 +355,85 @@ static struct archive_data *afa_get_by_id(struct asset_manager *_manager, int id
 	return NULL;
 }
 
+static bool afa_is_backup_archive(const char *filepath)
+{
+	size_t len = strlen(filepath);
+	return len >= 12 && !strcasecmp(filepath + len - 12, ".vanilla.bak");
+}
+
+static uint64_t afa_entry_timestamp(const struct afa_entry *e)
+{
+	if (!e->unknown0 && !e->unknown1)
+		return 0;
+	return ((uint64_t)(e->unknown1 & 0x7fffffffu) << 32) | (uint64_t)e->unknown0;
+}
+
+static struct afa_entry *afa_find_best_by_basename(struct asset_manager_afa *manager,
+		const char *name, struct afa_archive **ar_out)
+{
+	struct afa_archive *best_ar = NULL;
+	struct afa_entry *best_entry = NULL;
+	uint64_t best_ts = 0;
+
+	for (size_t i = 0; i < manager->nr_archives; i++) {
+		struct afa_archive *ar = manager->archives[i];
+		if (afa_is_backup_archive(ar->filename) && best_entry)
+			break;
+
+		struct afa_entry *e = afa_lookup_by_basename(ar, name);
+		if (!e)
+			continue;
+
+		if (afa_is_mod_archive(ar->filename)) {
+			*ar_out = ar;
+			return e;
+		}
+
+		uint64_t ts = afa_entry_timestamp(e);
+		if (ts == 0) {
+			if (!best_entry) {
+				*ar_out = ar;
+				return e;
+			}
+			continue;
+		}
+
+		if (!best_entry || ts > best_ts) {
+			best_ar = ar;
+			best_entry = e;
+			best_ts = ts;
+		}
+	}
+
+	if (best_entry)
+		*ar_out = best_ar;
+	return best_entry;
+}
+
 static struct archive_data *afa_get_by_name(struct asset_manager *_manager, const char *name,
 		int *id_out)
 {
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
-
-	for (size_t i = 0; i < manager->nr_archives; i++) {
-		struct archive_data *data;
-		data = archive_get_by_basename(&manager->archives[i]->ar, name);
-		if (data) {
-			if (id_out)
-				*id_out = afa_encode_id(manager, manager->archives[i], data->no);
-			return data;
-		}
-	}
-	return NULL;
+	struct afa_archive *ar = NULL;
+	struct afa_entry *entry = afa_find_best_by_basename(manager, name, &ar);
+	if (!entry)
+		return NULL;
+	struct archive_data *data = afa_load_entry(ar, entry);
+	if (data && id_out)
+		*id_out = afa_encode_id(manager, ar, data->no);
+	return data;
 }
 
 static bool afa_exists_by_name(struct asset_manager *_manager, const char *name, int *id_out)
 {
 	struct asset_manager_afa *manager = (struct asset_manager_afa*)_manager;
-
-	for (size_t i = 0; i < manager->nr_archives; i++) {
-		int local_no = 0;
-		if (archive_exists_by_basename(&manager->archives[i]->ar, name, id_out ? &local_no : NULL)) {
-			if (id_out)
-				*id_out = afa_encode_id(manager, manager->archives[i], local_no);
-			return true;
-		}
-	}
-	return false;
+	struct afa_archive *ar = NULL;
+	struct afa_entry *entry = afa_find_best_by_basename(manager, name, &ar);
+	if (!entry)
+		return false;
+	if (id_out)
+		*id_out = afa_encode_id(manager, ar, entry->no);
+	return true;
 }
 
 void asset_foreach_file(enum asset_type type,

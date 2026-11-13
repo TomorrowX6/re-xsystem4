@@ -197,23 +197,40 @@ class XSystem4Activity : SDLActivity() {
     }
 
     fun isCtrlOverlayCurrentlyVisible(): Boolean {
+        if (!GameModifierBridge.isCtrlOverlayEnabled(this)) return false
         val pill = ctrlPill
         return if (pill != null) pill.visibility == View.VISIBLE else GameModifierBridge.isCtrlOverlayVisible(this)
     }
 
     fun setCtrlOverlayVisible(visible: Boolean) {
+        val effectiveVisible = visible && GameModifierBridge.isCtrlOverlayEnabled(this)
         ensureOverlaysAttached()
-        if (!visible) {
+        if (!effectiveVisible) {
             setCtrlSkipLatched(false)
         }
-        ctrlPill?.visibility = if (visible) View.VISIBLE else View.GONE
-        GameModifierBridge.setCtrlOverlayVisible(this, visible)
+        ctrlPill?.visibility = if (effectiveVisible) View.VISIBLE else View.GONE
+        GameModifierBridge.setCtrlOverlayVisible(this, effectiveVisible)
+        lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
     }
 
     fun toggleCtrlOverlay(): Boolean {
+        if (!GameModifierBridge.isCtrlOverlayEnabled(this)) {
+            setCtrlOverlayVisible(false)
+            return false
+        }
         val next = !isCtrlOverlayCurrentlyVisible()
         setCtrlOverlayVisible(next)
         return next
+    }
+
+    private fun syncOverlayPreferences() {
+        val ctrlVisible = GameModifierBridge.isCtrlOverlayEnabled(this) &&
+            GameModifierBridge.isCtrlOverlayVisible(this)
+        if (!ctrlVisible) {
+            setCtrlSkipLatched(false)
+        }
+        ctrlPill?.visibility = if (ctrlVisible) View.VISIBLE else View.GONE
+        modifierOverlay?.syncVisibility()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -224,6 +241,7 @@ class XSystem4Activity : SDLActivity() {
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+                syncOverlayPreferences()
                 lastSyncedConfigSeq = curSeq
             }
         } catch (_: Throwable) {
@@ -243,6 +261,7 @@ class XSystem4Activity : SDLActivity() {
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
+                syncOverlayPreferences()
                 lastSyncedConfigSeq = curSeq
             }
         } catch (_: Throwable) {
@@ -305,7 +324,9 @@ class XSystem4Activity : SDLActivity() {
                 return true
             }
             COMMAND_TOGGLE_CTRL_OVERLAY -> {
-                toggleCtrlOverlay()
+                if (GameModifierBridge.isCtrlOverlayEnabled(this)) {
+                    toggleCtrlOverlay()
+                }
                 return true
             }
             COMMAND_OPEN_PLAYING_MANUAL -> {

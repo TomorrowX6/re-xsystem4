@@ -72,6 +72,18 @@ class FloatingModifierOverlay(private val activity: Activity) {
         rootOverlay = null
     }
 
+    fun syncVisibility() {
+        if (GameModifierBridge.isFloatingEnabled(activity)) {
+            if (rootOverlay == null) {
+                attach()
+            } else {
+                floatingBtn?.visibility = View.VISIBLE
+            }
+        } else {
+            floatingBtn?.visibility = View.GONE
+        }
+    }
+
     private fun buildFloatingButton(): ImageView {
         val sizePx = dp(40)
         val padPx = dp(6)
@@ -175,8 +187,9 @@ class FloatingModifierOverlay(private val activity: Activity) {
     private fun showMainModifierDialog() {
         val xsAct = activity as? XSystem4Activity
         xsAct?.setCtrlSkipLatched(false)
-        val ctrlVisible = xsAct?.isCtrlOverlayCurrentlyVisible()
-            ?: GameModifierBridge.isCtrlOverlayVisible(activity)
+        val ctrlEnabled = GameModifierBridge.isCtrlOverlayEnabled(activity)
+        val ctrlVisible = ctrlEnabled && (xsAct?.isCtrlOverlayCurrentlyVisible()
+            ?: GameModifierBridge.isCtrlOverlayVisible(activity))
         val j = readLiveJson()
         val inGame = j.optBoolean("inGame", false)
         val inBattle = j.optBoolean("inBattle", false)
@@ -212,49 +225,47 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("Ctrl 快进悬浮键：已隐藏 [点击显示]", "Ctrl早送りボタン：非表示", "Ctrl Skip Button: Hidden")
         }
 
-        val items = arrayOf(
-            tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…"),
-            streamerItemLabel,
-            ctrlItemLabel,
-            tr("输入作弊码…", "チートコード入力…", "Enter Cheat Code…"),
-            tr("战斗快捷指令…", "戦闘クイック操作…", "Battle Quick Actions…"),
-            tr("一键全局强化…", "一括強化プリセット…", "One-Click Boosts…"),
-            tr("修改资源与回合…", "リソース・ターン編集…", "Edit Resources & Turn…"),
-            tr("修改部队与属性加成…", "部隊HP・ステータス編集…", "Edit Party & Stats…"),
-            tr("修改四国兵力与人口…", "四国兵力・人口編集…", "Edit World & Armies…"),
-            tr("修改卡牌叠卡与角色星级…", "カード・キャラ★編集…", "Edit Cards & Chars…"),
-            tr("隐藏悬浮图标", "アイコンを非表示", "Hide Floating Icon")
+        val menuEntries = mutableListOf<Pair<String, () -> Unit>>(
+            tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…") to { showLocksDialog() },
+            streamerItemLabel to { triggerDisableStreamerModeInGame(inGame) }
         )
+        if (ctrlEnabled) {
+            menuEntries.add(
+                ctrlItemLabel to {
+                    val nextVisible = xsAct?.toggleCtrlOverlay() ?: (!ctrlVisible).also {
+                        GameModifierBridge.setCtrlOverlayVisible(activity, it)
+                    }
+                    Toast.makeText(
+                        activity,
+                        if (nextVisible) tr("已显示 Ctrl 快进悬浮键（单击锁定快进，可自由拖动，点击黑边也可显隐）", "Ctrl早送りボタンを表示しました", "Ctrl skip button shown")
+                        else tr("已隐藏 Ctrl 快进悬浮键", "Ctrl早送りボタンを非表示にしました", "Ctrl skip button hidden"),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+        menuEntries.addAll(
+            listOf(
+                tr("输入作弊码…", "チートコード入力…", "Enter Cheat Code…") to { showCheatCodeDialog() },
+                tr("战斗快捷指令…", "戦闘クイック操作…", "Battle Quick Actions…") to { showBattleQuickDialog() },
+                tr("一键全局强化…", "一括強化プリセット…", "One-Click Boosts…") to { showOneClickBoostDialog() },
+                tr("修改资源与回合…", "リソース・ターン編集…", "Edit Resources & Turn…") to { showEditResourcesDialog(j) },
+                tr("修改部队与属性加成…", "部隊HP・ステータス編集…", "Edit Party & Stats…") to { showEditPartyDialog(j) },
+                tr("修改四国兵力与人口…", "四国兵力・人口編集…", "Edit World & Armies…") to { showEditWorldDialog(j) },
+                tr("修改卡牌叠卡与角色星级…", "カード・キャラ★編集…", "Edit Cards & Chars…") to { showEditCardsDialog() },
+                tr("隐藏悬浮图标", "アイコンを非表示", "Hide Floating Icon") to {
+                    floatingBtn?.visibility = View.GONE
+                    Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
+                }
+            )
+        )
+
+        val items = menuEntries.map { it.first }.toTypedArray()
 
         AlertDialog.Builder(activity)
             .setTitle(titleText)
             .setItems(items) { _, which ->
-                when (which) {
-                    0 -> showLocksDialog()
-                    1 -> triggerDisableStreamerModeInGame(inGame)
-                    2 -> {
-                        val nextVisible = xsAct?.toggleCtrlOverlay() ?: (!ctrlVisible).also {
-                            GameModifierBridge.setCtrlOverlayVisible(activity, it)
-                        }
-                        Toast.makeText(
-                            activity,
-                            if (nextVisible) tr("已显示 Ctrl 快进悬浮键（单击锁定快进，可自由拖动，点击黑边也可显隐）", "Ctrl早送りボタンを表示しました", "Ctrl skip button shown")
-                            else tr("已隐藏 Ctrl 快进悬浮键", "Ctrl早送りボタンを非表示にしました", "Ctrl skip button hidden"),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                    3 -> showCheatCodeDialog()
-                    4 -> showBattleQuickDialog()
-                    5 -> showOneClickBoostDialog()
-                    6 -> showEditResourcesDialog(j)
-                    7 -> showEditPartyDialog(j)
-                    8 -> showEditWorldDialog(j)
-                    9 -> showEditCardsDialog()
-                    10 -> {
-                        floatingBtn?.visibility = View.GONE
-                        Toast.makeText(activity, tr("已隐藏悬浮图标", "非表示にしました", "Hidden"), Toast.LENGTH_SHORT).show()
-                    }
-                }
+                menuEntries.getOrNull(which)?.second?.invoke()
             }
             .setNegativeButton(R.string.cancel, null)
             .show()

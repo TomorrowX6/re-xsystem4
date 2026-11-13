@@ -267,7 +267,9 @@ static void persist_modifier_config_from_native(int lock_mask)
 		root = cJSON_CreateObject();
 		cJSON_AddBoolToObject(root, "floating_enabled", true);
 		cJSON_AddBoolToObject(root, "floating_default_on_v1", true);
-		cJSON_AddBoolToObject(root, "ctrl_overlay_visible", false);
+		cJSON_AddBoolToObject(root, "ctrl_overlay_enabled", true);
+		cJSON_AddBoolToObject(root, "ctrl_default_on_v1", true);
+		cJSON_AddBoolToObject(root, "ctrl_overlay_visible", true);
 	}
 
 	bool want_dis = (lock_mask & LOCK_DISABLE_STREAMER_MODE) != 0;
@@ -294,6 +296,15 @@ static void persist_modifier_config_from_native(int lock_mask)
 		cJSON_AddBoolToObject(root, "floating_default_on_v1", true);
 	if (!cJSON_GetObjectItem(root, "floating_enabled"))
 		cJSON_AddBoolToObject(root, "floating_enabled", true);
+	if (!cJSON_GetObjectItem(root, "ctrl_default_on_v1"))
+		cJSON_AddBoolToObject(root, "ctrl_default_on_v1", true);
+	if (!cJSON_GetObjectItem(root, "ctrl_overlay_enabled"))
+		cJSON_AddBoolToObject(root, "ctrl_overlay_enabled", true);
+	if (!cJSON_GetObjectItem(root, "ctrl_overlay_visible")) {
+		cJSON *j_ctrl_en = cJSON_GetObjectItem(root, "ctrl_overlay_enabled");
+		bool ctrl_en = j_ctrl_en ? cJSON_IsTrue(j_ctrl_en) : true;
+		cJSON_AddBoolToObject(root, "ctrl_overlay_visible", ctrl_en);
+	}
 
 	char *out = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
