@@ -502,6 +502,8 @@ void asset_manager_init(void)
 	char *base = get_base_name(config.ain_filename);
 	size_t base_len = strlen(base);
 
+	bool ex_is_canonical = false;
+
 	// get ALD filenames
 	while ((d_name = readdir_utf8(dir))) {
 		// archive filename must begin with ain filename
@@ -555,26 +557,31 @@ void asset_manager_init(void)
 			}
 			config.wai_path = path_join(config.game_dir, d_name);
 		} else if (!strcasecmp(ext, "ex")) {
+			const char *suffix = d_name + base_len;
+			bool canonical = !strcasecmp(suffix, "EX.ex") || !strcasecmp(suffix, ".ex");
 			if (config.ex_path) {
 				WARNING("Multiple ex files");
-				goto loop_next;
+				if (!canonical || ex_is_canonical)
+					goto loop_next;
+				free(config.ex_path);
 			}
 			config.ex_path = path_join(config.game_dir, d_name);
+			ex_is_canonical = canonical;
 		} else if (!strcasecmp(ext, "afa")) {
 			const char *type = d_name + base_len;
-			if (!strcmp(type, "BA.afa")) {
+			if (!strcasecmp(type, "BA.afa")) {
 				afa_filenames[ASSET_BGM] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "WA.afa") || !strcmp(type, "Sound.afa")) {
+			} else if (!strcasecmp(type, "WA.afa") || !strcasecmp(type, "Sound.afa")) {
 				afa_filenames[ASSET_SOUND] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "Voice.afa")) {
+			} else if (!strcasecmp(type, "Voice.afa")) {
 				afa_filenames[ASSET_VOICE] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "CG.afa")) {
+			} else if (!strcasecmp(type, "CG.afa")) {
 				afa_filenames[ASSET_CG] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "Flat.afa")) {
+			} else if (!strcasecmp(type, "Flat.afa")) {
 				afa_filenames[ASSET_FLAT] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "Pact.afa")) {
+			} else if (!strcasecmp(type, "Pact.afa")) {
 				afa_filenames[ASSET_PACT] = path_join(config.game_dir, d_name);
-			} else if (!strcmp(type, "AFF.afa")) {
+			} else if (!strcasecmp(type, "AFF.afa")) {
 				afa_filenames[ASSET_FLASH] = path_join(config.game_dir, d_name);
 			}
 		} else if (!strcasecmp(ext, "fnl")) {

@@ -499,11 +499,13 @@ class GameList(activity: Activity) {
 
     private fun applyModStagingToGameDir(stagingDir: File, targetDir: File) {
         val modRoot = findModRoot(stagingDir)
-        if (File(targetDir, ".mod_installed_files.txt").exists() ||
-            targetDir.listFiles()?.any { it.name.endsWith(".vanilla.bak") } == true) {
-            restoreVanillaFromMod(targetDir)
-        }
+        val manifestFile = File(targetDir, ".mod_installed_files.txt")
         val addedFiles = linkedSetOf<String>()
+        if (manifestFile.exists()) {
+            manifestFile.readLines().map { it.trim() }
+                .filter { it.isNotEmpty() && !it.contains("..") }
+                .forEach { addedFiles.add(it) }
+        }
         val modFiles = modRoot.walkTopDown().filter { it.isFile }.toList()
         for (srcFile in modFiles) {
             val relPath = srcFile.relativeTo(modRoot).path.replace('\\', '/')
@@ -514,19 +516,25 @@ class GameList(activity: Activity) {
                 it.isFile && !it.name.endsWith(".vanilla.bak") && it.name.equals(relPath, ignoreCase = true)
             }
             val destFile = existingIgnoreCase ?: File(targetDir, relPath)
+            val destRelPath = destFile.relativeTo(targetDir).path.replace('\\', '/')
+            val wasAddedByMod = addedFiles.any { it.equals(destRelPath, ignoreCase = true) }
             destFile.parentFile?.mkdirs()
             if (destFile.exists()) {
-                val bakFile = File(destFile.parentFile, "${destFile.name}.vanilla.bak")
-                if (!bakFile.exists()) {
-                    if (!destFile.renameTo(bakFile)) {
-                        destFile.copyTo(bakFile, overwrite = true)
+                if (wasAddedByMod) {
+                    destFile.delete()
+                } else {
+                    val bakFile = File(destFile.parentFile, "${destFile.name}.vanilla.bak")
+                    if (!bakFile.exists()) {
+                        if (!destFile.renameTo(bakFile)) {
+                            destFile.copyTo(bakFile, overwrite = true)
+                            destFile.delete()
+                        }
+                    } else {
                         destFile.delete()
                     }
-                } else {
-                    destFile.delete()
                 }
-            } else {
-                addedFiles.add(destFile.relativeTo(targetDir).path.replace('\\', '/'))
+            } else if (!wasAddedByMod) {
+                addedFiles.add(destRelPath)
             }
             if (!srcFile.renameTo(destFile)) {
                 srcFile.copyTo(destFile, overwrite = true)

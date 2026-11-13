@@ -192,7 +192,9 @@ static int mainex_column(struct string *name, struct string *field, int id)
 
 static struct ex *read_ex_cstr(const char *filename)
 {
-	char *path = gamedir_path(filename);
+	char *path = gamedir_path_icase(filename);
+	if (!path)
+		path = gamedir_path(filename);
 	struct ex *ex = ex_read_file(path);
 	free(path);
 	return ex;
