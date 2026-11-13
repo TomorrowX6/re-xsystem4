@@ -1874,9 +1874,13 @@ class SDLMain implements Runnable {
         String[] arguments = SDLActivity.mSingleton.getArguments();
 
         try {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         } catch (Exception e) {
-            Log.v("SDL", "modify thread properties failed " + e.toString());
+            try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
+            } catch (Exception e2) {
+                Log.v("SDL", "modify thread properties failed " + e2.toString());
+            }
         }
 
         Log.v("SDL", "Running main function " + function + " from library " + library);

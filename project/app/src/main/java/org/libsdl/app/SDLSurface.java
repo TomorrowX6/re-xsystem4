@@ -85,7 +85,15 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             try {
                 Surface surface = holder.getSurface();
                 if (surface != null && surface.isValid()) {
-                    surface.setFrameRate(60.0f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        surface.setFrameRate(
+                            60.0f,
+                            Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                            Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
+                        );
+                    } else {
+                        surface.setFrameRate(60.0f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+                    }
                 }
             } catch (Throwable ignored) {
             }

@@ -857,7 +857,9 @@ static void handle_window_event(SDL_Event *e)
 	case SDL_WINDOWEVENT_FOCUS_GAINED:
 		mouse_focus = true;
 		keyboard_focus = true;
+		mixer_set_app_backgrounded(false);
 		mixer_set_window_focus(true);
+		gfx_reset_frame_pacer();
 		break;
 	case SDL_WINDOWEVENT_FOCUS_LOST:
 #ifndef __ANDROID__
@@ -870,6 +872,7 @@ static void handle_window_event(SDL_Event *e)
 		break;
 	case SDL_WINDOWEVENT_SIZE_CHANGED:
 		gfx_update_screen_scale();
+		gfx_reset_frame_pacer();
 		gfx_swap();
 		break;
 	}
@@ -911,7 +914,13 @@ void handle_window_events(void)
 			kbd_ctrl_down = false;
 			touch_ctrl_skip = false;
 			key_state[VK_CONTROL] = false;
+			mixer_set_app_backgrounded(true);
+			gfx_reset_frame_pacer();
 			savedata_flush_on_background();
+			break;
+		case SDL_APP_DIDENTERFOREGROUND:
+			mixer_set_app_backgrounded(false);
+			gfx_reset_frame_pacer();
 			break;
 		}
 	}
@@ -952,9 +961,13 @@ void handle_events(void)
 			kbd_ctrl_down = false;
 			touch_ctrl_skip = false;
 			key_state[VK_CONTROL] = false;
+			mixer_set_app_backgrounded(true);
+			gfx_reset_frame_pacer();
 			savedata_flush_on_background();
 			break;
 		case SDL_APP_DIDENTERFOREGROUND:
+			mixer_set_app_backgrounded(false);
+			gfx_reset_frame_pacer();
 			gfx_swap();
 			break;
 		case SDL_AUDIODEVICEREMOVED:

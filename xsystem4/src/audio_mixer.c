@@ -19,6 +19,10 @@
 
 #include <sndfile.h>
 #include <SDL.h>
+#ifdef __ANDROID__
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#endif
 
 #include "system4.h"
 #include "system4/archive.h"
@@ -102,6 +106,15 @@ static int nr_mixers = 0;
 static SDL_AudioDeviceID audio_device = 0;
 static bool global_focus = true;
 static bool window_focused = true;
+static bool app_backgrounded = false;
+
+static inline void mixer_sync_pause_state(void)
+{
+	if (audio_device) {
+		bool should_pause = app_backgrounded || (!global_focus && !window_focused);
+		SDL_PauseAudioDevice(audio_device, should_pause ? 1 : 0);
+	}
+}
 
 static inline void audio_lock(void)
 {
@@ -118,13 +131,19 @@ static inline void audio_unlock(void)
 void mixer_set_global_focus(bool enabled)
 {
 	global_focus = enabled;
-	if (audio_device) SDL_PauseAudioDevice(audio_device, !global_focus && !window_focused);
+	mixer_sync_pause_state();
 }
 
 void mixer_set_window_focus(bool focused)
 {
 	window_focused = focused;
-	if (audio_device) SDL_PauseAudioDevice(audio_device, !global_focus && !window_focused);
+	mixer_sync_pause_state();
+}
+
+void mixer_set_app_backgrounded(bool backgrounded)
+{
+	app_backgrounded = backgrounded;
+	mixer_sync_pause_state();
 }
 
 /*
@@ -132,6 +151,15 @@ void mixer_set_window_focus(bool focused)
  */
 static void audio_callback(possibly_unused void *data, Uint8 *stream, int len)
 {
+#ifdef __ANDROID__
+	static _Thread_local bool s_audio_prio_set = false;
+	if (!s_audio_prio_set) {
+		s_audio_prio_set = true;
+		/* ANDROID_PRIORITY_URGENT_AUDIO (-16) prevents mixer underruns during loads */
+		setpriority(PRIO_PROCESS, 0, -16);
+		prctl(PR_SET_TIMERSLACK, 50000UL, 0, 0, 0);
+	}
+#endif
 	sts_mixer_mix_audio(&master->mixer, stream, len / (sizeof(float) * 2));
 	if (master->muted) {
 		memset(stream, 0, len);

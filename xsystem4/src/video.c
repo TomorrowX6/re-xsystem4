@@ -21,6 +21,13 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#endif
 
 #include "system4.h"
 #include "system4/cg.h"
@@ -79,6 +86,110 @@ static SDL_Color clear_color = { 0, 0, 0, 255 };
 static float frame_rate;
 #ifdef __ANDROID__
 static bool wait_vsync = true;
+
+#define EGL_DRAW_SURFACE_ENUM 0x3059
+typedef void *(*pfn_eglGetCurrentDisplay_t)(void);
+typedef void *(*pfn_eglGetCurrentSurface_t)(int readdraw);
+typedef void *(*pfn_eglGetProcAddress_t)(const char *procname);
+typedef unsigned int (*pfn_eglPresentationTimeANDROID_t)(void *dpy, void *surf, int64_t time_ns);
+
+typedef struct APerformanceHintManager APerformanceHintManager;
+typedef struct APerformanceHintSession APerformanceHintSession;
+typedef APerformanceHintManager *(*pfn_adpf_get_manager_t)(void);
+typedef APerformanceHintSession *(*pfn_adpf_create_session_t)(
+	APerformanceHintManager *mgr, const int32_t *tids, size_t size, int64_t target_ns);
+typedef int64_t (*pfn_adpf_get_pref_rate_t)(APerformanceHintManager *mgr);
+typedef int (*pfn_adpf_report_work_t)(APerformanceHintSession *sess, int64_t actual_ns);
+typedef void (*pfn_adpf_close_session_t)(APerformanceHintSession *sess);
+
+static void *s_lib_egl = NULL;
+static void *s_lib_android = NULL;
+static pfn_eglGetCurrentDisplay_t s_pfn_egl_cur_dpy = NULL;
+static pfn_eglGetCurrentSurface_t s_pfn_egl_cur_surf = NULL;
+static pfn_eglPresentationTimeANDROID_t s_pfn_egl_pres_time = NULL;
+
+static APerformanceHintSession *s_adpf_session = NULL;
+static pfn_adpf_report_work_t s_pfn_adpf_report = NULL;
+static pfn_adpf_close_session_t s_pfn_adpf_close = NULL;
+static int64_t s_adpf_min_interval_ns = 16000000LL;
+static int64_t s_last_adpf_report_ns = 0;
+
+static int64_t s_last_frame_end_ns = 0;
+static int64_t s_work_start_ns = 0;
+
+static inline int64_t android_monotonic_ns(void)
+{
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static void android_apply_render_thread_sched(void)
+{
+	/* THREAD_PRIORITY_URGENT_DISPLAY (-8) + 50us timer slack for accurate pacing */
+	setpriority(PRIO_PROCESS, 0, -8);
+	prctl(PR_SET_TIMERSLACK, 50000UL, 0, 0, 0);
+}
+
+static void android_perf_pacing_init(void)
+{
+	android_apply_render_thread_sched();
+
+	if (!s_lib_egl)
+		s_lib_egl = dlopen("libEGL.so", RTLD_NOW | RTLD_LOCAL);
+	if (s_lib_egl) {
+		s_pfn_egl_cur_dpy = (pfn_eglGetCurrentDisplay_t)dlsym(s_lib_egl, "eglGetCurrentDisplay");
+		s_pfn_egl_cur_surf = (pfn_eglGetCurrentSurface_t)dlsym(s_lib_egl, "eglGetCurrentSurface");
+		pfn_eglGetProcAddress_t get_proc =
+			(pfn_eglGetProcAddress_t)dlsym(s_lib_egl, "eglGetProcAddress");
+		if (get_proc) {
+			s_pfn_egl_pres_time = (pfn_eglPresentationTimeANDROID_t)
+				get_proc("eglPresentationTimeANDROID");
+		}
+		if (!s_pfn_egl_pres_time) {
+			s_pfn_egl_pres_time = (pfn_eglPresentationTimeANDROID_t)
+				dlsym(s_lib_egl, "eglPresentationTimeANDROID");
+		}
+	}
+
+	if (!s_lib_android)
+		s_lib_android = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+	if (s_lib_android && !s_adpf_session) {
+		pfn_adpf_get_manager_t get_mgr =
+			(pfn_adpf_get_manager_t)dlsym(s_lib_android, "APerformanceHint_getManager");
+		pfn_adpf_create_session_t create_sess =
+			(pfn_adpf_create_session_t)dlsym(s_lib_android, "APerformanceHint_createSession");
+		pfn_adpf_get_pref_rate_t get_rate =
+			(pfn_adpf_get_pref_rate_t)dlsym(s_lib_android, "APerformanceHint_getPreferredUpdateRateNanos");
+		s_pfn_adpf_report =
+			(pfn_adpf_report_work_t)dlsym(s_lib_android, "APerformanceHint_reportActualWorkDuration");
+		s_pfn_adpf_close =
+			(pfn_adpf_close_session_t)dlsym(s_lib_android, "APerformanceHint_closeSession");
+		if (get_mgr && create_sess && s_pfn_adpf_report) {
+			APerformanceHintManager *mgr = get_mgr();
+			if (mgr) {
+				if (get_rate) {
+					int64_t rate = get_rate(mgr);
+					if (rate > s_adpf_min_interval_ns && rate <= 250000000LL)
+						s_adpf_min_interval_ns = rate;
+				}
+				int32_t tid = (int32_t)gettid();
+				s_adpf_session = create_sess(mgr, &tid, 1, 16666667LL);
+			}
+		}
+	}
+}
+
+static void android_perf_pacing_fini(void)
+{
+	if (s_adpf_session && s_pfn_adpf_close) {
+		s_pfn_adpf_close(s_adpf_session);
+		s_adpf_session = NULL;
+	}
+	s_last_frame_end_ns = 0;
+	s_work_start_ns = 0;
+}
 #else
 static bool wait_vsync = false;
 #endif
@@ -284,6 +395,9 @@ int gfx_init(void)
 #endif
 
 	SDL_GL_SetSwapInterval(wait_vsync ? 1 : 0);
+#ifdef __ANDROID__
+	android_perf_pacing_init();
+#endif
 	gl_initialize();
 	gfx_draw_init();
 	gfx_set_window_logical_size(config.view_width, config.view_height);
@@ -297,6 +411,9 @@ int gfx_init(void)
 
 void gfx_fini(void)
 {
+#ifdef __ANDROID__
+	android_perf_pacing_fini();
+#endif
 	if (offscreen_draw_fbo)
 		glDeleteFramebuffers(1, &offscreen_draw_fbo);
 	if (offscreen_read_fbo)
@@ -407,6 +524,16 @@ void gfx_set_wait_vsync(bool wait)
 	wait_vsync = wait;
 	if (gfx_initialized)
 		SDL_GL_SetSwapInterval(wait ? 1 : 0);
+	gfx_reset_frame_pacer();
+}
+
+void gfx_reset_frame_pacer(void)
+{
+#ifdef __ANDROID__
+	s_last_frame_end_ns = 0;
+	s_work_start_ns = 0;
+	android_apply_render_thread_sched();
+#endif
 }
 
 void gfx_set_clear_color(int r, int g, int b, int a)
@@ -475,20 +602,37 @@ void gfx_swap(void)
 		.data = view
 	};
 	gfx_render(&job);
+	/* Kick off mobile tile-based GPU rasterization immediately in parallel */
+	glFlush();
 
 #ifdef __ANDROID__
-	static uint64_t last_swap_tick = 0;
-	uint64_t perf_freq = wait_vsync ? SDL_GetPerformanceFrequency() : 0;
-	if (wait_vsync && perf_freq > 0 && last_swap_tick != 0) {
-		// On 120Hz panels that ignore Surface.setFrameRate(60f), waiting past
-		// the 8.33ms VSync (~12ms) before SwapWindow aligns cleanly to every
-		// second 120Hz VSync (16.67ms = 60fps) without missing 60Hz VSync.
-		uint64_t pre_target = last_swap_tick + (perf_freq * 12ULL) / 1000ULL;
-		uint64_t now = SDL_GetPerformanceCounter();
-		if (now < pre_target) {
-			uint32_t delay_ms = (uint32_t)(((pre_target - now) * 1000ULL) / perf_freq);
-			if (delay_ms > 0)
-				SDL_Delay(delay_ms);
+	int64_t work_end_ns = android_monotonic_ns();
+	if (s_adpf_session && s_pfn_adpf_report && s_work_start_ns > 0 && work_end_ns > s_work_start_ns) {
+		int64_t actual_ns = work_end_ns - s_work_start_ns;
+		if (actual_ns < 100000LL)
+			actual_ns = 100000LL;
+		else if (actual_ns > 100000000LL)
+			actual_ns = 100000000LL;
+		if (actual_ns >= 13500000LL ||
+		    (work_end_ns - s_last_adpf_report_ns) >= s_adpf_min_interval_ns) {
+			s_pfn_adpf_report(s_adpf_session, actual_ns);
+			s_last_adpf_report_ns = work_end_ns;
+		}
+	}
+
+	if (wait_vsync && s_last_frame_end_ns > 0 &&
+	    s_pfn_egl_pres_time && s_pfn_egl_cur_dpy && s_pfn_egl_cur_surf) {
+		/*
+		 * +15.5ms after the previous frame skips intermediate 120Hz VSync (+8.33ms)
+		 * and latches cleanly on the 60fps VSync (+16.67ms) on both 60Hz/59.94Hz and
+		 * 120Hz panels without accumulating drift or blocking CPU before SwapWindow.
+		 */
+		int64_t present_ns = s_last_frame_end_ns + 15500000LL;
+		if (present_ns > work_end_ns && (present_ns - work_end_ns) < 25000000LL) {
+			void *dpy = s_pfn_egl_cur_dpy();
+			void *surf = dpy ? s_pfn_egl_cur_surf(EGL_DRAW_SURFACE_ENUM) : NULL;
+			if (dpy && surf)
+				s_pfn_egl_pres_time(dpy, surf, present_ns);
 		}
 	}
 #endif
@@ -496,22 +640,22 @@ void gfx_swap(void)
 	SDL_GL_SwapWindow(sdl.window);
 
 #ifdef __ANDROID__
-	if (wait_vsync && perf_freq > 0) {
-		uint64_t after_swap = SDL_GetPerformanceCounter();
-		uint64_t min_frame = last_swap_tick + (perf_freq * 15ULL) / 1000ULL;
-		if (last_swap_tick != 0 && after_swap < min_frame) {
-			uint64_t full_frame = last_swap_tick + perf_freq / 60ULL;
-			if (after_swap < full_frame) {
-				uint32_t delay_ms = (uint32_t)(((full_frame - after_swap) * 1000ULL) / perf_freq);
-				if (delay_ms > 0)
-					SDL_Delay(delay_ms);
-				after_swap = SDL_GetPerformanceCounter();
+	int64_t after_swap_ns = android_monotonic_ns();
+	if (wait_vsync && s_last_frame_end_ns > 0 && after_swap_ns > 0) {
+		int64_t target_end_ns = s_last_frame_end_ns + 16666667LL;
+		if (after_swap_ns + 450000LL < target_end_ns &&
+		    (target_end_ns - after_swap_ns) < 17000000LL) {
+			struct timespec ts = {
+				.tv_sec  = (time_t)(target_end_ns / 1000000000LL),
+				.tv_nsec = (long)(target_end_ns % 1000000000LL),
+			};
+			while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {
 			}
+			after_swap_ns = android_monotonic_ns();
 		}
-		last_swap_tick = after_swap;
-	} else {
-		last_swap_tick = 0;
 	}
+	s_last_frame_end_ns = wait_vsync ? after_swap_ns : 0;
+	s_work_start_ns = after_swap_ns;
 #endif
 
 	glBindFramebuffer(GL_FRAMEBUFFER, main_surface_fb);

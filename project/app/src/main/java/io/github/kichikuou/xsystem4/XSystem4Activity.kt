@@ -58,11 +58,12 @@ class XSystem4Activity : SDLActivity() {
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
         GameModifierBridge.markAlreadyLoaded()
         try {
+            GameModifierBridge.syncNativeConfigPath(this)
             GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
             lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
         } catch (_: Throwable) {
         }
-        window.decorView.postDelayed({ ensureOverlaysAttached() }, 3500L)
+        window.decorView.postDelayed({ ensureOverlaysAttached() }, 1800L)
     }
 
     private fun ensureOverlaysAttached() {
@@ -219,6 +220,7 @@ class XSystem4Activity : SDLActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         try {
+            GameModifierBridge.syncNativeConfigPath(this)
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
@@ -237,6 +239,7 @@ class XSystem4Activity : SDLActivity() {
     override fun onResume() {
         super.onResume()
         try {
+            GameModifierBridge.syncNativeConfigPath(this)
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
@@ -268,6 +271,7 @@ class XSystem4Activity : SDLActivity() {
         }
         GameModifierBridge.markAlreadyLoaded()
         try {
+            GameModifierBridge.syncNativeConfigPath(this)
             val lockMask = GameModifierBridge.getSavedLockMask(this)
             GameModifierBridge.nativeSetLiveLocks(lockMask)
             lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
@@ -278,6 +282,7 @@ class XSystem4Activity : SDLActivity() {
 
     override fun onDestroy() {
         setCtrlSkipLatched(false)
+        GameModifierBridge.syncLockMaskFromNative(this)
         ctrlPill = null
         ctrlOverlayContainer = null
         modifierOverlay?.detach()

@@ -115,9 +115,26 @@ static bool is_critical_global_save(const char *path)
 		base = slash2;
 	base = base ? base + 1 : path;
 #ifdef _WIN32
-	return !_stricmp(base, "GlobalSave.asd") || !_stricmp(base, "Collection.asd");
+	return !_stricmp(base, "GlobalSave.asd") || !_stricmp(base, "Collection.asd") || !_stricmp(base, "GameConfig.asd");
 #else
-	return !strcasecmp(base, "GlobalSave.asd") || !strcasecmp(base, "Collection.asd");
+	return !strcasecmp(base, "GlobalSave.asd") || !strcasecmp(base, "Collection.asd") || !strcasecmp(base, "GameConfig.asd");
+#endif
+}
+
+static bool is_game_config_save(const char *path)
+{
+	if (!path)
+		return false;
+	const char *slash1 = strrchr(path, '/');
+	const char *slash2 = strrchr(path, '\\');
+	const char *base = slash1;
+	if (slash2 && (!base || slash2 > base))
+		base = slash2;
+	base = base ? base + 1 : path;
+#ifdef _WIN32
+	return !_stricmp(base, "GameConfig.asd");
+#else
+	return !strcasecmp(base, "GameConfig.asd");
 #endif
 }
 
@@ -927,6 +944,8 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 	char *path = savedir_path(filename);
 	int retval;
 
+	bool is_cfg = is_game_config_save(filename);
+
 	// First, try reading as a gsave.
 	enum savefile_error error;
 	struct gsave *save = gsave_read(path, &error);
@@ -936,7 +955,11 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		gsave_free(save);
 		if (retval) {
 			track_global_save(keyname, filename, group_name);
+			if (is_cfg)
+				modifier_on_config_loaded();
 			modifier_on_globals_loaded();
+		} else if (is_cfg) {
+			modifier_on_config_loaded();
 		}
 		return retval;
 	}
@@ -946,6 +969,8 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 		if (retval) {
 			free(path);
 			track_global_save(keyname, filename, group_name);
+			if (is_cfg)
+				modifier_on_config_loaded();
 			modifier_on_globals_loaded();
 			return retval;
 		}
@@ -968,7 +993,11 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 			gsave_free(bak_save);
 			if (retval) {
 				track_global_save(keyname, filename, group_name);
+				if (is_cfg)
+					modifier_on_config_loaded();
 				modifier_on_globals_loaded();
+			} else if (is_cfg) {
+				modifier_on_config_loaded();
 			}
 			return retval;
 		}
@@ -977,6 +1006,8 @@ int load_globals(const char *keyname, const char *filename, const char *group_na
 	free(path);
 	if (!had_any_file)
 		track_global_save(keyname, filename, group_name);
+	if (is_cfg)
+		modifier_on_config_loaded();
 	return 0;
 }
 

@@ -44,6 +44,7 @@ struct wai *wai_get(int no);
 void mixer_init(void);
 void mixer_set_global_focus(bool enabled);
 void mixer_set_window_focus(bool focused);
+void mixer_set_app_backgrounded(bool backgrounded);
 void mixer_handle_device_removed(uint32_t dev);
 int mixer_get_numof(void);
 const char *mixer_get_name(int n);
