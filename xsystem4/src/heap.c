@@ -153,8 +153,12 @@ static void heap_double_free(int32_t slot)
 
 void heap_ref(int32_t slot)
 {
-	if (slot == -1)
+	if (slot < 0)
 		return;
+	if (unlikely((size_t)slot >= heap_size)) {
+		WARNING("out of bounds heap index in heap_ref: %d", slot);
+		return;
+	}
 	heap[slot].ref++;
 #ifdef DEBUG_HEAP
 	heap[slot].ref_addr[heap[slot].ref_nr++ % 16] = instr_ptr;
@@ -163,6 +167,12 @@ void heap_ref(int32_t slot)
 
 void heap_unref(int slot)
 {
+	if (slot < 0)
+		return;
+	if (unlikely((size_t)slot >= heap_size)) {
+		WARNING("out of bounds heap index in heap_unref: %d", slot);
+		return;
+	}
 	if (unlikely(slot == 0 && heap[0].ref <= 1)) {
 		VM_ERROR("Attempted to free global page (slot 0)");
 	}
@@ -365,10 +375,14 @@ void heap_copy_delegate_targets(int source, int destination)
 
 void heap_string_assign(int slot, struct string *string)
 {
+	if (unlikely(!string_index_valid(slot))) {
 #ifdef DEBUG_HEAP
-	if (unlikely(!string_index_valid(slot)))
-		VM_ERROR("Tried to assign string to non-string slot");
+		VM_ERROR("Tried to assign string to non-string slot: %d", slot);
+#else
+		WARNING("Tried to assign string to non-string slot: %d", slot);
+		return;
 #endif
+	}
 	if (heap[slot].s) {
 		free_string(heap[slot].s);
 	}
@@ -377,15 +391,27 @@ void heap_string_assign(int slot, struct string *string)
 
 void heap_struct_assign(int lval, int rval)
 {
-	if (unlikely(lval == -1))
-		VM_ERROR("Assignment to null-pointer");
+	if (unlikely(lval < 0 || !page_index_valid(lval))) {
+#ifdef DEBUG_HEAP
+		if (lval == -1)
+			VM_ERROR("Assignment to null-pointer");
+		VM_ERROR("Invalid page index: %d", lval);
+#else
+		WARNING("heap_struct_assign to invalid page index: %d", lval);
+		return;
+#endif
+	}
 	if (lval == rval)
 		return;
+	if (unlikely(rval < 0 || !page_index_valid(rval))) {
 #ifdef DEBUG_HEAP
-	if (unlikely(!page_index_valid(lval)))
-		VM_ERROR("Invalid page index: %d", lval);
-	if (unlikely(!page_index_valid(rval)))
 		VM_ERROR("Invalid page index: %d", rval);
+#else
+		WARNING("heap_struct_assign from invalid page index: %d", rval);
+		return;
+#endif
+	}
+#ifdef DEBUG_HEAP
 	if (unlikely(heap[lval].page && heap[lval].page->type != STRUCT_PAGE
 			&& !(ain->version >= 11 && heap[lval].page->type == ARRAY_PAGE)))
 		VM_ERROR("SR_ASSIGN to non-struct page");

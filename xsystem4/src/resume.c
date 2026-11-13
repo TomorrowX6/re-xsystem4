@@ -465,6 +465,7 @@ static cJSON *funcall_to_json(struct function_call *call)
 	cJSON_AddNumberToObject(json, "return-address", call->return_address);
 	cJSON_AddNumberToObject(json, "local-page", call->page_slot);
 	cJSON_AddNumberToObject(json, "struct-page", call->struct_page);
+	cJSON_AddBoolToObject(json, "has-struct-page", call->has_struct_page);
 	return json;
 }
 
@@ -694,7 +695,7 @@ static void save_call_stack_to_rsave(struct rsave *rs)
 	for (int i = 0; i < call_stack_ptr; i++) {
 		struct function_call *call = &call_stack[i];
 		struct ain_function *func = &ain->functions[call->fno];
-		if (call->struct_page >= 0) {
+		if (call->struct_page >= 0 || (call->has_struct_page && func->struct_type >= 0)) {
 			rs->call_frames[i + 1].type = RSAVE_METHOD_CALL;
 		} else if (!strcmp(func->name, "main")) {
 			rs->call_frames[i + 1].type = RSAVE_ENTRY_POINT;
@@ -999,23 +1000,25 @@ static int resolve_struct_symbol(struct rsave_symbol *sym)
 	return ain_get_struct(ain, sym->name);
 }
 
-static void load_rsave_frame(int slot, struct rsave_heap_frame *f, int32_t version)
+static bool load_rsave_frame(int slot, struct rsave_heap_frame *f, int32_t version)
 {
 	struct page *page;
 	int nr_vars;
 	struct ain_variable *vars;
 	if (f->tag == RSAVE_GLOBALS) {
-		page = alloc_page(GLOBAL_PAGE, 0, f->nr_slots);
 		nr_vars = ain->nr_globals;
 		vars = ain->globals;
+		page = alloc_page(GLOBAL_PAGE, 0, max(f->nr_slots, nr_vars));
 	} else {
 		int func = resolve_func_symbol(&f->func, f->nr_slots);
 		if (func < 0)
+			func = resolve_func_symbol(&f->func, -1);
+		if (func < 0)
 			VM_ERROR("Failed to load VM image: function '%s' not found",
 				 display_sjis0(f->func.name ? f->func.name : ""));
-		page = alloc_page(LOCAL_PAGE, func, f->nr_slots);
 		nr_vars = ain->functions[func].nr_vars;
 		vars = ain->functions[func].vars;
+		page = alloc_page(LOCAL_PAGE, func, max(f->nr_slots, nr_vars));
 		page->local.struct_ptr = f->struct_ptr;
 		page->local.parent_page = version == 14 ? f->parent_ptr : -1;
 	}
@@ -1041,6 +1044,7 @@ static void load_rsave_frame(int slot, struct rsave_heap_frame *f, int32_t versi
 	heap[slot].seq = version == 14 ? slot + 1 : f->seq;
 	heap[slot].type = VM_PAGE;
 	heap_set_page(slot, page);
+	return nr_vars > f->nr_slots;
 }
 
 static void load_rsave_string(int slot, struct rsave_heap_string *s, int32_t version)
@@ -1087,10 +1091,13 @@ static void load_rsave_array(int slot, struct rsave_heap_array *a, int32_t versi
 	heap_set_page(slot, page);
 }
 
-static void load_rsave_struct(int slot, struct rsave_heap_struct *s, int32_t version)
+static bool load_rsave_struct(int slot, struct rsave_heap_struct *s, int32_t version)
 {
 	int struct_index = resolve_struct_symbol(&s->struct_type);
-	struct page *page = alloc_page(STRUCT_PAGE, struct_index, s->nr_slots);
+	if (struct_index < 0 || struct_index >= ain->nr_structures) {
+		invalid_save_data("Unknown struct '%s' in VM image",
+			s->struct_type.name ? s->struct_type.name : "");
+	}
 
 	// type check
 	struct ain_struct *as = &ain->structures[struct_index];
@@ -1106,6 +1113,7 @@ static void load_rsave_struct(int slot, struct rsave_heap_struct *s, int32_t ver
 		}
 	}
 
+	struct page *page = alloc_page(STRUCT_PAGE, struct_index, max(s->nr_slots, as->nr_members));
 	for (int i = 0; i < s->nr_slots; i++) {
 		// TODO: update function pointers using rsave->func_names
 		page->values[i].i = s->slots[i];
@@ -1116,6 +1124,7 @@ static void load_rsave_struct(int slot, struct rsave_heap_struct *s, int32_t ver
 	heap[slot].seq = version == 14 ? slot + 1 : s->seq;
 	heap[slot].type = VM_PAGE;
 	heap_set_page(slot, page);
+	return as->nr_members > s->nr_slots;
 }
 
 static bool delegate_target_matches_function(struct rsave *save, int obj, int fun)
@@ -1198,21 +1207,66 @@ static void load_rsave_delegate(int slot, struct rsave_heap_delegate *d, struct 
 static void load_rsave_heap(struct rsave *save)
 {
 	delete_heap();
+	bool need_pad_init = false;
 
 	for (int slot = 0; slot < save->nr_heap_objs; slot++) {
 		enum rsave_heap_tag *tag = save->heap[slot];
 		switch (*tag) {
 		case RSAVE_GLOBALS:
-		case RSAVE_LOCALS:   load_rsave_frame(slot, save->heap[slot], save->version);  break;
+		case RSAVE_LOCALS:   need_pad_init |= load_rsave_frame(slot, save->heap[slot], save->version);  break;
 		case RSAVE_STRING:   load_rsave_string(slot, save->heap[slot], save->version); break;
 		case RSAVE_ARRAY:    load_rsave_array(slot, save->heap[slot], save->version);  break;
-		case RSAVE_STRUCT:   load_rsave_struct(slot, save->heap[slot], save->version); break;
+		case RSAVE_STRUCT:   need_pad_init |= load_rsave_struct(slot, save->heap[slot], save->version); break;
 		case RSAVE_DELEGATE: load_rsave_delegate(slot, save->heap[slot], save);        break;
 		case RSAVE_NULL: break;
 		}
 	}
 	heap_next_seq = save->version == 14 ? save->nr_heap_objs + 1 : save->next_seq;
+	if (unlikely(need_pad_init)) {
+		for (int slot = 0; slot < save->nr_heap_objs; slot++) {
+			enum rsave_heap_tag *tag = save->heap[slot];
+			if (*tag == RSAVE_GLOBALS || *tag == RSAVE_LOCALS) {
+				struct rsave_heap_frame *f = save->heap[slot];
+				struct page *page = heap[slot].page;
+				struct ain_variable *vars = f->tag == RSAVE_GLOBALS
+					? ain->globals : ain->functions[page->index].vars;
+				for (int i = f->nr_slots; i < page->nr_vars; i++) {
+					if (vars[i].type.data == AIN_STRUCT) {
+						int st_slot = alloc_struct(vars[i].type.struc);
+						page->values[i].i = st_slot;
+					} else {
+						page->values[i] = variable_initval_typed(&vars[i].type);
+					}
+				}
+			} else if (*tag == RSAVE_STRUCT) {
+				struct rsave_heap_struct *s = save->heap[slot];
+				struct page *page = heap[slot].page;
+				struct ain_struct *as = &ain->structures[page->index];
+				for (int i = s->nr_slots; i < page->nr_vars; i++) {
+					if (as->members[i].type.data == AIN_STRUCT) {
+						int st_slot = alloc_struct(as->members[i].type.struc);
+						page->values[i].i = st_slot;
+					} else {
+						page->values[i] = variable_initval_typed(&as->members[i].type);
+					}
+				}
+			}
+		}
+	}
 	heap_refresh_delegate_targets();
+}
+
+static bool infer_frame_has_struct_page(int32_t fno, int32_t struct_page)
+{
+	if (struct_page >= 0)
+		return true;
+	if (!ain || fno < 0 || fno >= ain->nr_functions)
+		return true;
+	if (fno == ain->main || fno == ain->alloc)
+		return true;
+	if (ain->functions[fno].struct_type >= 0 || ain->functions[fno].is_lambda)
+		return true;
+	return false;
 }
 
 static void load_json_call_stack(cJSON *json)
@@ -1221,13 +1275,17 @@ static void load_json_call_stack(cJSON *json)
 	cJSON *item;
 	cJSON_ArrayForEach(item, json) {
 		type_check(cJSON_Object, item);
+		int32_t fno = type_check(cJSON_Number, cJSON_GetObjectItem(item, "function"))->valueint;
 		int32_t return_address = type_check(cJSON_Number, cJSON_GetObjectItem(item, "return-address"))->valueint;
+		int32_t struct_page = type_check(cJSON_Number, cJSON_GetObjectItem(item, "struct-page"))->valueint;
+		cJSON *has_sp = cJSON_GetObjectItem(item, "has-struct-page");
 		call_stack[call_stack_ptr++] = (struct function_call) {
-			.fno            = type_check(cJSON_Number, cJSON_GetObjectItem(item, "function"))->valueint,
-			.call_address   = return_address,
-			.return_address = return_address,
-			.page_slot      = type_check(cJSON_Number, cJSON_GetObjectItem(item, "local-page"))->valueint,
-			.struct_page    = type_check(cJSON_Number, cJSON_GetObjectItem(item, "struct-page"))->valueint,
+			.fno             = fno,
+			.call_address    = return_address,
+			.return_address  = return_address,
+			.page_slot       = type_check(cJSON_Number, cJSON_GetObjectItem(item, "local-page"))->valueint,
+			.struct_page     = struct_page,
+			.has_struct_page = has_sp ? cJSON_IsTrue(has_sp) : infer_frame_has_struct_page(fno, struct_page),
 		};
 	}
 }
@@ -1254,12 +1312,16 @@ static void load_rsave_call_stack(struct rsave *save)
 				VM_ERROR("Failed to load VM image: function '%s' not found", display_sjis0(rr->caller_func));
 			if (ain->functions[fno].crc != rr->crc)
 				VM_ERROR("Failed to load VM image: CRC mismatch for function '%s'", display_sjis0(rr->caller_func));
+			int32_t struct_page = save->call_frames[i].struct_ptr;
+			bool has_struct_page = save->call_frames[i].type != RSAVE_FUNCTION_CALL
+				|| infer_frame_has_struct_page(fno, struct_page);
 			call_stack[call_stack_ptr++] = (struct function_call) {
-				.fno            = fno,
-				.call_address   = return_address,
-				.return_address = return_address,
-				.page_slot      = save->call_frames[i].local_ptr,
-				.struct_page    = save->call_frames[i].struct_ptr,
+				.fno             = fno,
+				.call_address    = return_address,
+				.return_address  = return_address,
+				.page_slot       = save->call_frames[i].local_ptr,
+				.struct_page     = struct_page,
+				.has_struct_page = has_struct_page,
 			};
 			// Calculate return address from the function address and offset
 			// to make it robust to ain changes.

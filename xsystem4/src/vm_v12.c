@@ -226,8 +226,11 @@ static int compare_element(int slot, int index, union vm_value *value)
 	struct page *p = heap_get_page(slot);
 	struct ain_type type = element_type(p);
 	union vm_value v = p->values[index * stride(type.data)];
-	if (type.data == AIN_STRING)
-		return strcmp(heap_get_string(v.i)->text, heap_get_string(value[0].i)->text);
+	if (type.data == AIN_STRING) {
+		const char *lhs = string_index_valid(v.i) ? heap_get_string(v.i)->text : "";
+		const char *rhs = string_index_valid(value[0].i) ? heap_get_string(value[0].i)->text : "";
+		return strcmp(lhs, rhs);
+	}
 	if (type.data == AIN_FLOAT)
 		return (v.f > value[0].f) - (v.f < value[0].f);
 	return (v.i > value[0].i) - (v.i < value[0].i);
@@ -238,8 +241,12 @@ static void insert_element(int slot, int index, union vm_value *value)
 	struct page *p = heap_get_page(slot);
 	struct ain_type type = element_type(p);
 	int width = stride(type.data), size = v12_array_length(p);
-	if (index < 0 || index > size)
-		VM_ERROR("Array insertion index out of bounds: %d", index);
+	if (unlikely(index < 0 || index > size)) {
+		static unsigned int warn_count = 0;
+		if (warn_count++ < 64)
+			WARNING("Array.Insert index out of bounds: %d (size=%d)", index, size);
+		index = index < 0 ? 0 : size;
+	}
 	union vm_value copy[2] = { vm_copy(value[0], type.data), value[1] };
 	resize_array_mode(slot, size + 1, false);
 	p = heap_get_page(slot);
@@ -254,8 +261,11 @@ static bool equal_element(int slot, int index, union vm_value *value)
 	struct page *p = heap_get_page(slot);
 	struct ain_type type = element_type(p);
 	int pos = index * stride(type.data);
-	if (type.data == AIN_STRING)
-		return !strcmp(heap_get_string(p->values[pos].i)->text, heap_get_string(value[0].i)->text);
+	if (type.data == AIN_STRING) {
+		const char *lhs = string_index_valid(p->values[pos].i) ? heap_get_string(p->values[pos].i)->text : "";
+		const char *rhs = string_index_valid(value[0].i) ? heap_get_string(value[0].i)->text : "";
+		return !strcmp(lhs, rhs);
+	}
 	if (type.data == AIN_FLOAT)
 		return p->values[pos].f == value[0].f;
 	return p->values[pos].i == value[0].i;
@@ -330,6 +340,56 @@ static void return_element(int slot, int index)
 	}
 }
 
+static void cleanup_array_value_args(struct ain_hll_function *f, int parameter, union vm_value args[8][2])
+{
+	// Value arguments are compiler-created temporaries. Reference arguments
+	// and interface pairs are borrowed for the duration of the call.
+	for (int i = 1; i < f->nr_arguments; i++) {
+		if (f->arguments[i].type.data != AIN_HLL_PARAM) continue;
+		if (parameter == AIN_STRING || parameter == AIN_STRUCT
+				|| parameter == AIN_ARRAY || parameter == AIN_DELEGATE)
+			variable_fini(args[i][0], parameter, true);
+	}
+}
+
+static bool array_call_invalid_slot(struct ain_hll_function *f, int parameter, int slot, union vm_value args[8][2])
+{
+	static unsigned int warn_count = 0;
+	if (warn_count++ < 64)
+		WARNING("Array.%s on invalid array slot: %d", f->name, slot);
+	const char *name = f->name;
+	if (!strcmp(name, "Numof") || !strcmp(name, "Any") || !strcmp(name, "IsExist")
+			|| !strcmp(name, "Erase") || !strcmp(name, "EraseAll")
+			|| !strcmp(name, "Copy") || !strcmp(name, "Fill")
+			|| !strcmp(name, "LowerBound") || !strcmp(name, "UpperBound")) {
+		stack_push(0);
+	} else if (!strcmp(name, "Empty") || !strcmp(name, "All")) {
+		stack_push(1);
+	} else if (!strcmp(name, "Find") || !strcmp(name, "FindLast") || !strcmp(name, "BinarySearch")
+			|| !strcmp(name, "Sort") || !strcmp(name, "QuickSort")
+			|| !strcmp(name, "AscSort") || !strcmp(name, "DescSort")) {
+		stack_push(-1);
+	} else if (!strcmp(name, "ShallowCopy") || !strcmp(name, "Where")) {
+		struct page *empty = alloc_page(ARRAY_PAGE, AIN_ARRAY, 0);
+		empty->array.rank = 1;
+		empty->array.struct_type = -1;
+		empty->array.element_type = (struct ain_type){
+			.data = (parameter == AIN_STRUCT || parameter == AIN_REF_STRUCT)
+				? AIN_REF_STRUCT : (parameter >= 0 ? parameter : AIN_INT),
+			.struc = -1,
+		};
+		stack_push(heap_alloc_page(empty));
+	} else if (!strcmp(name, "At") || !strcmp(name, "First") || !strcmp(name, "Last")
+			|| !strcmp(name, "Min") || !strcmp(name, "Max") || !strcmp(name, "EmplaceBack")) {
+		stack_push(-1);
+		if (parameter == AIN_INT || parameter == AIN_FLOAT || parameter == AIN_BOOL
+				|| parameter == AIN_ENUM || parameter == AIN_IFACE)
+			stack_push(0);
+	}
+	cleanup_array_value_args(f, parameter, args);
+	return true;
+}
+
 static bool array_call(struct ain_hll_function *f, int parameter)
 {
 	union vm_value args[8][2] = {0};
@@ -340,6 +400,8 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 		for (int j = width - 1; j >= 0; j--) args[i][j] = stack_pop();
 	}
 	int slot = args[0][0].i;
+	if (unlikely(!page_index_valid(slot) || (heap[slot].page && heap[slot].page->type != ARRAY_PAGE)))
+		return array_call_invalid_slot(f, parameter, slot, args);
 	struct page *p = heap_get_page(slot);
 	int size = v12_array_length(p);
 	const char *name = f->name;
@@ -348,9 +410,10 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 		for (int i = 1; i < f->nr_arguments; i++) dimensions[i - 1] = args[i][0].i;
 		alloc_dimensions(slot, dimensions, f->nr_arguments - 1);
 	} else if (!strcmp(name, "Realloc")) {
-		resize_array(slot, args[1][0].i);
+		int new_size = max(args[1][0].i, 0);
+		resize_array(slot, new_size);
 		if (f->nr_arguments == 3)
-			for (int i = size; i < args[1][0].i; i++) set_element(slot, i, args[2]);
+			for (int i = size; i < new_size; i++) set_element(slot, i, args[2]);
 	} else if (!strcmp(name, "Free")) {
 		resize_array(slot, 0);
 	} else if (!strcmp(name, "Numof") || !strcmp(name, "Empty") || !strcmp(name, "Any") || !strcmp(name, "All")) {
@@ -375,9 +438,18 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 		heap_struct_assign(slot, args[1][0].i);
 	} else if (!strcmp(name, "Concat")) {
 		int source = args[1][0].i;
+		if (unlikely(!page_index_valid(source) || !heap[source].page || heap[source].page->type != ARRAY_PAGE)) {
+			WARNING("Array.Concat from invalid array slot: %d", source);
+			cleanup_array_value_args(f, parameter, args);
+			return true;
+		}
 		struct page *src = heap_get_page(source);
 		struct ain_type type = element_type(p), src_type = element_type(src);
 		int count = v12_array_length(src), width = stride(type.data);
+		if (count == 0) {
+			cleanup_array_value_args(f, parameter, args);
+			return true;
+		}
 		if (type.data != src_type.data || type.struc != src_type.struc)
 			VM_ERROR("Array.Concat element types differ");
 		if (count > INT_MAX / (2 * (int)sizeof(union vm_value)) - size)
@@ -403,14 +475,26 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 			VM_ERROR("Unimplemented Array.Copy overload with %d arguments", f->nr_arguments);
 		int dst_at = args[1][0].i, source = args[2][0].i;
 		int src_at = args[3][0].i, count = args[4][0].i;
+		if (unlikely(!page_index_valid(source) || !heap[source].page || heap[source].page->type != ARRAY_PAGE)) {
+			WARNING("Array.Copy from invalid array slot: %d", source);
+			stack_push(0);
+			cleanup_array_value_args(f, parameter, args);
+			return true;
+		}
 		struct page *src = heap_get_page(source);
 		struct ain_type type = element_type(p), src_type = element_type(src);
 		int src_size = v12_array_length(src), width = stride(type.data);
+		if (count <= 0 || dst_at < 0 || dst_at > size || count > size - dst_at
+				|| src_at < 0 || src_at > src_size || count > src_size - src_at) {
+			if (count != 0)
+				WARNING("Array.Copy range out of bounds: dst=%d/%d src=%d/%d count=%d",
+					dst_at, size, src_at, src_size, count);
+			stack_push(0);
+			cleanup_array_value_args(f, parameter, args);
+			return true;
+		}
 		if (type.data != src_type.data || type.struc != src_type.struc)
 			VM_ERROR("Array.Copy element types differ");
-		if (count < 0 || dst_at < 0 || dst_at > size || count > size - dst_at
-				|| src_at < 0 || src_at > src_size || count > src_size - src_at)
-			VM_ERROR("Array.Copy range is out of bounds");
 		// Snapshot values before assignment, including owned references, so
 		// overlapping ranges preserve the source values in either direction.
 		union vm_value *copy = xcalloc(count * width, sizeof(*copy));
@@ -527,27 +611,31 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 			}
 		} else if (f->arguments[1].type.data == AIN_REF_ARRAY) {
 			int src_slot = args[1][0].i;
-			struct page *src = heap_get_page(src_slot);
-			struct ain_type type = element_type(p), src_type = element_type(src);
-			int src_size = v12_array_length(src), width = stride(type.data);
-			if (type.data != src_type.data || type.struc != src_type.struc)
-				VM_ERROR("Array.Erase element types differ");
-			for (int j = 0; j < src_size; j++) {
-				src = heap_get_page(src_slot);
-				for (int i = 0; i < size; i++) {
-					if (equal_element(slot, i, src->values + j * width)) {
-						erase_element(slot, i);
-						size--;
-						erased = true;
-						break;
+			if (page_index_valid(src_slot) && heap[src_slot].page && heap[src_slot].page->type == ARRAY_PAGE) {
+				struct page *src = heap_get_page(src_slot);
+				struct ain_type type = element_type(p), src_type = element_type(src);
+				int src_size = v12_array_length(src), width = stride(type.data);
+				if (src_size > 0 && (type.data != src_type.data || type.struc != src_type.struc))
+					VM_ERROR("Array.Erase element types differ");
+				for (int j = 0; j < src_size; j++) {
+					src = heap_get_page(src_slot);
+					for (int i = 0; i < size; i++) {
+						if (equal_element(slot, i, src->values + j * width)) {
+							erase_element(slot, i);
+							size--;
+							erased = true;
+							break;
+						}
 					}
 				}
 			}
 		} else VM_ERROR("Array.Erase overload is not implemented");
 		stack_push(erased);
 	} else if (!strcmp(name, "Fill")) {
-		int first = f->nr_arguments == 4 ? args[1][0].i : 0;
-		int count = f->nr_arguments == 4 ? args[2][0].i : size;
+		int first = f->nr_arguments == 4 ? max(args[1][0].i, 0) : 0;
+		int count = f->nr_arguments == 4 ? max(args[2][0].i, 0) : size;
+		if (first > size) first = size;
+		if (count > size - first) count = size - first;
 		for (int i = first; i < first + count; i++) set_element(slot, i, args[f->nr_arguments - 1]);
 		stack_push(count);
 	} else if (!strcmp(name, "Reverse")) {
@@ -596,14 +684,7 @@ static bool array_call(struct ain_hll_function *f, int parameter)
 	} else {
 		VM_ERROR("Unimplemented AIN v12 Array.%s overload (%d arguments)", name, f->nr_arguments);
 	}
-	// Value arguments are compiler-created temporaries. Reference arguments
-	// and interface pairs are borrowed for the duration of the call.
-	for (int i = 1; i < f->nr_arguments; i++) {
-		if (f->arguments[i].type.data != AIN_HLL_PARAM) continue;
-		if (parameter == AIN_STRING || parameter == AIN_STRUCT
-				|| parameter == AIN_ARRAY || parameter == AIN_DELEGATE)
-			variable_fini(args[i][0], parameter, true);
-	}
+	cleanup_array_value_args(f, parameter, args);
 	return true;
 }
 
@@ -786,7 +867,13 @@ static bool string_call(struct ain_hll_function *f)
 	if (f->nr_arguments > 5) VM_ERROR("Too many String arguments");
 	for (int i = f->nr_arguments - 1; i >= 0; i--) args[i] = stack_pop();
 	int slot = args[0].i;
-	struct string *s = heap_get_string(slot), *result = NULL;
+	bool valid_slot = string_index_valid(slot);
+	if (unlikely(!valid_slot)) {
+		static unsigned int warn_count = 0;
+		if (warn_count++ < 64)
+			WARNING("String.%s on invalid string slot: %d", f->name, slot);
+	}
+	struct string *s = valid_slot ? heap_get_string(slot) : &EMPTY_STRING, *result = NULL;
 	const char *name = f->name;
 	if (!strcmp(name, "Int")) stack_push(string_to_integer(s));
 	else if (!strcmp(name, "Float")) stack_push((float)strtod(s->text, NULL));
@@ -795,23 +882,27 @@ static bool string_call(struct ain_hll_function *f)
 		stack_push(sjis_count_char(s->text));
 	} else if (!strcmp(name, "Empty")) stack_push(s->size == 0);
 	else if (!strcmp(name, "GetPart")) result = string_copy(s, args[1].i, f->nr_arguments == 3 ? args[2].i : s->size);
-	else if (!strcmp(name, "Replace")) result = replace_string(s, heap_get_string(args[1].i), heap_get_string(args[2].i));
-	else if (!strcmp(name, "ReplaceRegex")) result = replace_regex_string(s, heap_get_string(args[1].i), heap_get_string(args[2].i));
+	else if (!strcmp(name, "Replace")) result = replace_string(s, string_index_valid(args[1].i) ? heap_get_string(args[1].i) : &EMPTY_STRING, string_index_valid(args[2].i) ? heap_get_string(args[2].i) : &EMPTY_STRING);
+	else if (!strcmp(name, "ReplaceRegex")) result = replace_regex_string(s, string_index_valid(args[1].i) ? heap_get_string(args[1].i) : &EMPTY_STRING, string_index_valid(args[2].i) ? heap_get_string(args[2].i) : &EMPTY_STRING);
 	else if (!strcmp(name, "Find") || !strcmp(name, "FindLast") || !strcmp(name, "Contains")) {
-		struct string *match = heap_get_string(args[1].i);
+		struct string *match = string_index_valid(args[1].i) ? heap_get_string(args[1].i) : &EMPTY_STRING;
 		int index = !strcmp(name, "FindLast") ? string_find_last(s, match) : string_find(s, match);
 		if (!strcmp(name, "Contains")) stack_push(index >= 0); else stack_push(index);
 	} else if (!strcmp(name, "StartsWith") || !strcmp(name, "EndsWith")) {
-		struct string *match = heap_get_string(args[1].i);
+		struct string *match = string_index_valid(args[1].i) ? heap_get_string(args[1].i) : &EMPTY_STRING;
 		int offset = !strcmp(name, "EndsWith") ? s->size - match->size : 0;
 		stack_push(offset >= 0 && match->size <= s->size && !memcmp(s->text + offset, match->text, match->size));
-	} else if (!strcmp(name, "PushBack")) string_push_back(&heap[slot].s, args[1].i);
-	else if (!strcmp(name, "Split")) {
-		stack_push(heap_alloc_page(split_string(s, heap_get_string(args[1].i), args[2].i)));
+	} else if (!strcmp(name, "PushBack")) {
+		if (valid_slot) string_push_back(&heap[slot].s, args[1].i);
+	} else if (!strcmp(name, "Split")) {
+		stack_push(heap_alloc_page(split_string(s, string_index_valid(args[1].i) ? heap_get_string(args[1].i) : &EMPTY_STRING, args[2].i)));
 	}
-	else if (!strcmp(name, "PopBack")) string_pop_back(&heap[slot].s);
-	else if (!strcmp(name, "Erase")) {
-		for (int i = 0; i < args[2].i; i++) string_erase(&heap[slot].s, args[1].i);
+	else if (!strcmp(name, "PopBack")) {
+		if (valid_slot) string_pop_back(&heap[slot].s);
+	} else if (!strcmp(name, "Erase")) {
+		if (valid_slot) {
+			for (int i = 0; i < args[2].i; i++) string_erase(&heap[slot].s, args[1].i);
+		}
 	} else if (!strcmp(name, "ToUpper") || !strcmp(name, "ToLower")) {
 		result = string_dup(s);
 		for (int i = 0; i < result->size; i++) {
@@ -831,6 +922,16 @@ static bool delegate_call_hll(struct ain_hll_function *f)
 	int fn = -1, object = -1;
 	if (f->nr_arguments == 2) { fn = stack_pop().i; object = stack_pop().i; }
 	int slot = stack_pop().i;
+	if (unlikely(!page_index_valid(slot))) {
+		static unsigned int warn_count = 0;
+		if (warn_count++ < 64)
+			WARNING("Delegate.%s on invalid delegate slot: %d", f->name, slot);
+		if (!strcmp(f->name, "Numof") || !strcmp(f->name, "Exist"))
+			stack_push(0);
+		else if (!strcmp(f->name, "Empty"))
+			stack_push(1);
+		return true;
+	}
 	struct page *page = heap_get_page(slot);
 	if (!strcmp(f->name, "Set")) {
 		page = delegate_clear(page);
@@ -877,13 +978,17 @@ bool v12_hll_call(int library, int function, int type_parameter)
 	if (!strcmp(lib->name, "Int") && !strcmp(f->name, "String")) {
 		if (f->nr_arguments != 1) VM_ERROR("Unexpected Int.String signature");
 		int index = stack_pop().i, page = stack_pop().i;
-		stack_push(heap_alloc_string(integer_to_string(heap_get_page(page)->values[index].i)));
+		int32_t val = (page_index_valid(page) && heap[page].page && index >= 0 && index < heap[page].page->nr_vars)
+			? heap[page].page->values[index].i : 0;
+		stack_push(heap_alloc_string(integer_to_string(val)));
 		return true;
 	}
 	if (!strcmp(lib->name, "Float") && !strcmp(f->name, "String")) {
 		int precision = f->nr_arguments == 2 ? stack_pop().i : 6;
 		int index = stack_pop().i, page = stack_pop().i;
-		stack_push(heap_alloc_string(float_to_string(heap_get_page(page)->values[index].f, precision)));
+		float val = (page_index_valid(page) && heap[page].page && index >= 0 && index < heap[page].page->nr_vars)
+			? heap[page].page->values[index].f : 0.0f;
+		stack_push(heap_alloc_string(float_to_string(val, precision)));
 		return true;
 	}
 	return false;

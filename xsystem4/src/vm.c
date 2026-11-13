@@ -147,24 +147,19 @@ void global_set(int varno, union vm_value val, bool call_dtors)
 
 static int32_t struct_page_slot(void)
 {
-	int fallback = -1;
 	for (int i = call_stack_ptr - 1; i >= 0; i--) {
-		int slot = call_stack[i].struct_page;
-		if (slot >= 0) {
-			if (heap_index_valid(slot) && heap[slot].type == VM_PAGE &&
-			    heap[slot].page && heap[slot].page->nr_vars > 0) {
-				return slot;
-			}
-			if (fallback < 0)
-				fallback = slot;
-		}
+		if (call_stack[i].has_struct_page)
+			return call_stack[i].struct_page;
 	}
-	return fallback;
+	return -1;
 }
 
 static struct page *struct_page(void)
 {
-	return heap[struct_page_slot()].page;
+	int32_t slot = struct_page_slot();
+	if (unlikely(!page_index_valid(slot)))
+		return NULL;
+	return heap[slot].page;
 }
 
 struct page *get_struct_page(int frame_no)
@@ -172,17 +167,113 @@ struct page *get_struct_page(int frame_no)
 	if (frame_no < 0 || frame_no >= call_stack_ptr)
 		return NULL;
 	int slot = call_stack[call_stack_ptr - (frame_no + 1)].struct_page;
-	return slot < 1 ? NULL : heap[slot].page;
+	return page_index_valid(slot) && slot >= 1 ? heap[slot].page : NULL;
+}
+
+static const struct ain_type *last_dummy_type = NULL;
+static int32_t last_var_heap = -1;
+static int32_t last_var_page = -1;
+static unsigned int invalid_var_warn_count = 0;
+#define INVALID_VAR_WARN_LIMIT 64
+
+static bool ain_type_is_null_handle(enum ain_data_type dt)
+{
+	switch (dt) {
+	case AIN_INT:
+	case AIN_FLOAT:
+	case AIN_BOOL:
+	case AIN_LONG_INT:
+	case AIN_FUNC_TYPE:
+	case AIN_ENUM:
+	case AIN_ENUM2:
+	case AIN_VOID:
+		return false;
+	default:
+		return true;
+	}
+}
+
+static const struct ain_type *lookup_expected_var_type(int32_t heap_index, int32_t page_index)
+{
+	if (!ain)
+		return NULL;
+	if (heap_index_valid(heap_index) && heap[heap_index].type == VM_PAGE && heap[heap_index].page) {
+		struct page *p = heap[heap_index].page;
+		switch (p->type) {
+		case STRUCT_PAGE:
+			if (p->index >= 0 && p->index < ain->nr_structures &&
+			    page_index >= 0 && page_index < ain->structures[p->index].nr_members)
+				return &ain->structures[p->index].members[page_index].type;
+			break;
+		case LOCAL_PAGE:
+			if (p->index >= 0 && p->index < ain->nr_functions &&
+			    page_index >= 0 && page_index < ain->functions[p->index].nr_vars)
+				return &ain->functions[p->index].vars[page_index].type;
+			break;
+		case GLOBAL_PAGE:
+			if (page_index >= 0 && page_index < ain->nr_globals)
+				return &ain->globals[page_index].type;
+			break;
+		case ARRAY_PAGE:
+			if (p->a_type == AIN_ARRAY)
+				return &p->array.element_type;
+			break;
+		default:
+			break;
+		}
+	} else if (heap_index < 0 && call_stack_ptr > 0) {
+		int fno = call_stack[call_stack_ptr - 1].fno;
+		if (fno >= 0 && fno < ain->nr_functions) {
+			int st = ain->functions[fno].struct_type;
+			if (st >= 0 && st < ain->nr_structures &&
+			    struct_page_slot() == heap_index &&
+			    page_index >= 0 && page_index < ain->structures[st].nr_members) {
+				return &ain->structures[st].members[page_index].type;
+			}
+		}
+	}
+	return NULL;
+}
+
+static union vm_value *prepare_dummy_var(union vm_value dummy[2], int32_t heap_index, int32_t page_index)
+{
+	const struct ain_type *t = lookup_expected_var_type(heap_index, page_index);
+	last_dummy_type = t;
+	if (t) {
+		dummy[0].i = ain_type_is_null_handle(t->data) ? -1 : 0;
+	} else if (ain && ain->code && instr_ptr + 2 <= ain->code_size &&
+		   (get_opcode(instr_ptr) & ~OPTYPE_MASK) == REFREF) {
+		dummy[0].i = -1;
+	} else {
+		dummy[0].i = 0;
+	}
+	dummy[1].i = 0;
+	return &dummy[0];
 }
 
 union vm_value member_get(int varno)
 {
-	return struct_page()->values[varno];
+	int32_t slot = struct_page_slot();
+	struct page *page = page_index_valid(slot) ? heap[slot].page : NULL;
+	if (unlikely(!page || varno < 0 || varno >= page->nr_vars)) {
+		union vm_value dummy[2];
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Invalid struct member read: %d/%d", slot, varno);
+		return *prepare_dummy_var(dummy, slot, varno);
+	}
+	return page->values[varno];
 }
 
 static void member_set(int varno, int32_t value)
 {
-	struct_page()->values[varno].i = value;
+	int32_t slot = struct_page_slot();
+	struct page *page = page_index_valid(slot) ? heap[slot].page : NULL;
+	if (unlikely(!page || varno < 0 || varno >= page->nr_vars)) {
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Invalid struct member write: %d/%d", slot, varno);
+		return;
+	}
+	page->values[varno].i = value;
 }
 
 union vm_value stack_peek(int n)
@@ -204,49 +295,53 @@ static union vm_value *stack_peek_ptr(int n)
 // Pop a reference off the stack, returning the address of the referenced object.
 static union vm_value *stack_pop_var(void)
 {
-	static union vm_value dummy_var;
+	static union vm_value dummy_var[2];
 	int32_t page_index = stack_pop().i;
 	int32_t heap_index = stack_pop().i;
+	last_var_heap = heap_index;
+	last_var_page = page_index;
 	if (unlikely(!heap_index_valid(heap_index))) {
-		WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
 	if (unlikely(heap[heap_index].type != VM_PAGE)) {
-		WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
-			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+				heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
 	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars)) {
-		WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
+	last_dummy_type = NULL;
 	return &heap[heap_index].page->values[page_index];
 }
 
 union vm_value *stack_peek_var(void)
 {
-	static union vm_value dummy_var;
+	static union vm_value dummy_var[2];
 	int32_t page_index = stack_peek(0).i;
 	int32_t heap_index = stack_peek(1).i;
 	if (unlikely(!heap_index_valid(heap_index))) {
-		WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Out of bounds heap index: %d/%d", heap_index, page_index);
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
 	if (unlikely(heap[heap_index].type != VM_PAGE)) {
-		WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
-			heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Heap index is not a page: %d/%d (type=%d, str=%s)", heap_index, page_index,
+				heap[heap_index].type, (heap[heap_index].type == VM_STRING && heap[heap_index].s) ? heap[heap_index].s->text : "");
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
 	if (unlikely(!heap[heap_index].page || page_index < 0 || page_index >= heap[heap_index].page->nr_vars)) {
-		WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
-		dummy_var.i = 0;
-		return &dummy_var;
+		if (invalid_var_warn_count++ < INVALID_VAR_WARN_LIMIT)
+			WARNING("Out of bounds page index: %d/%d", heap_index, page_index);
+		return prepare_dummy_var(dummy_var, heap_index, page_index);
 	}
+	last_dummy_type = NULL;
 	return &heap[heap_index].page->values[page_index];
 }
 
@@ -259,7 +354,8 @@ static void stack_push_string(struct string *s)
 
 static struct string *stack_peek_string(int n)
 {
-	return heap[stack_peek(n).i].s;
+	int slot = stack_peek(n).i;
+	return string_index_valid(slot) ? heap[slot].s : &EMPTY_STRING;
 }
 
 int vm_string_ref(struct string *s)
@@ -271,6 +367,10 @@ int vm_string_ref(struct string *s)
 
 int vm_copy_page(int source)
 {
+	if (unlikely(!page_index_valid(source))) {
+		WARNING("vm_copy_page on invalid page slot: %d", source);
+		return -1;
+	}
 	struct page *page = heap_get_page(source);
 	int slot = heap_alloc_slot(VM_PAGE);
 	heap_set_page(slot, copy_page(page));
@@ -360,8 +460,9 @@ static int alloc_scenario_page(const char *fname)
 static void set_struct_page(int slot)
 {
 	call_stack[call_stack_ptr-1].struct_page = slot;
+	call_stack[call_stack_ptr-1].has_struct_page = true;
 	// Keep `this` alive during the call (from Rance9 onwards).
-	if (AIN_VERSION_GTE(ain, 6, 1))
+	if (slot >= 0 && AIN_VERSION_GTE(ain, 6, 1))
 		heap_ref(slot);
 }
 
@@ -396,6 +497,7 @@ static void scenario_call(int slot)
 		.return_address = VM_RETURN,
 		.page_slot = slot,
 		.struct_page = -1,
+		.has_struct_page = true,
 	};
 	call_stack_ptr = 1;
 	instr_ptr = ain->functions[fno].address;
@@ -509,6 +611,7 @@ static int _function_call(int fno, int return_address, int environment)
 		.return_address = return_address,
 		.page_slot = slot,
 		.struct_page = -1,
+		.has_struct_page = false,
 	};
 	// initialize local variables
 	for (int i = f->nr_args; i < f->nr_vars; i++) {
@@ -569,7 +672,7 @@ static void delegate_call(int dg_no, int return_address)
 	// stack: [arg0, ..., dg_page] on first call, or [arg0, ..., dg_page, return_value] after RETURN
 	int return_values = delegate_return_width(&ain->delegates[dg_no]);
 	int dg_page = stack_peek(first_call ? 0 : return_values).i;
-	struct page *page = heap_get_delegate_page(dg_page);
+	struct page *page = page_index_valid(dg_page) ? heap_get_delegate_page(dg_page) : NULL;
 	int dg_index = page ? page->delegate.cursor : 0;
 	int obj, fun, environment;
 	if (page && dg_index < page->delegate.end && delegate_get(page, dg_index, &obj, &fun, &environment)) {
@@ -634,10 +737,8 @@ void vm_call(int fno, int struct_page)
 {
 	size_t saved_ip = instr_ptr;
 	function_call(fno, VM_RETURN);
-	if (struct_page >= 0) {
-		set_struct_page(struct_page);
-		local_page()->local.struct_ptr = struct_page;
-	}
+	set_struct_page(struct_page);
+	local_page()->local.struct_ptr = struct_page;
 	vm_execute();
 	instr_ptr = saved_ip;
 }
@@ -1702,6 +1803,11 @@ static enum opcode execute_instruction(enum opcode opcode)
 	case S_REF: {
 		// Dereference a reference to a string
 		int str = stack_pop_var()->i;
+		if (unlikely(!string_index_valid(str))) {
+			WARNING("S_REF on invalid string slot: %d", str);
+			stack_push_string(string_ref(&EMPTY_STRING));
+			break;
+		}
 		stack_push_string(string_ref(heap_get_string(str)));
 		break;
 	}
@@ -1709,7 +1815,7 @@ static enum opcode execute_instruction(enum opcode opcode)
 	case S_ASSIGN: { // A = B
 		int rval = stack_peek(0).i;
 		int lval = stack_peek(1).i;
-		heap_string_assign(lval, heap_get_string(rval));
+		heap_string_assign(lval, string_index_valid(rval) ? heap_get_string(rval) : &EMPTY_STRING);
 		// remove A from the stack, but leave B
 		stack_set(1, rval);
 		stack_pop();
@@ -1779,18 +1885,18 @@ static enum opcode execute_instruction(enum opcode opcode)
 	}
 	case S_LENGTH: {
 		int str = stack_pop_var()->i;
-		stack_push(sjis_count_char(heap_get_string(str)->text));
+		stack_push(string_index_valid(str) ? sjis_count_char(heap_get_string(str)->text) : 0);
 		break;
 	}
 	case S_LENGTH2: {
 		int str = stack_pop().i;
-		stack_push(sjis_count_char(heap_get_string(str)->text));
+		stack_push(string_index_valid(str) ? sjis_count_char(heap_get_string(str)->text) : 0);
 		heap_unref(str);
 		break;
 	}
 	case S_LENGTHBYTE: {
 		int str = stack_pop_var()->i;
-		stack_push(heap_get_string(str)->size);
+		stack_push(string_index_valid(str) ? heap_get_string(str)->size : 0);
 		break;
 	}
 	case S_EMPTY: {
@@ -1958,7 +2064,30 @@ static enum opcode execute_instruction(enum opcode opcode)
 			break;
 		}
 		if (unlikely(array <= 0 || !page_index_valid(array))) {
-			WARNING("A_REF on invalid page/string slot: %d", array);
+			static unsigned int warn_count = 0;
+			if (warn_count++ < INVALID_VAR_WARN_LIMIT)
+				WARNING("A_REF on invalid page/string slot: %d", array);
+			const struct ain_type *t = last_dummy_type ? last_dummy_type
+				: lookup_expected_var_type(last_var_heap, last_var_page);
+			if (t && t->data == AIN_WRAP)
+				t = t->array_type;
+			if (ain->version >= 11 && t) {
+				if ((t->data == AIN_ARRAY || t->data == AIN_REF_ARRAY) && t->array_type) {
+					stack_push(heap_alloc_page(v12_array_new(t->array_type, 0, false)));
+					break;
+				}
+				if ((t->data == AIN_STRUCT || t->data == AIN_REF_STRUCT) &&
+				    t->struc >= 0 && t->struc < ain->nr_structures) {
+					int s = alloc_struct(t->struc);
+					init_struct(t->struc, s);
+					stack_push(s);
+					break;
+				}
+				if (t->data == AIN_DELEGATE) {
+					stack_push(heap_alloc_page(alloc_page(DELEGATE_PAGE, 0, 0)));
+					break;
+				}
+			}
 			stack_push(vm_string_ref(&EMPTY_STRING));
 			break;
 		}
@@ -2148,6 +2277,7 @@ static enum opcode execute_instruction(enum opcode opcode)
 		int memb_page = member_get(get_argument(0)).i;
 		function_call(get_argument(1), instr_ptr + instruction_width(SH_STRUCTREF_CALLMETHOD_NO_PARAM));
 		set_struct_page(memb_page);
+		local_page()->local.struct_ptr = memb_page;
 		break;
 	}
 	case SH_STRUCTREF2: {
@@ -2172,6 +2302,7 @@ static enum opcode execute_instruction(enum opcode opcode)
 		int memb2 = page_get_var(heap_get_page(memb1), get_argument(1)).i;
 		function_call(get_argument(2), instr_ptr + instruction_width(SH_STRUCTREF2_CALLMETHOD_NO_PARAM));
 		set_struct_page(memb2);
+		local_page()->local.struct_ptr = memb2;
 		break;
 	}
 	case SH_IF_STRUCTREF_Z: {
@@ -2207,6 +2338,7 @@ static enum opcode execute_instruction(enum opcode opcode)
 		int this_page = struct_page_slot();
 		function_call(get_argument(0), instr_ptr + instruction_width(THISCALLMETHOD_NOPARAM));
 		set_struct_page(this_page);
+		local_page()->local.struct_ptr = this_page;
 		break;
 	}
 	case SH_IF_LOC_NE_IMM: {
@@ -2537,7 +2669,7 @@ static enum opcode execute_instruction(enum opcode opcode)
 			stack[pos-1] = stack[pos];
 		}
 		stack[stack_ptr-1].i = dg_page;
-		struct page *page = heap_get_delegate_page(dg_page);
+		struct page *page = page_index_valid(dg_page) ? heap_get_delegate_page(dg_page) : NULL;
 		if (page) {
 			page->delegate.cursor = 0;
 			page->delegate.end = delegate_numof(page);
@@ -2687,6 +2819,8 @@ int vm_execute_ain(struct ain *program)
 	stack_ptr = 0;
 	call_stack_ptr = 0;
 	dg_callbegin_pending = false;
+	last_dummy_type = NULL;
+	invalid_var_warn_count = 0;
 
 	heap_init();
 	init_libraries();
