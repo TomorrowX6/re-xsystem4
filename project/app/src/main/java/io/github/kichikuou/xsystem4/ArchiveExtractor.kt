@@ -65,6 +65,32 @@ object ArchiveExtractor {
     }
 
     /**
+     * Extracts a `.zip`, `.rar` (RAR4/RAR5), `.7z`, or `.tar.*` archive from a local [archiveFile] into [destDir].
+     */
+    fun extractFileToDirectory(
+        archiveFile: File,
+        destDir: File,
+        shouldSkip: (normalizedRelPath: String) -> Boolean = { false },
+        throwInstallFailureOnNoSpace: Boolean = false,
+        checkCancelled: (() -> Unit)? = null,
+        onEntryAccepted: ((outFile: File, normalizedRelPath: String) -> Unit)? = null,
+        onProgress: ((totalBytes: Long, currentEntryPath: String) -> Unit)? = null
+    ): Int {
+        ensureLoaded()
+        val trackingCallback = createTrackingCallback(
+            destDir = destDir,
+            shouldSkip = shouldSkip,
+            throwInstallFailureOnNoSpace = throwInstallFailureOnNoSpace,
+            checkCancelled = checkCancelled,
+            onEntryAccepted = onEntryAccepted,
+            onProgress = onProgress
+        )
+        ParcelFileDescriptor.open(archiveFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            return runNativeExtract(pfd.fd, trackingCallback, throwInstallFailureOnNoSpace)
+        }
+    }
+
+    /**
      * Extracts a `.zip`, `.rar` (RAR4/RAR5), `.7z`, or `.tar.*` archive from [uri] into [destDir].
      * Uses a direct seekable SAF file descriptor whenever available (zero temporary archive copy),
      * falling back to a temporary file copy only for non-seekable virtual streams.
@@ -81,6 +107,73 @@ object ArchiveExtractor {
         onProgress: ((totalBytes: Long, currentEntryPath: String) -> Unit)? = null
     ): Int {
         ensureLoaded()
+        val trackingCallback = createTrackingCallback(
+            destDir = destDir,
+            shouldSkip = shouldSkip,
+            throwInstallFailureOnNoSpace = throwInstallFailureOnNoSpace,
+            checkCancelled = checkCancelled,
+            onEntryAccepted = onEntryAccepted,
+            onProgress = onProgress
+        )
+
+        var directPfd: ParcelFileDescriptor? = null
+        var tempArchiveFile: File? = null
+        try {
+            directPfd = try {
+                context.contentResolver.openFileDescriptor(uri, "r")
+            } catch (e: Exception) {
+                Log.w(TAG, "openFileDescriptor failed, falling back to stream copy", e)
+                null
+            }
+
+            if (directPfd != null && nativeIsFdSeekable(directPfd.fd)) {
+                return runNativeExtract(directPfd.fd, trackingCallback, throwInstallFailureOnNoSpace)
+            }
+
+            directPfd?.close()
+            directPfd = null
+
+            tempScratchParent.mkdirs()
+            val stagedFile = File(tempScratchParent, ".archive_src_${UUID.randomUUID()}.tmp")
+            tempArchiveFile = stagedFile
+
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IOException("Cannot open selected archive URI")
+            input.use { src ->
+                stagedFile.outputStream().buffered().use { dst ->
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        checkCancelled?.invoke()
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        dst.write(buf, 0, n)
+                    }
+                }
+            }
+
+            ParcelFileDescriptor.open(stagedFile, ParcelFileDescriptor.MODE_READ_ONLY).use { stagedPfd ->
+                return runNativeExtract(stagedPfd.fd, trackingCallback, throwInstallFailureOnNoSpace)
+            }
+        } finally {
+            try {
+                directPfd?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                tempArchiveFile?.delete()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun createTrackingCallback(
+        destDir: File,
+        shouldSkip: (normalizedRelPath: String) -> Boolean,
+        throwInstallFailureOnNoSpace: Boolean,
+        checkCancelled: (() -> Unit)?,
+        onEntryAccepted: ((outFile: File, normalizedRelPath: String) -> Unit)?,
+        onProgress: ((totalBytes: Long, currentEntryPath: String) -> Unit)?
+    ): NativeCallback {
         destDir.mkdirs()
         val destCanonical = destDir.canonicalFile
         val rootPrefix = destCanonical.path + File.separator
@@ -90,7 +183,7 @@ object ArchiveExtractor {
         var latestBytesWritten = 0L
         val createdDirs = HashSet<String>()
 
-        val trackingCallback = object : NativeCallback {
+        return object : NativeCallback {
             override fun onEntry(rawPath: ByteArray, entrySize: Long): String? {
                 checkCancelled?.invoke()
                 val decoded = decodeEntryPath(rawPath)
@@ -156,56 +249,6 @@ object ArchiveExtractor {
                         onProgress(totalBytesWritten, currentRelPath)
                     }
                 }
-            }
-        }
-
-        // Ignore unused initial `callback` object above — wait: let's keep only `trackingCallback` cleanly!
-        var directPfd: ParcelFileDescriptor? = null
-        var tempArchiveFile: File? = null
-        try {
-            directPfd = try {
-                context.contentResolver.openFileDescriptor(uri, "r")
-            } catch (e: Exception) {
-                Log.w(TAG, "openFileDescriptor failed, falling back to stream copy", e)
-                null
-            }
-
-            if (directPfd != null && nativeIsFdSeekable(directPfd.fd)) {
-                return runNativeExtract(directPfd.fd, trackingCallback, throwInstallFailureOnNoSpace)
-            }
-
-            directPfd?.close()
-            directPfd = null
-
-            tempScratchParent.mkdirs()
-            val stagedFile = File(tempScratchParent, ".archive_src_${UUID.randomUUID()}.tmp")
-            tempArchiveFile = stagedFile
-
-            val input = context.contentResolver.openInputStream(uri)
-                ?: throw IOException("Cannot open selected archive URI")
-            input.use { src ->
-                stagedFile.outputStream().buffered().use { dst ->
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        checkCancelled?.invoke()
-                        val n = src.read(buf)
-                        if (n < 0) break
-                        dst.write(buf, 0, n)
-                    }
-                }
-            }
-
-            ParcelFileDescriptor.open(stagedFile, ParcelFileDescriptor.MODE_READ_ONLY).use { stagedPfd ->
-                return runNativeExtract(stagedPfd.fd, trackingCallback, throwInstallFailureOnNoSpace)
-            }
-        } finally {
-            try {
-                directPfd?.close()
-            } catch (_: Throwable) {
-            }
-            try {
-                tempArchiveFile?.delete()
-            } catch (_: Throwable) {
             }
         }
     }

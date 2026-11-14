@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
-        android:id="@+id/install_game"
-        android:title="@string/action_install_game" />
+        android:id="@+id/online_install"
+        android:title="@string/action_online_install" />
     <item
-        android:id="@+id/install_mod"
-        android:title="@string/action_install_mod" />
+        android:id="@+id/local_install"
+        android:title="@string/action_local_install" />
     <item
         android:id="@+id/save_manager"
         android:title="@string/action_save_manager" />

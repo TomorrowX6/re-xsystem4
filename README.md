@@ -41,9 +41,12 @@ Written in pure C/C++, SDL2, and OpenGL ES 3.0, it directly interprets AIN bytec
   - Automatically suspends audio mixing when backgrounded to eliminate idle CPU/battery drain.
 - **APEG Video Decoder & Texture GC**: Built-in MPEG-1 video and Ogg Vorbis audio synchronized decoder, per-frame deferred texture garbage collection, `SceneParty` card loading acceleration, and fast-forward (`MsgSkip` / `Ctrl`) surface rebuild throttling.
 
-### 4. Multi-Format Archive Engine, MOD Manager, Save Manager & Game Modifier
+### 4. Online & Local Installer, Multi-Format Archive Engine, Save Manager & Game Modifier
+- **Online & Local Dual-Mode Installation (Base Game & MODs)**:
+  - **Online Base Game Installer (Cloudflare R2 + Workers)**: One-click cloud download of the complete Chinese Rance 10 base game with HTTP `Range` resume and per-file SHA-256 verification (no double storage overhead for archive extraction).
+  - **Online MOD Installer, Version Selector & Updater (`rance10sns.cn` Portal)**: Automatically fetches the full MOD release catalog and changelogs, tracks the installed MOD version, detects updates, and supports smart incremental patch updates (downloading only the hotfix when the matching base version is already installed), automatic base + patch combo installation, clean switching across historical versions, and an in-app login/registration popup.
 - **Native `.zip` / `.rar` / `.7z` Streaming Extractor**: Powered by `libarchive` + `xz` (`liblzma`), supporting ZIP/Zip64, RAR4/RAR5 (including solid archives and large dictionaries), and 7z (LZMA/LZMA2/PPMd/BCJ) with automatic UTF-8 / UTF-16LE / GBK filename detection.
-- **Non-Destructive MOD Manager**: Install full or incremental MODs from `.zip` / `.rar` / `.7z` archives or folders with automatic vanilla file backup and one-tap **Restore Vanilla Game (`还原原版游戏`)**.
+- **Non-Destructive MOD Manager**: Install full or incremental MODs online or from local `.zip` / `.rar` / `.7z` archives and folders with automatic vanilla file backup and one-tap **Restore Vanilla Game (`还原原版游戏`)**.
 - **Built-in Save Manager**: Bidirectional PC save compatibility (`SaveData` v26 `.asd` & `RSave` `.rsd`) with atomic `fsync` writes; import saves from `.zip` / `.rar` / `.7z` archives, folders, or individual files; export saves to ZIP or external folders; and back up, rename, or delete individual files.
 - **Standalone & In-Game Floating Modifier (Default ON)**:
   - **In-Game Floating Modifier (`悬浮窗修改器`)**: Enabled by default via a draggable overlay icon; provides 11 real-time battle/campaign locks (Max HP, Infinite AP, 999 Combo, Round 1 Lock, One-Hit Kill, Enemy 0 ATK/DEF, Boost & Crit, Infinite Skill Uses, Infinite Zippo, Resources >= 999, 100% Treasure Drop), persistent **Disable Streamer Mode (`关闭主播模式`)** & cheat code submission for MODs, a draggable **`⏩ Ctrl`** latched skip button (enabled by default), and live resource/party/world/card editors.
@@ -75,15 +78,15 @@ Written in pure C/C++, SDL2, and OpenGL ES 3.0, it directly interprets AIN bytec
 
 To run a game, prepare the complete original PC game files (containing `AliceStart.ini` or `System40.ini`, `*.ain` bytecode file, `*.afa` / `*.ald` archives, `Data/`, `Movie/`, etc.).
 
-### 1. Install Base Game (`安装游戏本体`)
-Tap **Install Base Game (`安装游戏本体`)** on the launcher and choose either method:
-- **Install from Archive (`.zip` / `.rar` / `.7z`)**: Select a `.zip`, `.rar`, or `.7z` game archive (with `AliceStart.ini` / `System40.ini` at the archive root or inside a single top-level folder) to stream-extract directly into app storage.
-- **Install from Folder**: Copy the extracted PC game folder to device storage (e.g., `/sdcard/Download/Rance10/`) and select it via the system directory picker.
+### 1. Online Install (`在线安装`)
+Tap **Online Install (`在线安装`)** on the launcher and choose:
+- **Install Base Game**: Download the complete Chinese Rance 10 base game (~3.75 GB) directly from Cloudflare R2 + Workers with pause/resume support and SHA-256 integrity verification.
+- **Install / Update MOD**: Opens the **MOD Version & Update** manager to check for new releases against the currently installed version, perform one-tap smart updates (incremental patch or base + patch combo), browse changelogs and switch to any historical version, log in/register on `https://rance10sns.cn`, or restore the vanilla game.
 
-### 2. Install or Restore MODs (`安装 MOD`)
-1. Import the base game first, then tap **Install MOD (`安装 MOD`)** and select the target game.
-2. Install full or incremental MOD files from a **`.zip` / `.rar` / `.7z` archive** or an **external folder**. Original base game files are backed up automatically before overwriting.
-3. Choose **Restore Vanilla Game (`还原原版游戏`)** at any time to cleanly uninstall the MOD and restore original files.
+### 2. Local Install (`本地安装`)
+Tap **Local Install (`本地安装`)** on the launcher and choose:
+- **Install Base Game**: Import the base game from a local **`.zip` / `.rar` / `.7z` archive** or an **external folder** (e.g., `/sdcard/Download/Rance10/`).
+- **Install MOD**: Install full or incremental MODs from a local **`.zip` / `.rar` / `.7z` archive** or **external folder** (with automatic vanilla file backup and one-tap **Restore Vanilla Game (`还原原版游戏`)**).
 
 ### 3. Save Manager (`存档管理器`)
 - **Import Saves**: Import saves from an external `.zip` / `.rar` / `.7z` archive, external folder, or individual save files (`GlobalSave.asd`, `Collection.asd`, `SaveData*.asd`, etc.).

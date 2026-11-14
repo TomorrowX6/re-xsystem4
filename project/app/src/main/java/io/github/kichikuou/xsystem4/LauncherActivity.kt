@@ -17,8 +17,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.BaseAdapter
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.ListView
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 
@@ -78,8 +80,8 @@ class LauncherActivity : Activity(), GameListObserver {
 
         val listView = findViewById<ListView>(R.id.list)
         listView.adapter = adapter
-        findViewById<View>(R.id.install_game).setOnClickListener { openInstallGame() }
-        findViewById<View>(R.id.install_mod).setOnClickListener { openInstallMod() }
+        findViewById<View>(R.id.online_install).setOnClickListener { openOnlineInstall() }
+        findViewById<View>(R.id.local_install).setOnClickListener { openLocalInstall() }
         findViewById<View>(R.id.save_manager).setOnClickListener { openSaveManager() }
         findViewById<View>(R.id.game_modifier).setOnClickListener { openGameModifier() }
         findViewById<View>(R.id.open_github).setOnClickListener { openGitHub() }
@@ -111,12 +113,12 @@ class LauncherActivity : Activity(), GameListObserver {
                 setGameList(getGameList(refresh = true))
                 true
             }
-            R.id.install_game -> {
-                openInstallGame()
+            R.id.online_install -> {
+                openOnlineInstall()
                 true
             }
-            R.id.install_mod -> {
-                openInstallMod()
+            R.id.local_install -> {
+                openLocalInstall()
                 true
             }
             R.id.save_manager -> {
@@ -163,14 +165,63 @@ class LauncherActivity : Activity(), GameListObserver {
         }
     }
 
-    private fun openInstallGame() {
+    private fun openOnlineInstall() {
+        if (gameList.installState is InstallState.Installing) return
+        val options = arrayOf(
+            getString(R.string.online_sub_game),
+            getString(R.string.online_sub_mod)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.action_online_install)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> confirmOnlineBaseGameInstall()
+                    1 -> selectGameForMod { target -> openOnlineModForGame(target) }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun openLocalInstall() {
+        if (gameList.installState is InstallState.Installing) return
+        val options = arrayOf(
+            getString(R.string.local_sub_game),
+            getString(R.string.local_sub_mod)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.action_local_install)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> openLocalInstallGame()
+                    1 -> selectGameForMod { target -> showLocalModInstallDialog(target) }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun confirmOnlineBaseGameInstall() {
+        if (gameList.installState is InstallState.Installing) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.online_base_confirm_title)
+            .setMessage(R.string.online_base_confirm_msg)
+            .setPositiveButton(R.string.ok) { _, _ ->
+                gameList.installOnlineBaseGame()
+                renderInstallState(gameList.installState)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun openLocalInstallGame() {
         if (gameList.installState is InstallState.Installing) return
         val options = arrayOf(
             getString(R.string.game_opt_zip),
             getString(R.string.game_opt_dir)
         )
         AlertDialog.Builder(this)
-            .setTitle(R.string.action_install_game)
+            .setTitle(R.string.game_local_dialog_title)
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> chooseZip()
@@ -181,7 +232,7 @@ class LauncherActivity : Activity(), GameListObserver {
             .show()
     }
 
-    private fun openInstallMod() {
+    private fun selectGameForMod(onSelected: (Item) -> Unit) {
         if (gameList.installState is InstallState.Installing) return
         if (gameList.size == 0) {
             AlertDialog.Builder(this)
@@ -192,7 +243,7 @@ class LauncherActivity : Activity(), GameListObserver {
             return
         }
         if (gameList.size == 1) {
-            showModActionDialog(gameList[0])
+            onSelected(gameList[0])
             return
         }
         val names = Array(gameList.size) { gameList[it].name }
@@ -200,14 +251,34 @@ class LauncherActivity : Activity(), GameListObserver {
             .setTitle(R.string.mod_select_game_title)
             .setItems(names) { _, which ->
                 if (which in 0 until gameList.size) {
-                    showModActionDialog(gameList[which])
+                    onSelected(gameList[which])
                 }
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
-    private fun showModActionDialog(target: Item) {
+    private fun openOnlineModForGame(target: Item) {
+        ModVersionManagerDialog.show(
+            activity = this,
+            targetItem = target,
+            gameList = gameList,
+            onModChanged = {
+                adapter.notifyDataSetChanged()
+                Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+            },
+            onInstallPlanSelected = { steps, cookie ->
+                gameList.installOnlineModPlan(target, steps, cookie)
+                renderInstallState(gameList.installState)
+            },
+            onManualDownloadSelected = { req, matchedRelease ->
+                gameList.installOnlineMod(target, req, matchedRelease)
+                renderInstallState(gameList.installState)
+            }
+        )
+    }
+
+    private fun showLocalModInstallDialog(target: Item) {
         val options = mutableListOf(
             getString(R.string.mod_opt_zip),
             getString(R.string.mod_opt_dir)
@@ -216,7 +287,7 @@ class LauncherActivity : Activity(), GameListObserver {
             options.add(getString(R.string.mod_opt_restore_vanilla))
         }
         AlertDialog.Builder(this)
-            .setTitle(getString(R.string.mod_dialog_title, target.name))
+            .setTitle(getString(R.string.mod_local_dialog_title, target.name))
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> {
@@ -291,6 +362,10 @@ class LauncherActivity : Activity(), GameListObserver {
         renderInstallState(gameList.installState)
     }
 
+    override fun onInstallCancelled() {
+        renderInstallState(gameList.installState)
+    }
+
     override fun onInstallFailure(msgId: Int) {
         renderInstallState(gameList.installState)
     }
@@ -331,6 +406,35 @@ class LauncherActivity : Activity(), GameListObserver {
     }
 
     private fun onItemLongClick(item: Item): Boolean {
+        if (gameList.hasInstalledMod(item)) {
+            val opts = arrayOf(
+                getString(R.string.mod_opt_manage_versions),
+                getString(R.string.mod_opt_restore_vanilla),
+                getString(R.string.uninstall_dialog_title)
+            )
+            AlertDialog.Builder(this)
+                .setTitle(item.name)
+                .setItems(opts) { _, which ->
+                    when (which) {
+                        0 -> openOnlineModForGame(item)
+                        1 -> {
+                            if (gameList.restoreMod(item)) {
+                                adapter.notifyDataSetChanged()
+                                Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        2 -> confirmUninstallGame(item)
+                    }
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+            return true
+        }
+        confirmUninstallGame(item)
+        return true
+    }
+
+    private fun confirmUninstallGame(item: Item) {
         AlertDialog.Builder(this).setTitle(R.string.uninstall_dialog_title)
             .setMessage(getString(R.string.uninstall_dialog_message, item.name))
             .setPositiveButton(R.string.ok) {_, _ ->
@@ -339,43 +443,100 @@ class LauncherActivity : Activity(), GameListObserver {
             }
             .setNegativeButton(R.string.cancel) {_, _ -> }
             .show()
-        return true
     }
 
     private fun renderInstallState(state: InstallState) {
         when (state) {
             InstallState.Idle -> dismissProgressDialog()
-            is InstallState.Installing -> showProgressDialog(state.progress)
+            is InstallState.Installing -> showProgressDialog(
+                progress = state.progress,
+                permille = state.permille,
+                cancellable = state.cancellable
+            )
             InstallState.Succeeded -> {
                 dismissProgressDialog()
                 adapter.notifyDataSetChanged()
+                Toast.makeText(this, R.string.install_done_toast, Toast.LENGTH_SHORT).show()
+                gameList.consumeInstallResult()
+            }
+            InstallState.Cancelled -> {
+                dismissProgressDialog()
+                adapter.notifyDataSetChanged()
+                Toast.makeText(this, R.string.online_download_paused_toast, Toast.LENGTH_LONG).show()
                 gameList.consumeInstallResult()
             }
             is InstallState.Failed -> {
                 dismissProgressDialog()
-                AlertDialog.Builder(this).setTitle(R.string.error)
-                    .setMessage(state.msgId)
-                    .setPositiveButton(R.string.ok) {_, _ -> }
-                    .show()
+                adapter.notifyDataSetChanged()
+                val retry = if (state.msgId == R.string.online_mod_auth_expired) {
+                    gameList.pendingModAuthRetry
+                } else {
+                    null
+                }
+                gameList.clearPendingModAuthRetry()
                 gameList.consumeInstallResult()
+                if (retry != null) {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.online_mod_auth_dialog_title)
+                        .setMessage(R.string.online_mod_auth_expired_retry_msg)
+                        .setPositiveButton(R.string.online_mod_portal_btn_auth) { _, _ ->
+                            ModOnlinePortalDialog.showAuthForDownload(this, retry.label) { freshCookie ->
+                                if (retry.steps != null) {
+                                    gameList.installOnlineModPlan(retry.targetItem, retry.steps, freshCookie)
+                                } else if (retry.manualReq != null) {
+                                    gameList.installOnlineMod(
+                                        retry.targetItem,
+                                        retry.manualReq.copy(cookie = freshCookie),
+                                        retry.manualReleaseMeta
+                                    )
+                                }
+                                renderInstallState(gameList.installState)
+                            }
+                        }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                } else {
+                    AlertDialog.Builder(this).setTitle(R.string.error)
+                        .setMessage(state.msgId)
+                        .setPositiveButton(R.string.ok) { _, _ -> }
+                        .show()
+                }
             }
         }
     }
 
-    private fun showProgressDialog(progress: String? = null) {
+    private fun showProgressDialog(
+        progress: String? = null,
+        permille: Int? = null,
+        cancellable: Boolean = false
+    ) {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (progressDialog == null) {
-            progressDialog = Dialog(this)
-            progressDialog!!.apply {
+            progressDialog = Dialog(this).apply {
                 setTitle(R.string.install_dialog_title)
                 setCancelable(false)
                 setContentView(R.layout.progress_dialog)
+                findViewById<Button>(R.id.btn_cancel_install)?.setOnClickListener {
+                    gameList.cancelInstall()
+                }
                 show()
             }
         }
+        val dlg = progressDialog ?: return
         progress?.let {
-            progressDialog?.findViewById<TextView>(R.id.text)?.text = getString(R.string.install_progress, it)
+            dlg.findViewById<TextView>(R.id.text)?.text = getString(R.string.install_progress, it)
         }
+        val bar = dlg.findViewById<ProgressBar>(R.id.progress_bar)
+        if (bar != null) {
+            if (permille != null) {
+                bar.visibility = View.VISIBLE
+                bar.progress = permille.coerceIn(0, 1000)
+            } else {
+                bar.visibility = View.GONE
+            }
+        }
+        dlg.findViewById<View>(R.id.cancel_bar)?.visibility =
+            if (cancellable) View.VISIBLE else View.GONE
     }
 
     private fun dismissProgressDialog() {
