@@ -36,10 +36,11 @@ sealed class InstallState {
     data class Installing(
         val progress: String?,
         val permille: Int? = null,
-        val cancellable: Boolean = false
+        val cancellable: Boolean = false,
+        val resumable: Boolean = false
     ) : InstallState()
     object Succeeded : InstallState()
-    object Cancelled : InstallState()
+    data class Cancelled(val resumable: Boolean = false) : InstallState()
     data class Failed(val msgId: Int) : InstallState()
 }
 
@@ -190,6 +191,10 @@ class GameList(activity: Activity) {
     var observer: GameListObserver? = null
     var installState: InstallState = InstallState.Idle
         private set
+    var isProgressMinimized: Boolean = false
+        private set
+    private var activeInstallResumable: Boolean = false
+    private var activeTargetGamePath: String? = null
     var pendingModAuthRetry: PendingModAuthRetry? = null
         private set
 
@@ -235,6 +240,21 @@ class GameList(activity: Activity) {
         pendingModAuthRetry = null
     }
 
+    fun minimizeInstallProgress() {
+        if (installState is InstallState.Installing) {
+            isProgressMinimized = true
+            InstallForegroundService.flushLatestNotification(context)
+        }
+    }
+
+    fun restoreInstallProgress() {
+        isProgressMinimized = false
+    }
+
+    fun isInstallingInto(item: Item): Boolean {
+        return installState is InstallState.Installing && activeTargetGamePath == item.path.path
+    }
+
     fun cancelInstall() {
         val job = installJob
         if (job?.isActive == true) {
@@ -242,13 +262,45 @@ class GameList(activity: Activity) {
         }
     }
 
+    private fun beginInstallSession(
+        notifTitle: String,
+        initialProgress: String?,
+        initialPermille: Int? = null,
+        cancellable: Boolean = false,
+        resumable: Boolean = false,
+        targetGamePath: String? = null,
+        notifModManagerPath: String? = null
+    ) {
+        pendingModAuthRetry = null
+        isProgressMinimized = false
+        activeInstallResumable = resumable
+        activeTargetGamePath = targetGamePath
+        InstallForegroundService.cancelCallback = { cancelInstall() }
+        installState = InstallState.Installing(
+            progress = initialProgress,
+            permille = initialPermille,
+            cancellable = cancellable,
+            resumable = resumable
+        )
+        InstallForegroundService.startSession(
+            context = context,
+            title = notifTitle,
+            initialText = initialProgress,
+            initialPermille = initialPermille,
+            isCancellable = cancellable,
+            isResumable = resumable,
+            targetGamePathForMod = notifModManagerPath
+        )
+    }
+
     fun installOnlineBaseGame(cdnLine: BaseGameCdnLine = BaseGameCdnLine.EDGEONE) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
-        installState = InstallState.Installing(
-            progress = context.getString(R.string.online_fetching_manifest),
-            permille = null,
-            cancellable = true
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_base_online),
+            initialProgress = context.getString(R.string.online_fetching_manifest),
+            initialPermille = null,
+            cancellable = true,
+            resumable = true
         )
         val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
@@ -268,7 +320,12 @@ class GameList(activity: Activity) {
                         onProgress = { update ->
                             mainHandler.post {
                                 if (myJob?.isActive == true) {
-                                    setInstallProgress(update.text, update.permille, cancellable = true)
+                                    setInstallProgress(
+                                        update.text,
+                                        update.permille,
+                                        cancellable = true,
+                                        resumable = true
+                                    )
                                 }
                             }
                         }
@@ -290,8 +347,12 @@ class GameList(activity: Activity) {
 
     fun installDirectory(uri: Uri) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
-        installState = InstallState.Installing(null)
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_local_game),
+            initialProgress = null,
+            cancellable = false,
+            resumable = false
+        )
         installJob = scope.launch {
             try {
                 val storage = storageDirs[0]
@@ -315,8 +376,12 @@ class GameList(activity: Activity) {
 
     fun installArchive(uri: Uri) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
-        installState = InstallState.Installing(null)
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_local_game),
+            initialProgress = null,
+            cancellable = true,
+            resumable = false
+        )
         val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
             try {
@@ -325,7 +390,7 @@ class GameList(activity: Activity) {
                     doInstallArchive(uri, storagePath) { msg ->
                         mainHandler.post {
                             if (installJob?.isActive == true) {
-                                setInstallProgress(msg)
+                                setInstallProgress(msg, cancellable = true, resumable = false)
                             }
                         }
                     }
@@ -350,30 +415,55 @@ class GameList(activity: Activity) {
             installState is InstallState.Failed
         ) {
             installState = InstallState.Idle
+            InstallForegroundService.clearResultNotification(context)
         }
     }
 
     private fun setInstallProgress(
         progress: String,
         permille: Int? = null,
-        cancellable: Boolean = false
+        cancellable: Boolean = false,
+        resumable: Boolean = false
     ) {
-        installState = InstallState.Installing(progress, permille, cancellable)
+        installState = InstallState.Installing(progress, permille, cancellable, resumable)
+        InstallForegroundService.updateProgress(
+            context = context,
+            text = progress,
+            newPermille = permille,
+            isCancellable = cancellable,
+            isResumable = resumable
+        )
         observer?.onInstallProgress(progress)
     }
 
     private fun setInstallSucceeded() {
+        val postNotif = observer == null || isProgressMinimized
+        isProgressMinimized = false
+        activeTargetGamePath = null
         installState = InstallState.Succeeded
+        InstallForegroundService.finishSessionSucceeded(context, postResultNotification = postNotif)
         observer?.onInstallSuccess()
     }
 
     private fun setInstallCancelled() {
-        installState = InstallState.Cancelled
+        val wasResumable = activeInstallResumable
+        isProgressMinimized = false
+        activeTargetGamePath = null
+        installState = InstallState.Cancelled(resumable = wasResumable)
+        InstallForegroundService.finishSessionCancelled(context)
         observer?.onInstallCancelled()
     }
 
     private fun setInstallFailed(msgId: Int) {
+        val postNotif = observer == null || isProgressMinimized
+        isProgressMinimized = false
+        activeTargetGamePath = null
         installState = InstallState.Failed(msgId)
+        InstallForegroundService.finishSessionFailed(
+            context = context,
+            errorMsg = context.getString(msgId),
+            postResultNotification = postNotif
+        )
         observer?.onInstallFailure(msgId)
     }
 
@@ -463,8 +553,13 @@ class GameList(activity: Activity) {
 
     fun installModDirectory(targetItem: Item, uri: Uri) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
-        installState = InstallState.Installing(null)
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_local_mod),
+            initialProgress = null,
+            cancellable = false,
+            resumable = false,
+            targetGamePath = targetItem.path.path
+        )
         installJob = scope.launch {
             val storage = targetItem.path.parentFile ?: storageDirs[0]
             var staging: File? = null
@@ -510,8 +605,13 @@ class GameList(activity: Activity) {
 
     fun installModArchive(targetItem: Item, uri: Uri) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
-        installState = InstallState.Installing(null)
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_local_mod),
+            initialProgress = null,
+            cancellable = true,
+            resumable = false,
+            targetGamePath = targetItem.path.path
+        )
         val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
             val storagePath = targetItem.path.parentFile ?: storageDirs[0]
@@ -542,7 +642,7 @@ class GameList(activity: Activity) {
                             )
                             mainHandler.post {
                                 if (installJob?.isActive == true) {
-                                    setInstallProgress(msg)
+                                    setInstallProgress(msg, cancellable = true, resumable = false)
                                 }
                             }
                         }
@@ -582,19 +682,24 @@ class GameList(activity: Activity) {
     fun installOnlineModPlan(
         targetItem: Item,
         steps: List<ModReleaseEntry>,
-        cookie: String?
+        cookie: String?,
+        fromModManager: Boolean = true
     ) {
         if (steps.isEmpty() || installJob?.isActive == true) return
-        pendingModAuthRetry = null
         val firstLabel = if (steps.size > 1) {
             "[1/${steps.size}] ${steps[0].version}"
         } else {
             steps[0].version
         }
-        installState = InstallState.Installing(
-            progress = context.getString(R.string.online_mod_starting_download, firstLabel),
-            permille = 0,
-            cancellable = true
+        val targetVer = steps.last().version
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_mod_online, targetVer),
+            initialProgress = context.getString(R.string.online_mod_starting_download, firstLabel),
+            initialPermille = 0,
+            cancellable = true,
+            resumable = true,
+            targetGamePath = targetItem.path.path,
+            notifModManagerPath = if (fromModManager) targetItem.path.path else null
         )
         val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
@@ -628,7 +733,12 @@ class GameList(activity: Activity) {
                             onProgress = { update ->
                                 mainHandler.post {
                                     if (myJob?.isActive == true) {
-                                        setInstallProgress(update.text, update.permille, cancellable = true)
+                                        setInstallProgress(
+                                            update.text,
+                                            update.permille,
+                                            cancellable = true,
+                                            resumable = true
+                                        )
                                     }
                                 }
                             },
@@ -701,15 +811,19 @@ class GameList(activity: Activity) {
     fun installOnlineMod(
         targetItem: Item,
         req: ModDownloadRequest,
-        releaseMeta: ModReleaseEntry? = null
+        releaseMeta: ModReleaseEntry? = null,
+        fromModManager: Boolean = true
     ) {
         if (installJob?.isActive == true) return
-        pendingModAuthRetry = null
         val label = releaseMeta?.version ?: req.fileName
-        installState = InstallState.Installing(
-            progress = context.getString(R.string.online_mod_starting_download, label),
-            permille = 0,
-            cancellable = true
+        beginInstallSession(
+            notifTitle = context.getString(R.string.notif_title_mod_online, label),
+            initialProgress = context.getString(R.string.online_mod_starting_download, label),
+            initialPermille = 0,
+            cancellable = true,
+            resumable = true,
+            targetGamePath = targetItem.path.path,
+            notifModManagerPath = if (fromModManager) targetItem.path.path else null
         )
         val mainHandler = Handler(Looper.getMainLooper())
         installJob = scope.launch {
@@ -733,7 +847,12 @@ class GameList(activity: Activity) {
                         onProgress = { update ->
                             mainHandler.post {
                                 if (myJob?.isActive == true) {
-                                    setInstallProgress(update.text, update.permille, cancellable = true)
+                                    setInstallProgress(
+                                        update.text,
+                                        update.permille,
+                                        cancellable = true,
+                                        resumable = true
+                                    )
                                 }
                             }
                         },

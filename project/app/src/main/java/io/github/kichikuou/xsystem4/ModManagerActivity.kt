@@ -94,7 +94,42 @@ class ModManagerActivity : Activity(), GameListObserver {
             }
         }
 
+        handleRestoreDialogIntent(intent)
         loadCatalog(showRefreshedToast = false)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent?.getStringExtra(EXTRA_GAME_PATH)?.takeIf { it.isNotBlank() }?.let {
+            currentTargetPath = it
+        }
+        if (::gameList.isInitialized && gameList.size > 0) {
+            rebindCurrentTarget()
+            handleRestoreDialogIntent(intent)
+            updateUi()
+            renderInstallState(gameList.installState)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == InstallForegroundService.REQ_POST_NOTIFICATIONS) {
+            InstallForegroundService.flushLatestNotification(this)
+        }
+    }
+
+    private fun handleRestoreDialogIntent(srcIntent: Intent?) {
+        if (srcIntent?.getBooleanExtra(InstallForegroundService.EXTRA_RESTORE_INSTALL_DIALOG, false) == true) {
+            srcIntent.removeExtra(InstallForegroundService.EXTRA_RESTORE_INSTALL_DIALOG)
+            if (::gameList.isInitialized) {
+                gameList.restoreInstallProgress()
+            }
+        }
     }
 
     override fun onResume() {
@@ -149,6 +184,7 @@ class ModManagerActivity : Activity(), GameListObserver {
                     isLoggedIn = cookie.isNotBlank()
                     pendingPostResumeAction = {
                         ensureGameNotRunning(this) {
+                            InstallForegroundService.requestNotificationPermissionIfNeeded(this)
                             rebindCurrentTarget()
                             gameList.installOnlineModPlan(currentTarget, steps, cookie)
                             renderInstallState(gameList.installState)
@@ -169,6 +205,7 @@ class ModManagerActivity : Activity(), GameListObserver {
                     isLoggedIn = cookie.isNotBlank()
                     pendingPostResumeAction = {
                         ensureGameNotRunning(this) {
+                            InstallForegroundService.requestNotificationPermissionIfNeeded(this)
                             rebindCurrentTarget()
                             if (retry.steps != null) {
                                 gameList.installOnlineModPlan(currentTarget, retry.steps, cookie)
@@ -209,6 +246,7 @@ class ModManagerActivity : Activity(), GameListObserver {
                     val matched = matchReleaseFromUrlOrName(dlUrl, dlName)
                     pendingPostResumeAction = {
                         ensureGameNotRunning(this) {
+                            InstallForegroundService.requestNotificationPermissionIfNeeded(this)
                             rebindCurrentTarget()
                             gameList.installOnlineMod(currentTarget, req, matched)
                             renderInstallState(gameList.installState)
@@ -294,10 +332,15 @@ class ModManagerActivity : Activity(), GameListObserver {
         findViewById<Button>(R.id.btn_mod_mgr_portal).text =
             getString(if (isLoggedIn) R.string.mod_mgr_btn_portal_browse else R.string.mod_mgr_btn_portal)
 
-        findViewById<Button>(R.id.btn_mod_mgr_restore).isEnabled = hasMod
+        val isInstalling = gameList.installState is InstallState.Installing
+        findViewById<Button>(R.id.btn_mod_mgr_restore).isEnabled = hasMod && !isInstalling
 
         val btnUpdate = findViewById<Button>(R.id.btn_mod_mgr_update)
         when {
+            isInstalling -> {
+                btnUpdate.text = getString(R.string.mod_mgr_btn_downloading)
+                btnUpdate.isEnabled = true
+            }
             isLoadingCatalog && releases.isEmpty() -> {
                 btnUpdate.text = getString(R.string.mod_mgr_btn_checking)
                 btnUpdate.isEnabled = false
@@ -360,7 +403,11 @@ class ModManagerActivity : Activity(), GameListObserver {
     }
 
     private fun onPrimaryUpdateClicked() {
-        if (gameList.installState is InstallState.Installing) return
+        if (gameList.installState is InstallState.Installing) {
+            gameList.restoreInstallProgress()
+            renderInstallState(gameList.installState)
+            return
+        }
         if (catalogLoadError && releases.isEmpty()) {
             loadCatalog(showRefreshedToast = false)
             return
@@ -372,7 +419,11 @@ class ModManagerActivity : Activity(), GameListObserver {
     }
 
     private fun openPortalBrowser() {
-        if (gameList.installState is InstallState.Installing) return
+        if (gameList.installState is InstallState.Installing) {
+            gameList.restoreInstallProgress()
+            renderInstallState(gameList.installState)
+            return
+        }
         val intent = Intent(this, ModPortalActivity::class.java)
             .putExtra(ModPortalActivity.EXTRA_AUTH_ONLY, false)
             .putExtra(ModPortalActivity.EXTRA_TARGET_LABEL, currentTarget.cleanGameTitle())
@@ -399,7 +450,11 @@ class ModManagerActivity : Activity(), GameListObserver {
     }
 
     private fun showReleaseDetailDialog(index: Int) {
-        if (gameList.installState is InstallState.Installing) return
+        if (gameList.installState is InstallState.Installing) {
+            gameList.restoreInstallProgress()
+            renderInstallState(gameList.installState)
+            return
+        }
         if (index !in releases.indices) return
         val entry = releases[index]
         val hasMod = gameList.hasInstalledMod(currentTarget)
@@ -492,6 +547,7 @@ class ModManagerActivity : Activity(), GameListObserver {
         ensureGameNotRunning(this) {
             val curCookie = CookieManager.getInstance().getCookie(OnlineInstaller.MOD_PORTAL_BASE_URL) ?: ""
             if (isLoggedIn && curCookie.isNotBlank()) {
+                InstallForegroundService.requestNotificationPermissionIfNeeded(this)
                 rebindCurrentTarget()
                 gameList.installOnlineModPlan(currentTarget, steps, curCookie)
                 renderInstallState(gameList.installState)
@@ -533,12 +589,23 @@ class ModManagerActivity : Activity(), GameListObserver {
 
     private fun renderInstallState(state: InstallState) {
         when (state) {
-            InstallState.Idle -> dismissProgressDialog()
-            is InstallState.Installing -> showProgressDialog(
-                progress = state.progress,
-                permille = state.permille,
-                cancellable = state.cancellable
-            )
+            InstallState.Idle -> {
+                dismissProgressDialog()
+                updateUi()
+            }
+            is InstallState.Installing -> {
+                updateUi()
+                if (gameList.isProgressMinimized) {
+                    dismissProgressDialog()
+                } else {
+                    showProgressDialog(
+                        progress = state.progress,
+                        permille = state.permille,
+                        cancellable = state.cancellable,
+                        resumable = state.resumable
+                    )
+                }
+            }
             InstallState.Succeeded -> {
                 dismissProgressDialog()
                 rebindCurrentTarget()
@@ -546,11 +613,13 @@ class ModManagerActivity : Activity(), GameListObserver {
                 Toast.makeText(this, R.string.install_done_toast, Toast.LENGTH_SHORT).show()
                 gameList.consumeInstallResult()
             }
-            InstallState.Cancelled -> {
+            is InstallState.Cancelled -> {
                 dismissProgressDialog()
                 rebindCurrentTarget()
                 updateUi()
-                Toast.makeText(this, R.string.online_download_paused_toast, Toast.LENGTH_LONG).show()
+                if (state.resumable) {
+                    Toast.makeText(this, R.string.online_download_paused_toast, Toast.LENGTH_LONG).show()
+                }
                 gameList.consumeInstallResult()
             }
             is InstallState.Failed -> {
@@ -593,7 +662,8 @@ class ModManagerActivity : Activity(), GameListObserver {
     private fun showProgressDialog(
         progress: String? = null,
         permille: Int? = null,
-        cancellable: Boolean = false
+        cancellable: Boolean = false,
+        resumable: Boolean = false
     ) {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (progressDialog == null) {
@@ -601,6 +671,20 @@ class ModManagerActivity : Activity(), GameListObserver {
                 setTitle(R.string.install_dialog_title)
                 setCancelable(false)
                 setContentView(R.layout.progress_dialog)
+                findViewById<Button>(R.id.btn_bg_install)?.setOnClickListener {
+                    gameList.minimizeInstallProgress()
+                    dismissProgressDialog()
+                    updateUi()
+                    InstallForegroundService.requestNotificationPermissionIfNeeded(
+                        this@ModManagerActivity,
+                        forceIfRationale = true
+                    )
+                    Toast.makeText(
+                        this@ModManagerActivity,
+                        R.string.install_background_toast,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
                 findViewById<Button>(R.id.btn_cancel_install)?.setOnClickListener {
                     gameList.cancelInstall()
                 }
@@ -620,8 +704,11 @@ class ModManagerActivity : Activity(), GameListObserver {
                 bar.visibility = View.GONE
             }
         }
-        dlg.findViewById<View>(R.id.cancel_bar)?.visibility =
-            if (cancellable) View.VISIBLE else View.GONE
+        val cancelBtn = dlg.findViewById<Button>(R.id.btn_cancel_install)
+        if (cancelBtn != null) {
+            cancelBtn.visibility = if (cancellable) View.VISIBLE else View.GONE
+            cancelBtn.setText(if (resumable) R.string.notif_action_pause else R.string.cancel)
+        }
     }
 
     private fun dismissProgressDialog() {

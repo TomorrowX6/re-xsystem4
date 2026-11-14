@@ -204,4 +204,18 @@
     <string name="online_mod_auth_hint_generic">Log in or register</string>
     <string name="online_mod_auth_hint_target">Auto-download %1$s after login</string>
     <string name="online_mod_auth_expired_retry_msg">Not logged in or session expired. Log in now and continue downloading?</string>
+
+    <string name="install_btn_background">Background</string>
+    <string name="install_background_toast">Running in background. Check notification for progress.</string>
+    <string name="notif_channel_progress_name">Download &amp; Install Progress</string>
+    <string name="notif_channel_result_name">Download &amp; Install Alerts</string>
+    <string name="notif_title_base_online">Downloading Base Game</string>
+    <string name="notif_title_mod_online">Installing MOD · %1$s</string>
+    <string name="notif_title_local_game">Importing Base Game</string>
+    <string name="notif_title_local_mod">Importing MOD</string>
+    <string name="notif_action_pause">Pause</string>
+    <string name="notif_done_title">Installation Complete</string>
+    <string name="notif_done_msg">%1$s finished. Tap to open.</string>
+    <string name="notif_failed_title">Installation Failed</string>
+    <string name="mod_mgr_btn_downloading">Progress</string>
 </resources>

@@ -203,4 +203,18 @@
     <string name="online_mod_auth_hint_generic">ログインまたは新規登録</string>
     <string name="online_mod_auth_hint_target">ログイン後に %1$s を自動取得</string>
     <string name="online_mod_auth_expired_retry_msg">未ログインまたは有効期限切れです。ログインしてダウンロードを続行しますか？</string>
+
+    <string name="install_btn_background">バックグラウンド</string>
+    <string name="install_background_toast">バックグラウンドで実行中です。通知から進捗を確認できます</string>
+    <string name="notif_channel_progress_name">ダウンロード・導入の進捗</string>
+    <string name="notif_channel_result_name">ダウンロード・導入の完了通知</string>
+    <string name="notif_title_base_online">ゲーム本体をダウンロード中</string>
+    <string name="notif_title_mod_online">MODを導入中 · %1$s</string>
+    <string name="notif_title_local_game">ゲーム本体をインポート中</string>
+    <string name="notif_title_local_mod">MODをインポート中</string>
+    <string name="notif_action_pause">一時停止</string>
+    <string name="notif_done_title">インストール完了</string>
+    <string name="notif_done_msg">%1$s が完了しました。タップして開く</string>
+    <string name="notif_failed_title">インストール失敗</string>
+    <string name="mod_mgr_btn_downloading">進捗表示</string>
 </resources>

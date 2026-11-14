@@ -203,4 +203,18 @@
     <string name="online_mod_auth_hint_generic">登录或注册官网账号</string>
     <string name="online_mod_auth_hint_target">登录后自动下载 %1$s</string>
     <string name="online_mod_auth_expired_retry_msg">尚未登录或登录已过期，是否登录并继续下载？</string>
+
+    <string name="install_btn_background">后台</string>
+    <string name="install_background_toast">已转入后台运行，可在通知栏查看进度</string>
+    <string name="notif_channel_progress_name">下载与安装进度</string>
+    <string name="notif_channel_result_name">下载与安装完成通知</string>
+    <string name="notif_title_base_online">正在下载游戏本体</string>
+    <string name="notif_title_mod_online">正在下载安装 MOD · %1$s</string>
+    <string name="notif_title_local_game">正在导入游戏本体</string>
+    <string name="notif_title_local_mod">正在导入 MOD</string>
+    <string name="notif_action_pause">暂停</string>
+    <string name="notif_done_title">安装完成</string>
+    <string name="notif_done_msg">%1$s 已完成，点击打开应用</string>
+    <string name="notif_failed_title">安装未完成</string>
+    <string name="mod_mgr_btn_downloading">查看进度</string>
 </resources>
