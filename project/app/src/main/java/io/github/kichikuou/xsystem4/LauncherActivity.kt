@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.Menu
@@ -16,6 +15,7 @@ import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.ImageView
@@ -29,6 +29,7 @@ private const val INSTALL_REQUEST = 1
 private const val DIRECTORY_REQUEST = 2
 private const val MOD_ZIP_REQUEST = 3
 private const val MOD_DIRECTORY_REQUEST = 4
+private const val MOD_AUTH_RETRY_REQUEST = 5
 private const val GITHUB_URL = "https://github.com/TomorrowX6/re-xsystem4"
 
 private class GameListAdapter(activity: Activity, private val gameList: GameList) : BaseAdapter() {
@@ -63,19 +64,27 @@ private class GameListAdapter(activity: Activity, private val gameList: GameList
 class LauncherActivity : Activity(), GameListObserver {
     companion object {
         private var savedGameList: GameList? = null
+
+        fun obtainGameList(activity: Activity, refresh: Boolean = false): GameList {
+            if (savedGameList == null || (refresh && savedGameList?.installState is InstallState.Idle)) {
+                savedGameList = GameList(activity)
+            }
+            return savedGameList!!
+        }
     }
 
     private lateinit var gameList: GameList
     private lateinit var adapter: GameListAdapter
     private var progressDialog: Dialog? = null
     private var pendingModTarget: Item? = null
+    private var pendingLauncherRetry: PendingModAuthRetry? = null
+    private var pendingPostResumeAction: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.launcher)
 
-        gameList = getGameList(refresh = false)
-        gameList.observer = this
+        gameList = obtainGameList(this, refresh = false)
         adapter = GameListAdapter(this, gameList)
 
         val listView = findViewById<ListView>(R.id.list)
@@ -91,11 +100,33 @@ class LauncherActivity : Activity(), GameListObserver {
         listView.setOnItemLongClickListener { _, _, pos, _ ->
             onItemLongClick(listView.adapter.getItem(pos) as Item)
         }
-        renderInstallState(gameList.installState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val latestList = obtainGameList(this, refresh = false)
+        if (latestList !== gameList) {
+            setGameList(latestList)
+        } else {
+            gameList.observer = this
+            adapter.notifyDataSetChanged()
+            renderInstallState(gameList.installState)
+        }
+        val postAction = pendingPostResumeAction
+        pendingPostResumeAction = null
+        postAction?.invoke()
+    }
+
+    override fun onPause() {
+        if (::gameList.isInitialized && gameList.observer === this) {
+            gameList.observer = null
+        }
+        dismissProgressDialog()
+        super.onPause()
     }
 
     override fun onDestroy() {
-        if (gameList.observer === this) {
+        if (::gameList.isInitialized && gameList.observer === this) {
             gameList.observer = null
         }
         dismissProgressDialog()
@@ -110,7 +141,7 @@ class LauncherActivity : Activity(), GameListObserver {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.refresh -> {
-                setGameList(getGameList(refresh = true))
+                setGameList(obtainGameList(this, refresh = true))
                 true
             }
             R.id.online_install -> {
@@ -140,27 +171,62 @@ class LauncherActivity : Activity(), GameListObserver {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == MOD_AUTH_RETRY_REQUEST) {
+            val retry = pendingLauncherRetry
+            pendingLauncherRetry = null
+            if (resultCode == RESULT_OK && retry != null) {
+                val freshCookie = data?.getStringExtra(ModPortalActivity.EXTRA_COOKIE)
+                    ?: CookieManager.getInstance().getCookie(OnlineInstaller.MOD_PORTAL_BASE_URL)
+                    ?: ""
+                pendingPostResumeAction = {
+                    if (retry.steps != null) {
+                        gameList.installOnlineModPlan(retry.targetItem, retry.steps, freshCookie)
+                    } else if (retry.manualReq != null) {
+                        gameList.installOnlineMod(
+                            retry.targetItem,
+                            retry.manualReq.copy(cookie = freshCookie),
+                            retry.manualReleaseMeta
+                        )
+                    }
+                    renderInstallState(gameList.installState)
+                }
+            }
+            return
+        }
+
         if (resultCode != RESULT_OK)
             return
         val uri = data?.data ?: return
         when (requestCode) {
             DIRECTORY_REQUEST -> {
-                gameList.installDirectory(uri)
-                renderInstallState(gameList.installState)
+                pendingPostResumeAction = {
+                    gameList.installDirectory(uri)
+                    renderInstallState(gameList.installState)
+                }
             }
             INSTALL_REQUEST -> {
-                gameList.installArchive(uri)
-                renderInstallState(gameList.installState)
+                pendingPostResumeAction = {
+                    gameList.installArchive(uri)
+                    renderInstallState(gameList.installState)
+                }
             }
             MOD_DIRECTORY_REQUEST -> {
                 val target = pendingModTarget ?: if (gameList.size > 0) gameList[0] else return
-                gameList.installModDirectory(target, uri)
-                renderInstallState(gameList.installState)
+                pendingPostResumeAction = {
+                    ensureGameNotRunning(this) {
+                        gameList.installModDirectory(target, uri)
+                        renderInstallState(gameList.installState)
+                    }
+                }
             }
             MOD_ZIP_REQUEST -> {
                 val target = pendingModTarget ?: if (gameList.size > 0) gameList[0] else return
-                gameList.installModArchive(target, uri)
-                renderInstallState(gameList.installState)
+                pendingPostResumeAction = {
+                    ensureGameNotRunning(this) {
+                        gameList.installModArchive(target, uri)
+                        renderInstallState(gameList.installState)
+                    }
+                }
             }
         }
     }
@@ -259,23 +325,14 @@ class LauncherActivity : Activity(), GameListObserver {
     }
 
     private fun openOnlineModForGame(target: Item) {
-        ModVersionManagerDialog.show(
-            activity = this,
-            targetItem = target,
-            gameList = gameList,
-            onModChanged = {
-                adapter.notifyDataSetChanged()
-                Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
-            },
-            onInstallPlanSelected = { steps, cookie ->
-                gameList.installOnlineModPlan(target, steps, cookie)
-                renderInstallState(gameList.installState)
-            },
-            onManualDownloadSelected = { req, matchedRelease ->
-                gameList.installOnlineMod(target, req, matchedRelease)
-                renderInstallState(gameList.installState)
-            }
-        )
+        val intent = Intent(this, ModManagerActivity::class.java)
+            .putExtra(ModManagerActivity.EXTRA_GAME_PATH, target.path.path)
+        startActivity(intent)
+    }
+
+    private fun Item.cleanGameTitle(): String {
+        val idx = name.indexOf(" [MOD")
+        return if (idx > 0) name.substring(0, idx) else name
     }
 
     private fun showLocalModInstallDialog(target: Item) {
@@ -287,7 +344,7 @@ class LauncherActivity : Activity(), GameListObserver {
             options.add(getString(R.string.mod_opt_restore_vanilla))
         }
         AlertDialog.Builder(this)
-            .setTitle(getString(R.string.mod_local_dialog_title, target.name))
+            .setTitle(getString(R.string.mod_local_dialog_title, target.cleanGameTitle()))
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> {
@@ -306,9 +363,11 @@ class LauncherActivity : Activity(), GameListObserver {
                         }, MOD_DIRECTORY_REQUEST)
                     }
                     2 -> {
-                        if (gameList.restoreMod(target)) {
-                            adapter.notifyDataSetChanged()
-                            Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                        ensureGameNotRunning(this) {
+                            if (gameList.restoreMod(target)) {
+                                adapter.notifyDataSetChanged()
+                                Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }
@@ -370,13 +429,6 @@ class LauncherActivity : Activity(), GameListObserver {
         renderInstallState(gameList.installState)
     }
 
-    private fun getGameList(refresh: Boolean): GameList {
-        if (savedGameList == null || refresh && savedGameList?.installState is InstallState.Idle) {
-            savedGameList = GameList(this)
-        }
-        return savedGameList!!
-    }
-
     private fun setGameList(newGameList: GameList) {
         if (gameList.observer === this) {
             gameList.observer = null
@@ -418,9 +470,11 @@ class LauncherActivity : Activity(), GameListObserver {
                     when (which) {
                         0 -> openOnlineModForGame(item)
                         1 -> {
-                            if (gameList.restoreMod(item)) {
-                                adapter.notifyDataSetChanged()
-                                Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                            ensureGameNotRunning(this) {
+                                if (gameList.restoreMod(item)) {
+                                    adapter.notifyDataSetChanged()
+                                    Toast.makeText(this, R.string.mod_restored_toast, Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                         2 -> confirmUninstallGame(item)
@@ -437,11 +491,11 @@ class LauncherActivity : Activity(), GameListObserver {
     private fun confirmUninstallGame(item: Item) {
         AlertDialog.Builder(this).setTitle(R.string.uninstall_dialog_title)
             .setMessage(getString(R.string.uninstall_dialog_message, item.name))
-            .setPositiveButton(R.string.ok) {_, _ ->
+            .setPositiveButton(R.string.ok) { _, _ ->
                 gameList.uninstall(item)
                 adapter.notifyDataSetChanged()
             }
-            .setNegativeButton(R.string.cancel) {_, _ -> }
+            .setNegativeButton(R.string.cancel) { _, _ -> }
             .show()
     }
 
@@ -480,18 +534,11 @@ class LauncherActivity : Activity(), GameListObserver {
                         .setTitle(R.string.online_mod_auth_dialog_title)
                         .setMessage(R.string.online_mod_auth_expired_retry_msg)
                         .setPositiveButton(R.string.online_mod_portal_btn_auth) { _, _ ->
-                            ModOnlinePortalDialog.showAuthForDownload(this, retry.label) { freshCookie ->
-                                if (retry.steps != null) {
-                                    gameList.installOnlineModPlan(retry.targetItem, retry.steps, freshCookie)
-                                } else if (retry.manualReq != null) {
-                                    gameList.installOnlineMod(
-                                        retry.targetItem,
-                                        retry.manualReq.copy(cookie = freshCookie),
-                                        retry.manualReleaseMeta
-                                    )
-                                }
-                                renderInstallState(gameList.installState)
-                            }
+                            pendingLauncherRetry = retry
+                            val intent = Intent(this, ModPortalActivity::class.java)
+                                .putExtra(ModPortalActivity.EXTRA_AUTH_ONLY, true)
+                                .putExtra(ModPortalActivity.EXTRA_TARGET_LABEL, retry.label)
+                            startActivityForResult(intent, MOD_AUTH_RETRY_REQUEST)
                         }
                         .setNegativeButton(R.string.cancel, null)
                         .show()

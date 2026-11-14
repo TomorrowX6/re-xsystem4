@@ -118,6 +118,19 @@
             android:exported="false">
         </activity>
 
+        <activity android:name="io.github.kichikuou.xsystem4.ModManagerActivity"
+            android:label="@string/mod_mgr_activity_title"
+            android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"
+            android:exported="false">
+        </activity>
+
+        <activity android:name="io.github.kichikuou.xsystem4.ModPortalActivity"
+            android:label="@string/mod_portal_activity_title"
+            android:parentActivityName="io.github.kichikuou.xsystem4.ModManagerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false">
+        </activity>
+
         <activity android:name="io.github.kichikuou.xsystem4.LicensesMenuActivity"
             android:label="@string/action_licenses"
             android:parentActivityName="io.github.kichikuou.xsystem4.LauncherActivity"

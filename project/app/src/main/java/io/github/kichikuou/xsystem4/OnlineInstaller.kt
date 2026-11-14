@@ -683,7 +683,7 @@ object OnlineInstaller {
 
         val rawName = req.fileName.ifBlank { "MOD$ext" }
         val displayName = if (!releaseLabel.isNullOrBlank() && !rawName.contains(releaseLabel)) {
-            "$releaseLabel ($rawName)"
+            "$releaseLabel · $rawName"
         } else {
             rawName
         }
