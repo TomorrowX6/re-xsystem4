@@ -4,11 +4,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include "system4.h"
+#include "system4/ain.h"
 #include "system4/string.h"
 #include "system4/utfsjis.h"
 #include "parts.h"
 #include "parts_scrollbar.h"
 #include "parts_internal.h"
+#include "vm.h"
+#include "xsystem4.h"
+
+static int s_modifier_scrollbar_scale_pct = 100;
+
+void parts_set_modifier_scrollbar_scale(int pct)
+{
+	if (pct < 75) pct = 75;
+	if (pct > 300) pct = 300;
+	s_modifier_scrollbar_scale_pct = pct;
+}
+
+int parts_get_modifier_scrollbar_scale(void)
+{
+	return s_modifier_scrollbar_scale_pct;
+}
 
 int parts_scrollbar_range(struct parts_scrollbar *s)
 {
@@ -132,25 +149,123 @@ int parts_scrollbar_skin_state(struct parts_scrollbar *s, int piece)
 	return s->pressed == piece ? 2 : s->hovered == piece ? 1 : 0;
 }
 
-void parts_scrollbar_rects(struct parts *parts, Rectangle rects[4])
+static void scrollbar_effective_cross_metrics(struct parts *parts, int *out_length,
+		int *out_breadth, int *out_cross_off)
 {
 	struct parts_scrollbar *s = parts->scrollbar;
 	int length = max(0, s->horizontal ? s->width : s->height);
-	int breadth = max(0, s->horizontal ? s->height : s->width);
+	int base_breadth = max(0, s->horizontal ? s->height : s->width);
+	int breadth = base_breadth;
+	int cross_off = 0;
+	int pct = s_modifier_scrollbar_scale_pct;
+	if (pct != 100 && base_breadth > 0) {
+		float scale = (float)pct / 100.0f;
+		breadth = max(1, (int)lroundf((float)base_breadth * scale));
+		cross_off = -(breadth - base_breadth) / 2;
+		if (breadth > base_breadth) {
+			mat4 world;
+			parts_world_matrix(parts, world);
+			Point origin = parts->states[0].common.origin_offset;
+			if (!s->horizontal && config.view_width > 0) {
+				float sx = world[0][0];
+				if (sx > 0.05f && fabsf(world[1][0]) < 1e-4f) {
+					float wx0 = world[3][0] + (origin.x + cross_off) * sx;
+					float wx1 = wx0 + breadth * sx;
+					if (wx1 > (float)config.view_width) {
+						cross_off -= (int)ceilf((wx1 - (float)config.view_width) / sx);
+						wx0 = world[3][0] + (origin.x + cross_off) * sx;
+					}
+					if (wx0 < 0.0f) {
+						cross_off += (int)ceilf((-wx0) / sx);
+					}
+				}
+			} else if (s->horizontal && config.view_height > 0) {
+				float sy = world[1][1];
+				if (sy > 0.05f && fabsf(world[0][1]) < 1e-4f) {
+					float wy0 = world[3][1] + (origin.y + cross_off) * sy;
+					float wy1 = wy0 + breadth * sy;
+					if (wy1 > (float)config.view_height) {
+						cross_off -= (int)ceilf((wy1 - (float)config.view_height) / sy);
+						wy0 = world[3][1] + (origin.y + cross_off) * sy;
+					}
+					if (wy0 < 0.0f) {
+						cross_off += (int)ceilf((-wy0) / sy);
+					}
+				}
+			}
+		}
+	}
+	*out_length = length;
+	*out_breadth = breadth;
+	*out_cross_off = cross_off;
+}
+
+void parts_scrollbar_hitbox(struct parts *parts, int state, Rectangle *out_hitbox)
+{
+	if (!parts->scrollbar || s_modifier_scrollbar_scale_pct == 100) {
+		*out_hitbox = parts->states[state].common.hitbox;
+		return;
+	}
+	int length = 0, breadth = 0, cross_off = 0;
+	scrollbar_effective_cross_metrics(parts, &length, &breadth, &cross_off);
+	Point origin = parts->states[state].common.origin_offset;
+	bool v12 = ain && ain->version >= 12;
+	int off_x = v12 ? 0 : (int)parts->local.pos.x;
+	int off_y = v12 ? 0 : (int)parts->local.pos.y;
+	if (parts->scrollbar->horizontal) {
+		*out_hitbox = (Rectangle){ off_x + origin.x, off_y + origin.y + cross_off, length, breadth };
+	} else {
+		*out_hitbox = (Rectangle){ off_x + origin.x + cross_off, off_y + origin.y, breadth, length };
+	}
+}
+
+void parts_scrollbar_rects(struct parts *parts, Rectangle rects[4])
+{
+	struct parts_scrollbar *s = parts->scrollbar;
+	int length = 0, breadth = 0, cross_off = 0;
+	scrollbar_effective_cross_metrics(parts, &length, &breadth, &cross_off);
+	int pct = s_modifier_scrollbar_scale_pct;
+	float scale = (float)pct / 100.0f;
+
 	int before = min(length, max(0, s->before));
 	int after = min(length - before, max(0, s->after));
+	if (pct != 100 && length > 0) {
+		float btn_scale = min(scale, 1.6f);
+		int sb = s->before > 0 ? (int)lroundf((float)s->before * btn_scale) : 0;
+		int sa = s->after > 0 ? (int)lroundf((float)s->after * btn_scale) : 0;
+		int max_ends = max(before + after, length / 2);
+		if (sb + sa > max_ends && sb + sa > 0) {
+			sb = (int)((int64_t)sb * max_ends / (sb + sa));
+			sa = max_ends - sb;
+		}
+		before = min(length, max(0, sb));
+		after = min(length - before, max(0, sa));
+	}
+
 	int track = length - before - after;
 	int state = parts_scrollbar_skin_state(s, 2);
 	struct parts_common *thumb = &s->skins[2][state].common;
-	int size = s->loaded[2][state] ? (s->horizontal ? thumb->w : thumb->h)
-		: max(8, s->total > 0 ? (int)((int64_t)track * max(0, s->view) / s->total) : track);
+	int size;
+	if (pct == 100) {
+		size = s->loaded[2][state] ? (s->horizontal ? thumb->w : thumb->h)
+			: max(8, s->total > 0 ? (int)((int64_t)track * max(0, s->view) / s->total) : track);
+	} else {
+		int base_thumb = s->loaded[2][state] ? (s->horizontal ? thumb->w : thumb->h)
+			: max(8, s->total > 0 ? (int)((int64_t)track * max(0, s->view) / s->total) : track);
+		size = s->loaded[2][state] ? (int)lroundf((float)base_thumb * scale) : base_thumb;
+		if (pct > 100 && track > 0) {
+			int min_thumb = min(track * 3 / 5, (int)lroundf(24.0f * scale));
+			if (size < min_thumb)
+				size = min_thumb;
+		}
+	}
 	size = min(track, max(0, size));
 	int thumb_pos = before + (int)((track - size) * s->rate);
 	int positions[] = {0, length - after, thumb_pos, before};
 	int sizes[] = {before, after, size, track};
 	for (int piece = 0; piece < 4; piece++) {
-		rects[piece] = s->horizontal ? (Rectangle){positions[piece], 0, sizes[piece], breadth}
-			: (Rectangle){0, positions[piece], breadth, sizes[piece]};
+		rects[piece] = s->horizontal ? (Rectangle){positions[piece], cross_off, sizes[piece], breadth}
+			: (Rectangle){cross_off, positions[piece], breadth, sizes[piece]};
 	}
 }
 

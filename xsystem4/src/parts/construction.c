@@ -848,12 +848,100 @@ static bool build_blend_cg(struct parts_construction_process *cproc, struct part
 	return true;
 }
 
+static float cproc_measure_line_width(struct text_style *ts, const char *line)
+{
+	int nchars = sjis_count_char(line);
+	if (nchars <= 0)
+		return 0.0f;
+	return gfx_size_text(ts, line) + (nchars - 1) * ts->font_spacing;
+}
+
 static bool build_text(struct parts_construction_process *cproc, struct parts_cp_text *op,
 		enum text_render_mode mode)
 {
 	if (!cproc->common.texture.handle)
 		return false;
-	int h = ceilf(text_style_height(&op->style));
+	struct text_style style = op->style;
+	int line_space = op->line_space;
+	int pct = parts_get_modifier_font_scale();
+	if (pct != 100 && style.size > 0.0f && op->text && op->text->size > 0) {
+		style = parts_get_effective_text_style_pct(&op->style, pct);
+		if (pct > 100) {
+			int avail_w = cproc->common.texture.w - op->x;
+			int avail_h = cproc->common.texture.h - op->y;
+			float orig_max_w = 0.0f;
+			float scaled_max_w = 0.0f;
+			int nr_lines = 0;
+			struct text_style orig_style = op->style;
+			char *probe = xstrdup(op->text->text);
+			for (char *ln = probe; ln;) {
+				char *nxt = strchr(ln, '\n');
+				if (nxt)
+					*nxt++ = '\0';
+				nr_lines++;
+				if (*ln) {
+					float ow = cproc_measure_line_width(&orig_style, ln);
+					float sw = cproc_measure_line_width(&style, ln);
+					if (ow > orig_max_w) orig_max_w = ow;
+					if (sw > scaled_max_w) scaled_max_w = sw;
+				}
+				ln = nxt;
+			}
+			free(probe);
+
+			// Prevent scaled vertical overflow on multi-line fixed canvases (e.g. cards)
+			int orig_lh = (int)ceilf(text_style_height(&orig_style));
+			int orig_total_h = nr_lines > 0 ? nr_lines * orig_lh + (nr_lines - 1) * op->line_space : 0;
+			if (avail_h > 4 && nr_lines > 1 && orig_total_h <= avail_h + 4) {
+				int cur_lh = (int)ceilf(text_style_height(&style));
+				int cur_total_h = nr_lines * cur_lh + (nr_lines - 1) * line_space;
+				if (cur_total_h > avail_h) {
+					int min_sp = min(-1, op->line_space);
+					int needed_sp = (avail_h - nr_lines * cur_lh) / (nr_lines - 1);
+					line_space = max(min_sp, min(line_space, needed_sp));
+					cur_total_h = nr_lines * cur_lh + (nr_lines - 1) * line_space;
+					while (cur_total_h > avail_h && style.size > op->style.size) {
+						style.size = max(op->style.size, style.size - 1.0f);
+						style.font_size = NULL;
+						cur_lh = (int)ceilf(text_style_height(&style));
+						cur_total_h = nr_lines * cur_lh + (nr_lines - 1) * line_space;
+					}
+					// Recompute scaled_max_w if style.size stepped down
+					scaled_max_w = 0.0f;
+					char *reprobe = xstrdup(op->text->text);
+					for (char *ln = reprobe; ln;) {
+						char *nxt = strchr(ln, '\n');
+						if (nxt) *nxt++ = '\0';
+						if (*ln) {
+							float sw = cproc_measure_line_width(&style, ln);
+							if (sw > scaled_max_w) scaled_max_w = sw;
+						}
+						ln = nxt;
+					}
+					free(reprobe);
+				}
+			}
+
+			// Prevent scaled horizontal right-edge clipping on fixed canvases
+			int limit_w = max(avail_w, (int)ceilf(orig_max_w));
+			if (avail_w > 4 && scaled_max_w > (float)limit_w && scaled_max_w > 1.0f) {
+				float ratio = (float)limit_w / scaled_max_w;
+				float min_sx = op->style.scale_x * 0.68f;
+				float next_sx = style.scale_x * ratio;
+				if (next_sx < min_sx) {
+					style.scale_x = min_sx;
+					float rem = next_sx / min_sx;
+					float next_sz = floorf(style.size * rem);
+					style.size = max(min(op->style.size, style.size), next_sz);
+				} else {
+					style.scale_x = next_sx;
+				}
+				style.font_size = NULL;
+			}
+		}
+	}
+
+	int h = ceilf(text_style_height(&style));
 	int y = op->y;
 	char *text = xstrdup(op->text->text);
 	for (char *line = text; line;) {
@@ -862,17 +950,17 @@ static bool build_text(struct parts_construction_process *cproc, struct parts_cp
 			*next++ = '\0';
 		if (*line) {
 			if (mode == RENDER_COPY || mode == RENDER_ALPHA_ONLY) {
-				int w = ceilf(gfx_size_text(&op->style, line)
-						+ (sjis_count_char(line) - 1) * op->style.font_spacing);
+				int w = ceilf(gfx_size_text(&style, line)
+						+ (sjis_count_char(line) - 1) * style.font_spacing);
 				if (mode == RENDER_COPY)
 					gfx_fill_with_alpha(&cproc->common.texture, op->x, y, w, h,
-							op->style.edge_color.r, op->style.edge_color.g, op->style.edge_color.b, 0);
+							style.edge_color.r, style.edge_color.g, style.edge_color.b, 0);
 				else
 					gfx_fill_amap(&cproc->common.texture, op->x, y, w, h, 0);
 			}
-			gfx_render_text_mode(&cproc->common.texture, op->x, y, line, &op->style, mode);
+			gfx_render_text_mode(&cproc->common.texture, op->x, y, line, &style, mode);
 		}
-		y += h + op->line_space;
+		y += h + line_space;
 		line = next;
 	}
 	free(text);

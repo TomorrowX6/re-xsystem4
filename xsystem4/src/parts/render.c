@@ -33,6 +33,7 @@
 #include "sprite.h"
 #include "xsystem4.h"
 
+#include "parts.h"
 #include "parts_internal.h"
 
 static struct {
@@ -365,6 +366,11 @@ static void parts_render_text(struct parts *parts, struct parts_text *t,
 			Rectangle r = { 0, 0, ch->t.w, ch->t.h };
 			if (message) {
 				Rectangle a = message->text_area;
+				if (a.h > 0 && parts_get_modifier_font_scale() > 100) {
+					int bg_avail = parts->states[0].common.h - message->text_area.y;
+					if (bg_avail > a.h)
+						a.h = bg_avail;
+				}
 				a.x += parts->states[0].common.origin_offset.x;
 				a.y += parts->states[0].common.origin_offset.y;
 				if (a.w > 0) { r.x = max(0, a.x - x); r.w = min(ch->t.w, a.x + a.w - x) - r.x; }
@@ -1114,13 +1120,18 @@ static void parts_render_scrollbar(struct parts *parts)
 	struct parts_scrollbar *s = parts->scrollbar;
 	Rectangle rects[4];
 	parts_scrollbar_rects(parts, rects);
+	bool custom_scale = parts_get_modifier_scrollbar_scale() != 100;
 	const int order[] = {3, 0, 1, 2};
 	for (int i = 0; i < 4; i++) {
 		int piece = order[i], index = parts_scrollbar_skin_state(s, piece);
 		Rectangle rect = rects[piece];
 		if (rect.w <= 0 || rect.h <= 0 || (piece == 2 && !parts_scrollbar_range(s))) continue;
 		struct parts_state state = s->skins[piece][index];
-		if (state.common.w <= 0 || state.common.h <= 0) continue;
+		int skin_w = (state.type == PARTS_FLAT && state.flat.flat && state.flat.flat->hdr.width > 0)
+			? state.flat.flat->hdr.width : state.common.w;
+		int skin_h = (state.type == PARTS_FLAT && state.flat.flat && state.flat.flat->hdr.height > 0)
+			? state.flat.flat->hdr.height : state.common.h;
+		if (skin_w <= 0 || skin_h <= 0) continue;
 		struct parts proxy = *parts;
 		proxy.parent = parts;
 		proxy.position_is_ratio = false;
@@ -1128,12 +1139,38 @@ static void parts_render_scrollbar(struct parts *parts)
 		proxy.local.pos = (SDL_FPoint){rect.x + parts->states[0].common.origin_offset.x,
 			rect.y + parts->states[0].common.origin_offset.y};
 		proxy.local.rotation.x = proxy.local.rotation.y = proxy.local.rotation.z = 0;
-		proxy.local.scale.x = !s->loaded[piece][index] ? (float)rect.w / state.common.w : 1.f;
-		proxy.local.scale.y = !s->loaded[piece][index] ? (float)rect.h / state.common.h : 1.f;
-		if (piece == 3 && state.type == PARTS_CG && s->loaded[piece][index]) {
-			// Sys43 clips a background skin to the track; it does not stretch it.
-			state.common.surface_area = (Rectangle){0, 0,
-				min(rect.w, state.common.w), min(rect.h, state.common.h)};
+		if (!s->loaded[piece][index]) {
+			proxy.local.scale.x = (float)rect.w / skin_w;
+			proxy.local.scale.y = (float)rect.h / skin_h;
+		} else if (!custom_scale) {
+			proxy.local.scale.x = 1.f;
+			proxy.local.scale.y = 1.f;
+			if (piece == 3 && state.type == PARTS_CG) {
+				// Sys43 clips a background skin to the track; it does not stretch it.
+				state.common.surface_area = (Rectangle){0, 0,
+					min(rect.w, state.common.w), min(rect.h, state.common.h)};
+			}
+		} else if (piece == 3 && state.type == PARTS_CG) {
+			if (!s->horizontal) {
+				proxy.local.scale.x = (float)rect.w / skin_w;
+				if (state.common.h >= rect.h) {
+					proxy.local.scale.y = 1.f;
+					state.common.surface_area = (Rectangle){0, 0, state.common.w, rect.h};
+				} else {
+					proxy.local.scale.y = (float)rect.h / skin_h;
+				}
+			} else {
+				proxy.local.scale.y = (float)rect.h / skin_h;
+				if (state.common.w >= rect.w) {
+					proxy.local.scale.x = 1.f;
+					state.common.surface_area = (Rectangle){0, 0, rect.w, state.common.h};
+				} else {
+					proxy.local.scale.x = (float)rect.w / skin_w;
+				}
+			}
+		} else {
+			proxy.local.scale.x = (float)rect.w / skin_w;
+			proxy.local.scale.y = (float)rect.h / skin_h;
 		}
 		state.common.origin_offset = (Point){0, 0};
 		parts_render_state(&proxy, &state);

@@ -76,7 +76,26 @@ static pthread_mutex_t g_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_mod_cond = PTHREAD_COND_INITIALIZER;
 static int g_live_lock_mask = 0;
 static bool g_has_lock_mask_init = false;
+static int g_font_scale_pct = 100;
+static int g_scrollbar_scale_pct = 100;
+static bool g_has_ui_scale_init = false;
+static int s_applied_font_scale_pct = 100;
+static int s_applied_scrollbar_scale_pct = 100;
 static int g_pending_lock_streamer_mode = -1;
+
+static inline int clamp_font_scale_pct(int pct)
+{
+	if (pct < 75) return 75;
+	if (pct > 160) return 160;
+	return pct;
+}
+
+static inline int clamp_scrollbar_scale_pct(int pct)
+{
+	if (pct < 75) return 75;
+	if (pct > 300) return 300;
+	return pct;
+}
 static char *g_pending_action_json = NULL;
 static char *g_cached_live_state_json = NULL;
 static char *g_modifier_config_path = NULL;
@@ -238,9 +257,13 @@ static void persist_streamer_mode_to_savedir(bool streamer_mode_enabled)
 static void persist_modifier_config_from_native(int lock_mask)
 {
 	char *cfg_path = NULL;
+	int cur_font_pct = 100;
+	int cur_sb_pct = 100;
 	pthread_mutex_lock(&g_mod_mutex);
 	if (g_modifier_config_path && g_modifier_config_path[0])
 		cfg_path = strdup(g_modifier_config_path);
+	cur_font_pct = g_font_scale_pct;
+	cur_sb_pct = g_scrollbar_scale_pct;
 	pthread_mutex_unlock(&g_mod_mutex);
 
 #ifndef __ANDROID__
@@ -270,14 +293,21 @@ static void persist_modifier_config_from_native(int lock_mask)
 		cJSON_AddBoolToObject(root, "ctrl_overlay_enabled", true);
 		cJSON_AddBoolToObject(root, "ctrl_default_on_v1", true);
 		cJSON_AddBoolToObject(root, "ctrl_overlay_visible", true);
+		cJSON_AddNumberToObject(root, "font_scale_pct", cur_font_pct);
+		cJSON_AddNumberToObject(root, "scrollbar_scale_pct", cur_sb_pct);
 	}
 
 	bool want_dis = (lock_mask & LOCK_DISABLE_STREAMER_MODE) != 0;
 	cJSON *j_dis = cJSON_GetObjectItem(root, "disable_streamer_mode");
 	cJSON *j_mask = cJSON_GetObjectItem(root, "lock_mask");
+	cJSON *j_font = cJSON_GetObjectItem(root, "font_scale_pct");
+	cJSON *j_sb = cJSON_GetObjectItem(root, "scrollbar_scale_pct");
 	bool cur_dis = j_dis ? cJSON_IsTrue(j_dis) : false;
 	int cur_mask = (j_mask && cJSON_IsNumber(j_mask)) ? j_mask->valueint : -1;
-	if (j_dis && j_mask && cur_dis == want_dis && cur_mask == lock_mask) {
+	int disk_font = (j_font && cJSON_IsNumber(j_font)) ? j_font->valueint : -1;
+	int disk_sb = (j_sb && cJSON_IsNumber(j_sb)) ? j_sb->valueint : -1;
+	if (j_dis && j_mask && cur_dis == want_dis && cur_mask == lock_mask &&
+	    disk_font == cur_font_pct && disk_sb == cur_sb_pct) {
 		cJSON_Delete(root);
 		free(cfg_path);
 		return;
@@ -290,6 +320,10 @@ static void persist_modifier_config_from_native(int lock_mask)
 	cJSON_AddBoolToObject(root, "disable_streamer_mode", want_dis);
 	cJSON_DeleteItemFromObject(root, "lock_mask");
 	cJSON_AddNumberToObject(root, "lock_mask", lock_mask);
+	cJSON_DeleteItemFromObject(root, "font_scale_pct");
+	cJSON_AddNumberToObject(root, "font_scale_pct", cur_font_pct);
+	cJSON_DeleteItemFromObject(root, "scrollbar_scale_pct");
+	cJSON_AddNumberToObject(root, "scrollbar_scale_pct", cur_sb_pct);
 	cJSON_DeleteItemFromObject(root, "config_seq");
 	cJSON_AddNumberToObject(root, "config_seq", next_seq);
 	if (!cJSON_GetObjectItem(root, "floating_default_on_v1"))
@@ -2138,7 +2172,7 @@ static void maybe_load_initial_modifier_config(void)
 {
 	char *cfg_path = NULL;
 	pthread_mutex_lock(&g_mod_mutex);
-	if (g_has_lock_mask_init) {
+	if (g_has_lock_mask_init && g_has_ui_scale_init) {
 		pthread_mutex_unlock(&g_mod_mutex);
 		return;
 	}
@@ -2172,9 +2206,13 @@ static void maybe_load_initial_modifier_config(void)
 	}
 	cJSON *j_mask = cJSON_GetObjectItem(root, "lock_mask");
 	cJSON *j_dis  = cJSON_GetObjectItem(root, "disable_streamer_mode");
+	cJSON *j_font = cJSON_GetObjectItem(root, "font_scale_pct");
+	cJSON *j_sb   = cJSON_GetObjectItem(root, "scrollbar_scale_pct");
 	int mask = (j_mask && cJSON_IsNumber(j_mask)) ? j_mask->valueint : 0;
 	if (j_dis && cJSON_IsTrue(j_dis))
 		mask |= LOCK_DISABLE_STREAMER_MODE;
+	int font_pct = (j_font && cJSON_IsNumber(j_font)) ? clamp_font_scale_pct(j_font->valueint) : 100;
+	int sb_pct   = (j_sb && cJSON_IsNumber(j_sb)) ? clamp_scrollbar_scale_pct(j_sb->valueint) : 100;
 	cJSON_Delete(root);
 
 	pthread_mutex_lock(&g_mod_mutex);
@@ -2183,6 +2221,13 @@ static void maybe_load_initial_modifier_config(void)
 		g_live_lock_mask = mask;
 		if (mask & LOCK_DISABLE_STREAMER_MODE)
 			g_pending_lock_streamer_mode = 0;
+	}
+	if (!g_has_ui_scale_init) {
+		g_has_ui_scale_init = true;
+		g_font_scale_pct = font_pct;
+		g_scrollbar_scale_pct = sb_pct;
+		parts_set_modifier_font_scale(font_pct);
+		parts_set_modifier_scrollbar_scale(sb_pct);
 	}
 	pthread_mutex_unlock(&g_mod_mutex);
 }
@@ -2771,6 +2816,33 @@ static void vm_execute_pending_action(const char *json_str)
 		vm_set_tt(tt_idx->valueint, tt_val->valueint);
 	}
 
+	bool scale_changed = false;
+	int save_mask = 0;
+	pthread_mutex_lock(&g_mod_mutex);
+	if ((it = cJSON_GetObjectItem(act, "fontScale")) && cJSON_IsNumber(it)) {
+		int fp = clamp_font_scale_pct(it->valueint);
+		if (g_font_scale_pct != fp || !g_has_ui_scale_init) {
+			g_font_scale_pct = fp;
+			g_has_ui_scale_init = true;
+			parts_set_modifier_font_scale(fp);
+			scale_changed = true;
+		}
+	}
+	if ((it = cJSON_GetObjectItem(act, "scrollbarScale")) && cJSON_IsNumber(it)) {
+		int sp = clamp_scrollbar_scale_pct(it->valueint);
+		if (g_scrollbar_scale_pct != sp || !g_has_ui_scale_init) {
+			g_scrollbar_scale_pct = sp;
+			g_has_ui_scale_init = true;
+			parts_set_modifier_scrollbar_scale(sp);
+			scale_changed = true;
+		}
+	}
+	save_mask = g_live_lock_mask;
+	pthread_mutex_unlock(&g_mod_mutex);
+	if (scale_changed) {
+		persist_modifier_config_from_native(save_mask);
+	}
+
 	cJSON_Delete(act);
 }
 
@@ -2867,6 +2939,12 @@ static char *vm_build_live_state_json(int lock_mask)
 {
 	cJSON *root = cJSON_CreateObject();
 	cJSON_AddNumberToObject(root, "lockMask", lock_mask);
+	pthread_mutex_lock(&g_mod_mutex);
+	int cur_font_pct = g_font_scale_pct;
+	int cur_sb_pct = g_scrollbar_scale_pct;
+	pthread_mutex_unlock(&g_mod_mutex);
+	cJSON_AddNumberToObject(root, "fontScalePct", cur_font_pct);
+	cJSON_AddNumberToObject(root, "scrollbarScalePct", cur_sb_pct);
 
 	vm_inspect_mod_streamer_ain();
 	struct page *gc    = s_glob_game_context >= 0 ? vm_get_global_page_idx(s_glob_game_context) : vm_get_global_page("g_gameContext", NULL);
@@ -3079,6 +3157,28 @@ void modifier_on_frame(void)
 	if (pending) {
 		vm_execute_pending_action(pending);
 		free(pending);
+		did_streamer_sync = true;
+	}
+
+	int desired_font_pct = 100;
+	int desired_sb_pct = 100;
+	pthread_mutex_lock(&g_mod_mutex);
+	desired_font_pct = g_font_scale_pct;
+	desired_sb_pct = g_scrollbar_scale_pct;
+	pthread_mutex_unlock(&g_mod_mutex);
+
+	if (s_applied_font_scale_pct != desired_font_pct) {
+		s_applied_font_scale_pct = desired_font_pct;
+		parts_set_modifier_font_scale(desired_font_pct);
+		parts_refresh_live_font_scale();
+		vm_clear_card_cache();
+		s_pending_live_ui_refresh = true;
+		did_streamer_sync = true;
+	}
+	if (s_applied_scrollbar_scale_pct != desired_sb_pct) {
+		s_applied_scrollbar_scale_pct = desired_sb_pct;
+		parts_set_modifier_scrollbar_scale(desired_sb_pct);
+		parts_refresh_live_scrollbar_scale();
 		did_streamer_sync = true;
 	}
 	if (s_pending_cheat_gbk) {
@@ -3394,6 +3494,47 @@ Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeGetCtrlSkip(
 	(void)env;
 	(void)clazz;
 	return input_get_touch_ctrl_skip() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeSetUiScale(
+	JNIEnv *env, jclass clazz, jint font_pct, jint scrollbar_pct)
+{
+	(void)env;
+	(void)clazz;
+	int fp = clamp_font_scale_pct((int)font_pct);
+	int sp = clamp_scrollbar_scale_pct((int)scrollbar_pct);
+	pthread_mutex_lock(&g_mod_mutex);
+	g_has_ui_scale_init = true;
+	g_font_scale_pct = fp;
+	g_scrollbar_scale_pct = sp;
+	pthread_mutex_unlock(&g_mod_mutex);
+	parts_set_modifier_font_scale(fp);
+	parts_set_modifier_scrollbar_scale(sp);
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeGetFontScale(
+	JNIEnv *env, jclass clazz)
+{
+	(void)env;
+	(void)clazz;
+	pthread_mutex_lock(&g_mod_mutex);
+	int fp = g_font_scale_pct;
+	pthread_mutex_unlock(&g_mod_mutex);
+	return (jint)fp;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_kichikuou_xsystem4_GameModifierBridge_nativeGetScrollbarScale(
+	JNIEnv *env, jclass clazz)
+{
+	(void)env;
+	(void)clazz;
+	pthread_mutex_lock(&g_mod_mutex);
+	int sp = g_scrollbar_scale_pct;
+	pthread_mutex_unlock(&g_mod_mutex);
+	return (jint)sp;
 }
 
 #endif /* __ANDROID__ */

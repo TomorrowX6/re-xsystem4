@@ -151,6 +151,8 @@ static bool parts_hittest(struct parts *parts, int state, Point pos)
 	if (parts->states[state].type == PARTS_LAYOUT_BOX || parts->component_type == 15)
 		return false;
 	Rectangle hitbox = parts->states[state].common.hitbox;
+	if (parts->scrollbar)
+		parts_scrollbar_hitbox(parts, state, &hitbox);
 	if (hitbox.w <= 0 || hitbox.h <= 0) {
 		if (parts->states[state].type != PARTS_FLAT &&
 				!(parts->states[state].type == PARTS_RECT_DETECTION && parts->states[state].rect.custom))
@@ -363,6 +365,8 @@ static struct parts *find_swipe_target(Point pos)
 	PARTS_LIST_FOREACH_REVERSE(p) {
 		if (p->controller_no != ctrl_stack.active || !parts_is_visible(p))
 			continue;
+		if (p->enable_input && p->scrollbar && parts_hittest(p, PARTS_STATE_DEFAULT, pos))
+			return NULL;
 		if (p->enable_input && !first_opaque && !p->pass_cursor && parts_hittest(p, PARTS_STATE_DEFAULT, pos))
 			first_opaque = p;
 		if (p->swipe_type > 0 && parts_hittest(p, PARTS_STATE_DEFAULT, pos)) {
@@ -421,8 +425,8 @@ static void parts_update_mouse(struct parts *parts, Point cur_pos, bool cur_clic
 	bool was_hovered = parts->is_hovered;
 	parts->is_hovered = is_hovered;
 
-	// !pass_cursor parts consume the cursor for parts behind them
-	if (is_hovered && !parts->pass_cursor)
+	// !pass_cursor parts (and scrollbars) consume the cursor for parts behind them
+	if (is_hovered && (!parts->pass_cursor || parts->scrollbar))
 		*hover_consumed = true;
 
 	if (is_hovered != was_hovered) {

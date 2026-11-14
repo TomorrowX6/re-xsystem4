@@ -1213,6 +1213,7 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 	char glyphs[192][4];
 	struct parts_numeral_font *font = num->font_no >= 0
 		? &parts_numeral_fonts[num->font_no] : NULL;
+	struct text_style eff_ts = parts_get_effective_text_style(&num->ts);
 	int height = 0;
 	float width = 0;
 	for (int i = 0; i < length; i++) {
@@ -1228,8 +1229,8 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 				snprintf(glyphs[i], sizeof(glyphs[i]), "%s", encoded);
 				free(encoded);
 			}
-			advances[i] = gfx_size_char(&num->ts, glyphs[i]);
-			height = ceilf(text_style_height(&num->ts));
+			advances[i] = gfx_size_char(&eff_ts, glyphs[i]);
+			height = ceilf(text_style_height(&eff_ts));
 		} else {
 			int index = characters[i] == '-' ? 10 : characters[i] == ',' ? 11 : characters[i] - '0';
 			advances[i] = font->cg[index].w;
@@ -1247,7 +1248,7 @@ static bool parts_numeral_update(struct parts *parts, struct parts_numeral *num)
 		for (int i = 0; i < length; i++) {
 			if (!hidden[i]) {
 				if (num->show_type == 2) {
-					gfx_render_textf(&num->common.texture, x, 0, glyphs[i], &num->ts, false);
+					gfx_render_textf(&num->common.texture, x, 0, glyphs[i], &eff_ts, false);
 				} else {
 					int index = characters[i] == '-' ? 10 : characters[i] == ',' ? 11 : characters[i] - '0';
 					Texture *cg = &font->cg[index];
@@ -3545,4 +3546,101 @@ bool PE_ReleaseParts3DLayerPluginID(int parts_no, int state)
 		l->sprite_no = -1;
 	}
 	return true;
+}
+
+static bool cproc_is_replayable_with_text(struct parts_construction_process *cproc)
+{
+	struct parts_cp_op *first = TAILQ_FIRST(&cproc->ops);
+	if (!first)
+		return false;
+	if (first->type != PARTS_CP_CREATE &&
+	    first->type != PARTS_CP_CREATE_PIXEL_ONLY &&
+	    first->type != PARTS_CP_CG)
+		return false;
+	struct parts_cp_op *op;
+	TAILQ_FOREACH(op, &cproc->ops, entry) {
+		if (op->type == PARTS_CP_DRAW_TEXT ||
+		    op->type == PARTS_CP_COPY_TEXT ||
+		    op->type == PARTS_CP_ALPHA_BLEND_TEXT ||
+		    op->type == PARTS_CP_ONLY_ALPHA_TEXT)
+			return true;
+	}
+	return false;
+}
+
+static void refresh_font_in_current_context(void)
+{
+	if (!parts_engine_initialized || !parts_table)
+		return;
+	struct parts *p;
+	PARTS_LIST_FOREACH(p) {
+		if (p->textures_suspended)
+			continue;
+		if (p->message_box) {
+			parts_message_window_rebuild_text(p);
+			parts_component_dirty(p);
+		}
+		if (p->widget && p->widget->text && p->widget->text->size > 0) {
+			parts_widget_rebuild_label(p);
+		}
+		for (int st = 0; st < PARTS_NR_STATES; st++) {
+			struct parts_state *s = &p->states[st];
+			if (s->type == PARTS_TEXT) {
+				parts_text_rerender_all(p, &s->text);
+				parts_component_dirty(p);
+			} else if (s->type == PARTS_NUMERAL && s->num.show_type == 2 && s->num.have_num) {
+				parts_numeral_update(p, &s->num);
+				parts_component_dirty(p);
+			} else if (s->type == PARTS_CONSTRUCTION_PROCESS &&
+			           cproc_is_replayable_with_text(&s->cproc)) {
+				s->cproc.needs_build = true;
+				parts_dirty(p);
+			}
+		}
+	}
+	PE_UpdateComponent(0);
+	parts_engine_dirty();
+}
+
+void parts_refresh_live_font_scale(void)
+{
+	if (!parts_engine_initialized)
+		return;
+	refresh_font_in_current_context();
+	struct parts_context *bs = parts_get_back_scene();
+	if (bs && bs != parts_current) {
+		struct parts_context *prev = parts_context_select(bs);
+		refresh_font_in_current_context();
+		parts_context_select(prev);
+	}
+	scene_dirty();
+}
+
+static void refresh_scrollbar_in_current_context(void)
+{
+	if (!parts_engine_initialized || !parts_table)
+		return;
+	struct parts *p;
+	PARTS_LIST_FOREACH(p) {
+		if (p->scrollbar) {
+			parts_recalculate_hitbox(p);
+			parts_dirty(p);
+		}
+	}
+	parts_render_gen++;
+	parts_engine_dirty();
+}
+
+void parts_refresh_live_scrollbar_scale(void)
+{
+	if (!parts_engine_initialized)
+		return;
+	refresh_scrollbar_in_current_context();
+	struct parts_context *bs = parts_get_back_scene();
+	if (bs && bs != parts_current) {
+		struct parts_context *prev = parts_context_select(bs);
+		refresh_scrollbar_in_current_context();
+		parts_context_select(prev);
+	}
+	scene_dirty();
 }

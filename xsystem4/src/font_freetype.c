@@ -33,7 +33,7 @@
 #include "gfx/font.h"
 #include "xsystem4.h"
 
-#define MAX_FONT_SIZES 64
+#define MAX_FONT_SIZES 512
 
 struct font_ft {
 	struct font super;
@@ -76,8 +76,18 @@ static struct font_size *ft_font_get_size(struct font *_font, float size)
 		}
 	}
 
-	if (font->nr_sizes + 1 >= MAX_FONT_SIZES)
-		ERROR("Exceeded maximum number of font sizes");
+	if (font->nr_sizes + 1 >= MAX_FONT_SIZES) {
+		int best = 0;
+		float best_diff = fabsf(font->sizes[0].size - size);
+		for (unsigned i = 1; i < font->nr_sizes; i++) {
+			float d = fabsf(font->sizes[i].size - size);
+			if (d < best_diff) {
+				best_diff = d;
+				best = (int)i;
+			}
+		}
+		return &font->sizes[best];
+	}
 	struct font_size *fs = &font->sizes[font->nr_sizes++];
 	fs->size = size;
 	float desc_ratio = 0.15f;

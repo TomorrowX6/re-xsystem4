@@ -8,11 +8,13 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
@@ -225,8 +227,13 @@ class FloatingModifierOverlay(private val activity: Activity) {
             tr("Ctrl 快进悬浮键：已隐藏 [点击显示]", "Ctrl早送りボタン：非表示", "Ctrl Skip Button: Hidden")
         }
 
+        val fontPct = GameModifierBridge.getFontScalePercent(activity)
+        val sbPct = GameModifierBridge.getScrollbarScalePercent(activity)
+
         val menuEntries = mutableListOf<Pair<String, () -> Unit>>(
             tr("实时锁定开关 · 已开启 $lockCount 项…", "リアルタイムロック · $lockCount 項目…", "Live Locks · $lockCount ON…") to { showLocksDialog() },
+            tr("字体大小修改 · 当前 $fontPct%…", "文字サイズ変更 · 現在 $fontPct%…", "Font Size · $fontPct%…") to { showFontScaleDialog() },
+            tr("滚动条修改 · 当前 $sbPct%…", "スクロールバー変更 · 現在 $sbPct%…", "Scrollbar Size · $sbPct%…") to { showScrollbarScaleDialog() },
             streamerItemLabel to { triggerDisableStreamerModeInGame(inGame) }
         )
         if (ctrlEnabled) {
@@ -652,6 +659,202 @@ class FloatingModifierOverlay(private val activity: Activity) {
                 sendAction(act, tr("修改已生效", "適用しました", "Applied"))
             }
             .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showFontScaleDialog() {
+        showScaleSliderDialog(
+            title = tr("字体大小修改", "文字サイズ変更", "Font Size"),
+            description = tr(
+                "松开滑块或点击预设即可在下方画面实时预览文字缩放，范围 75%~160%，默认 100%，不改动存档文件。",
+                "スライダーやプリセットで画面内の文字倍率を即時プレビューできます。範囲 75%~160%、標準 100%。",
+                "Release slider or tap a preset to preview font scale live. Range 75% to 160%. Default 100%."
+            ),
+            minPct = GameModifierBridge.MIN_FONT_SCALE_PCT,
+            maxPct = GameModifierBridge.MAX_FONT_SCALE_PCT,
+            defaultPct = GameModifierBridge.DEFAULT_FONT_SCALE_PCT,
+            stepPct = 5,
+            currentPct = GameModifierBridge.getFontScalePercent(activity),
+            presets = listOf(80, 90, 100, 115, 130, 150),
+            applyPct = { pct -> GameModifierBridge.setFontScalePercent(activity, pct) },
+            onConfirmedToast = { pct, isReset ->
+                val msg = if (isReset) {
+                    tr("字体大小已恢复默认 100%", "文字サイズを 100% に戻しました", "Font size reset to 100%")
+                } else {
+                    tr("字体大小已设为 $pct%", "文字サイズを $pct% に設定しました", "Font size set to $pct%")
+                }
+                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    private fun showScrollbarScaleDialog() {
+        showScaleSliderDialog(
+            title = tr("滚动条修改", "スクロールバー変更", "Scrollbar Size"),
+            description = tr(
+                "松开滑块或点击预设即可实时放大游戏内列表与日志滚动条宽度及滑块触控区域，范围 100%~300%，默认 100%。",
+                "リストやログのスクロールバー幅とつまみ操作領域を即時拡大します。範囲 100%~300%、標準 100%。",
+                "Enlarge in-game scrollbar width and touch thumb area live from 100% to 300%. Default 100%."
+            ),
+            minPct = GameModifierBridge.MIN_SCROLLBAR_SCALE_PCT,
+            maxPct = GameModifierBridge.MAX_SCROLLBAR_SCALE_PCT,
+            defaultPct = GameModifierBridge.DEFAULT_SCROLLBAR_SCALE_PCT,
+            stepPct = 10,
+            currentPct = GameModifierBridge.getScrollbarScalePercent(activity),
+            presets = listOf(100, 130, 160, 200, 250, 300),
+            applyPct = { pct -> GameModifierBridge.setScrollbarScalePercent(activity, pct) },
+            onConfirmedToast = { pct, isReset ->
+                val msg = if (isReset) {
+                    tr("滚动条比例已恢复默认 100%", "スクロールバーを 100% に戻しました", "Scrollbar reset to 100%")
+                } else {
+                    tr("滚动条比例已设为 $pct%", "スクロールバーを $pct% に設定しました", "Scrollbar set to $pct%")
+                }
+                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    private fun showScaleSliderDialog(
+        title: String,
+        description: String,
+        minPct: Int,
+        maxPct: Int,
+        defaultPct: Int,
+        stepPct: Int,
+        currentPct: Int,
+        presets: List<Int>,
+        applyPct: (Int) -> Unit,
+        onConfirmedToast: (Int, Boolean) -> Unit
+    ) {
+        val initialPct = currentPct.coerceIn(minPct, maxPct)
+        var selectedPct = initialPct
+        var lastAppliedPct = initialPct
+        var confirmed = false
+        var updatingBar = false
+
+        fun applyLivePreview(pct: Int) {
+            val clamped = pct.coerceIn(minPct, maxPct)
+            if (clamped != lastAppliedPct) {
+                lastAppliedPct = clamped
+                applyPct(clamped)
+            }
+        }
+
+        val scroll = ScrollView(activity)
+        val container = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+
+        val descTv = TextView(activity).apply {
+            text = description
+            setPadding(0, 0, 0, dp(10))
+        }
+        container.addView(descTv)
+
+        val headerRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        val valueTv = TextView(activity).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            textSize = 16f
+        }
+        val seekBar = SeekBar(activity).apply {
+            max = maxPct - minPct
+            progress = selectedPct - minPct
+            setPadding(dp(4), dp(8), dp(4), dp(12))
+        }
+
+        fun updateSelected(newPct: Int, syncSeek: Boolean, previewNow: Boolean) {
+            selectedPct = newPct.coerceIn(minPct, maxPct)
+            valueTv.text = tr(
+                "当前比例：$selectedPct%",
+                "現在倍率：$selectedPct%",
+                "Current: $selectedPct%"
+            )
+            if (syncSeek) {
+                updatingBar = true
+                seekBar.progress = selectedPct - minPct
+                updatingBar = false
+            }
+            if (previewNow) {
+                applyLivePreview(selectedPct)
+            }
+        }
+
+        val minusBtn = Button(activity).apply {
+            text = "-$stepPct%"
+            setOnClickListener { updateSelected(selectedPct - stepPct, true, true) }
+        }
+        val plusBtn = Button(activity).apply {
+            text = "+$stepPct%"
+            setOnClickListener { updateSelected(selectedPct + stepPct, true, true) }
+        }
+        headerRow.addView(valueTv)
+        headerRow.addView(minusBtn)
+        headerRow.addView(plusBtn)
+        container.addView(headerRow)
+        container.addView(seekBar)
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (updatingBar) return
+                updateSelected(minPct + progress, false, false)
+            }
+            override fun onStartTrackingTouch(bar: SeekBar?) {}
+            override fun onStopTrackingTouch(bar: SeekBar?) {
+                applyLivePreview(selectedPct)
+            }
+        })
+
+        for (chunk in presets.chunked(3)) {
+            val row = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            for (preset in chunk) {
+                val btn = Button(activity).apply {
+                    text = "$preset%"
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener { updateSelected(preset, true, true) }
+                }
+                row.addView(btn)
+            }
+            container.addView(row)
+        }
+
+        updateSelected(selectedPct, true, false)
+        scroll.addView(container)
+
+        AlertDialog.Builder(activity)
+            .setTitle(title)
+            .setView(scroll)
+            .setPositiveButton(R.string.ok) { _, _ ->
+                confirmed = true
+                lastAppliedPct = selectedPct
+                applyPct(selectedPct)
+                onConfirmedToast(selectedPct, false)
+            }
+            .setNeutralButton(tr("恢复默认 $defaultPct%", "標準 $defaultPct%", "Reset $defaultPct%")) { _, _ ->
+                confirmed = true
+                lastAppliedPct = defaultPct
+                applyPct(defaultPct)
+                onConfirmedToast(defaultPct, true)
+            }
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                if (!confirmed && lastAppliedPct != initialPct) {
+                    lastAppliedPct = initialPct
+                    applyPct(initialPct)
+                }
+            }
+            .setOnCancelListener {
+                if (!confirmed && lastAppliedPct != initialPct) {
+                    lastAppliedPct = initialPct
+                    applyPct(initialPct)
+                }
+            }
             .show()
     }
 }

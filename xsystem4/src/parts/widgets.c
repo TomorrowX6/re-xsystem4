@@ -144,6 +144,12 @@ static void rebuild_label(struct parts *parts)
 	parts_dirty(parts);
 }
 
+void parts_widget_rebuild_label(struct parts *parts)
+{
+	if (!parts->widget) return;
+	rebuild_label(parts);
+}
+
 void parts_widget_rebuild(struct parts *parts)
 {
 	if (!parts->widget) return;

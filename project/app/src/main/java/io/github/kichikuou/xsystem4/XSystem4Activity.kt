@@ -59,6 +59,7 @@ class XSystem4Activity : SDLActivity() {
         GameModifierBridge.markAlreadyLoaded()
         try {
             GameModifierBridge.syncNativeConfigPath(this)
+            GameModifierBridge.syncUiScaleToNative(this)
             GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
             lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)
         } catch (_: Throwable) {
@@ -240,6 +241,7 @@ class XSystem4Activity : SDLActivity() {
             GameModifierBridge.syncNativeConfigPath(this)
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
+                GameModifierBridge.syncUiScaleToNative(this)
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
                 syncOverlayPreferences()
                 lastSyncedConfigSeq = curSeq
@@ -260,6 +262,7 @@ class XSystem4Activity : SDLActivity() {
             GameModifierBridge.syncNativeConfigPath(this)
             val curSeq = GameModifierBridge.getConfigSeq(this)
             if (curSeq != lastSyncedConfigSeq) {
+                GameModifierBridge.syncUiScaleToNative(this)
                 GameModifierBridge.nativeSetLiveLocks(GameModifierBridge.getSavedLockMask(this))
                 syncOverlayPreferences()
                 lastSyncedConfigSeq = curSeq
@@ -291,6 +294,7 @@ class XSystem4Activity : SDLActivity() {
         GameModifierBridge.markAlreadyLoaded()
         try {
             GameModifierBridge.syncNativeConfigPath(this)
+            GameModifierBridge.syncUiScaleToNative(this)
             val lockMask = GameModifierBridge.getSavedLockMask(this)
             GameModifierBridge.nativeSetLiveLocks(lockMask)
             lastSyncedConfigSeq = GameModifierBridge.getConfigSeq(this)

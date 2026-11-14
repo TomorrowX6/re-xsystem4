@@ -1616,6 +1616,11 @@ void PE_ClearBackScene(void)
 	back_scene = NULL;
 }
 
+struct parts_context *parts_get_back_scene(void)
+{
+	return back_scene;
+}
+
 void PE_SetShowForBackScene(int no, bool show)
 {
 	if (!back_scene) return;

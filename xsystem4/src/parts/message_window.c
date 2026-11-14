@@ -189,7 +189,8 @@ void parts_message_window_rebuild_text(struct parts *parts)
 		if (w->text_area.w > 0 && t->nr_lines && t->lines[t->nr_lines - 1].nr_chars) {
 			char ch[3] = {src[0], 0, 0};
 			if (SJIS_2BYTE(src[0]) && src[1]) ch[1] = src[1];
-			if (t->lines[t->nr_lines - 1].width + gfx_size_char(&t->ts, ch) > w->text_area.w)
+			struct text_style eff_ts = parts_get_effective_text_style(&t->ts);
+			if (t->lines[t->nr_lines - 1].width + gfx_size_char(&eff_ts, ch) > w->text_area.w)
 				parts_text_append_char(t, "\n");
 		}
 		src = parts_text_append_char(t, src);
@@ -207,6 +208,27 @@ void parts_message_window_rebuild_text(struct parts *parts)
 	t->ts.font_size = NULL;
 	t->line_space = line_space;
 	parts_text_update_dims(parts, t);
+	if (parts_get_modifier_font_scale() > 100 && w->text_area.h > 0 && t->nr_lines > 1) {
+		int avail_h = w->text_area.h;
+		int bg_h = parts->states[0].common.h - w->text_area.y - 4;
+		if (bg_h > avail_h)
+			avail_h = bg_h;
+		if (t->common.h > avail_h) {
+			int sum_h = 0;
+			for (unsigned i = 0; i < t->nr_lines; i++)
+				sum_h += t->lines[i].height;
+			int gaps = (int)t->nr_lines - 1;
+			int target_space = (avail_h - sum_h) / gaps;
+			int min_space = min(-2, line_space);
+			if (target_space < min_space)
+				target_space = min_space;
+			for (unsigned i = 0; i + 1 < t->nr_lines; i++) {
+				if (t->lines[i].line_space > target_space)
+					t->lines[i].line_space = target_space;
+			}
+			parts_text_update_dims(parts, t);
+		}
+	}
 	parts_dirty(parts);
 }
 

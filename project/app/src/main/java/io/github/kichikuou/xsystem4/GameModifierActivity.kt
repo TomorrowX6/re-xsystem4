@@ -15,6 +15,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -101,6 +102,7 @@ class GameModifierActivity : Activity() {
         findViewById<Button>(R.id.btn_mod_full_unlock).text = tr("全解锁存档", "全解放セーブ", "Full Unlock")
         findViewById<Button>(R.id.btn_mod_global_save).text = tr("全局存档修改", "全体セーブ改造", "Global Save")
         findViewById<Button>(R.id.btn_mod_floating_cfg).text = tr("实时锁定设置", "リアルタイムロック", "Live Locks")
+        refreshUiScaleButtons()
 
         val floatingSwitch = findViewById<Switch>(R.id.switch_floating_modifier)
         val ctrlOverlaySwitch = findViewById<Switch>(R.id.switch_ctrl_overlay)
@@ -132,6 +134,8 @@ class GameModifierActivity : Activity() {
             ensureGameNotRunning(this) { showGlobalSaveMenuDialog() }
         }
         findViewById<View>(R.id.btn_mod_floating_cfg).setOnClickListener { showFloatingLocksDialog() }
+        findViewById<View>(R.id.btn_mod_font_size).setOnClickListener { showFontScaleDialog() }
+        findViewById<View>(R.id.btn_mod_scrollbar).setOnClickListener { showScrollbarScaleDialog() }
         findViewById<View>(R.id.btn_mod_refresh).setOnClickListener {
             refreshList()
             Toast.makeText(this, R.string.save_manager_refreshed, Toast.LENGTH_SHORT).show()
@@ -220,19 +224,37 @@ class GameModifierActivity : Activity() {
         currentTarget = targets.firstOrNull { it.dirName == preferredDirName } ?: targets.first()
     }
 
+    private fun refreshUiScaleButtons() {
+        val fontPct = GameModifierBridge.getFontScalePercent(this)
+        val sbPct = GameModifierBridge.getScrollbarScalePercent(this)
+        findViewById<Button>(R.id.btn_mod_font_size)?.text = tr(
+            "字体大小 · $fontPct%",
+            "文字サイズ · $fontPct%",
+            "Font Size · $fontPct%"
+        )
+        findViewById<Button>(R.id.btn_mod_scrollbar)?.text = tr(
+            "滚动条修改 · $sbPct%",
+            "スクロールバー · $sbPct%",
+            "Scrollbar · $sbPct%"
+        )
+    }
+
     private fun refreshSummaryText() {
         val saveDir = currentTarget.saveDir
         val hasGlobal = File(saveDir, "GlobalSave.asd").isFile || File(saveDir, "Collection.asd").isFile
         val floatOn = GameModifierBridge.isFloatingEnabled(this)
         val ctrlOn = GameModifierBridge.isCtrlOverlayEnabled(this)
         val lockCount = GameModifierBridge.getLiveLockCount(this)
+        val fontPct = GameModifierBridge.getFontScalePercent(this)
+        val sbPct = GameModifierBridge.getScrollbarScalePercent(this)
+        refreshUiScaleButtons()
 
         findViewById<TextView>(R.id.mod_target_title).text =
             getString(R.string.save_manager_current_dir, currentTarget.displayName)
         findViewById<TextView>(R.id.mod_target_summary).text = tr(
-            "进度存档 ${currentEntries.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗：${if (floatOn) "开" else "关"} · Ctrl键：${if (ctrlOn) "开" else "关"} · 实时锁定：$lockCount 项",
-            "セーブ ${currentEntries.size} 個 · 全体：${if (hasGlobal) "あり" else "なし"} · Ctrl：${if (ctrlOn) "ON" else "OFF"} · ロック $lockCount 項目",
-            "${currentEntries.size} saves · Global: ${if (hasGlobal) "Yes" else "No"} · Ctrl: ${if (ctrlOn) "ON" else "OFF"} · Locks: $lockCount"
+            "进度存档 ${currentEntries.size} 个 · 全局存档：${if (hasGlobal) "已有" else "无"} · 悬浮窗：${if (floatOn) "开" else "关"} · Ctrl键：${if (ctrlOn) "开" else "关"} · 实时锁定：$lockCount 项 · 字体：$fontPct% · 滚动条：$sbPct%",
+            "セーブ ${currentEntries.size} 個 · 全体：${if (hasGlobal) "あり" else "なし"} · Ctrl：${if (ctrlOn) "ON" else "OFF"} · ロック $lockCount 項目 · 文字：$fontPct% · バー：$sbPct%",
+            "${currentEntries.size} saves · Global: ${if (hasGlobal) "Yes" else "No"} · Ctrl: ${if (ctrlOn) "ON" else "OFF"} · Locks: $lockCount · Font: $fontPct% · Scrollbar: $sbPct%"
         )
     }
 
@@ -267,8 +289,8 @@ class GameModifierActivity : Activity() {
         val listView = findViewById<View>(R.id.mod_save_list)
         if (slots.isEmpty()) {
             emptyView.text = tr(
-                "当前目录暂无进度存档。\n可使用上方“全解锁存档”、“全局存档修改”或“实时锁定设置”。",
-                "進行セーブがありません。\n上部のボタンから全解放やロック設定を利用できます。",
+                "当前目录暂无进度存档。\n可使用上方“全解锁存档”、“全局存档修改”、“实时锁定设置”、“字体大小”或“滚动条修改”。",
+                "進行セーブがありません。\n上部のボタンから全解放・ロック・文字サイズ・スクロールバー設定を利用できます。",
                 "No progress saves in this directory."
             )
             emptyView.visibility = View.VISIBLE
@@ -755,6 +777,173 @@ class GameModifierActivity : Activity() {
                     if (v != null) mod.put(key, v)
                 }
                 onConfirm(mod)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    // =========================================================================
+    // 5. Font Size & Scrollbar Scale Dialogs
+    // =========================================================================
+    private fun showFontScaleDialog() {
+        showScaleSliderDialog(
+            title = tr("字体大小修改", "文字サイズ変更", "Font Size"),
+            description = tr(
+                "调节游戏内对话、界面按钮与卡牌说明文字缩放比例，范围 75%~160%，默认 100%，实时生效且不改动存档文件。",
+                "ゲーム内の会話・UI・カード説明の文字倍率を調整します。範囲 75%~160%、標準 100%。",
+                "Adjust in-game dialogue, UI, and card text scale from 75% to 160%. Default 100%."
+            ),
+            minPct = GameModifierBridge.MIN_FONT_SCALE_PCT,
+            maxPct = GameModifierBridge.MAX_FONT_SCALE_PCT,
+            defaultPct = GameModifierBridge.DEFAULT_FONT_SCALE_PCT,
+            stepPct = 5,
+            currentPct = GameModifierBridge.getFontScalePercent(this),
+            presets = listOf(80, 90, 100, 115, 130, 150),
+            onApply = { pct, isReset ->
+                GameModifierBridge.setFontScalePercent(this, pct)
+                refreshSummaryText()
+                val msg = if (isReset) {
+                    tr("字体大小已恢复默认 100%", "文字サイズを 100% に戻しました", "Font size reset to 100%")
+                } else {
+                    tr("字体大小已设为 $pct%", "文字サイズを $pct% に設定しました", "Font size set to $pct%")
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    private fun showScrollbarScaleDialog() {
+        showScaleSliderDialog(
+            title = tr("滚动条修改", "スクロールバー変更", "Scrollbar Size"),
+            description = tr(
+                "放大游戏内列表与日志滚动条宽度、按钮及滑块触控区域，范围 100%~300%，默认 100%，实时生效方便触屏拖拽。",
+                "リストやログのスクロールバー幅とつまみ操作領域を拡大します。範囲 100%~300%、標準 100%。",
+                "Enlarge in-game scrollbar width and touch thumb area from 100% to 300%. Default 100%."
+            ),
+            minPct = GameModifierBridge.MIN_SCROLLBAR_SCALE_PCT,
+            maxPct = GameModifierBridge.MAX_SCROLLBAR_SCALE_PCT,
+            defaultPct = GameModifierBridge.DEFAULT_SCROLLBAR_SCALE_PCT,
+            stepPct = 10,
+            currentPct = GameModifierBridge.getScrollbarScalePercent(this),
+            presets = listOf(100, 130, 160, 200, 250, 300),
+            onApply = { pct, isReset ->
+                GameModifierBridge.setScrollbarScalePercent(this, pct)
+                refreshSummaryText()
+                val msg = if (isReset) {
+                    tr("滚动条比例已恢复默认 100%", "スクロールバーを 100% に戻しました", "Scrollbar reset to 100%")
+                } else {
+                    tr("滚动条比例已设为 $pct%", "スクロールバーを $pct% に設定しました", "Scrollbar set to $pct%")
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    private fun showScaleSliderDialog(
+        title: String,
+        description: String,
+        minPct: Int,
+        maxPct: Int,
+        defaultPct: Int,
+        stepPct: Int,
+        currentPct: Int,
+        presets: List<Int>,
+        onApply: (Int, Boolean) -> Unit
+    ) {
+        var selectedPct = currentPct.coerceIn(minPct, maxPct)
+        var updatingBar = false
+
+        val scroll = ScrollView(this)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+
+        val descTv = TextView(this).apply {
+            text = description
+            setPadding(0, 0, 0, dp(10))
+        }
+        container.addView(descTv)
+
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        val valueTv = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            textSize = 16f
+        }
+        val seekBar = SeekBar(this).apply {
+            max = maxPct - minPct
+            progress = selectedPct - minPct
+            setPadding(dp(4), dp(8), dp(4), dp(12))
+        }
+
+        fun updateSelected(newPct: Int, syncSeek: Boolean) {
+            selectedPct = newPct.coerceIn(minPct, maxPct)
+            valueTv.text = tr(
+                "当前比例：$selectedPct%",
+                "現在倍率：$selectedPct%",
+                "Current: $selectedPct%"
+            )
+            if (syncSeek) {
+                updatingBar = true
+                seekBar.progress = selectedPct - minPct
+                updatingBar = false
+            }
+        }
+
+        val minusBtn = Button(this).apply {
+            text = "-$stepPct%"
+            setOnClickListener { updateSelected(selectedPct - stepPct, true) }
+        }
+        val plusBtn = Button(this).apply {
+            text = "+$stepPct%"
+            setOnClickListener { updateSelected(selectedPct + stepPct, true) }
+        }
+        headerRow.addView(valueTv)
+        headerRow.addView(minusBtn)
+        headerRow.addView(plusBtn)
+        container.addView(headerRow)
+        container.addView(seekBar)
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (updatingBar) return
+                updateSelected(minPct + progress, false)
+            }
+            override fun onStartTrackingTouch(bar: SeekBar?) {}
+            override fun onStopTrackingTouch(bar: SeekBar?) {}
+        })
+
+        for (chunk in presets.chunked(3)) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            for (preset in chunk) {
+                val btn = Button(this).apply {
+                    text = "$preset%"
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener { updateSelected(preset, true) }
+                }
+                row.addView(btn)
+            }
+            container.addView(row)
+        }
+
+        updateSelected(selectedPct, true)
+        scroll.addView(container)
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(scroll)
+            .setPositiveButton(R.string.ok) { _, _ ->
+                onApply(selectedPct, false)
+            }
+            .setNeutralButton(tr("恢复默认 $defaultPct%", "標準 $defaultPct%", "Reset $defaultPct%")) { _, _ ->
+                onApply(defaultPct, true)
             }
             .setNegativeButton(R.string.cancel, null)
             .show()

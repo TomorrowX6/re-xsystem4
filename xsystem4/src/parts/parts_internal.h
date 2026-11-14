@@ -907,6 +907,14 @@ void parts_do_layout(struct parts *parts);
 void parts_get_layout_size(struct parts *parts, int *w, int *h);
 void parts_update_layout_tree(struct parts *parts);
 
+// modifier UI scale internal helpers
+struct text_style parts_get_effective_text_style(const struct text_style *src);
+struct text_style parts_get_effective_text_style_pct(const struct text_style *src, int pct);
+void parts_text_rerender_all(struct parts *parts, struct parts_text *t);
+void parts_widget_rebuild_label(struct parts *parts);
+void parts_scrollbar_hitbox(struct parts *parts, int state, Rectangle *out_hitbox);
+struct parts_context *parts_get_back_scene(void);
+
 // debug.c
 struct sprite;
 void parts_debug_init(void);

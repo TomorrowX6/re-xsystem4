@@ -50,8 +50,8 @@ Written in pure C/C++, SDL2, and OpenGL ES 3.0, it directly interprets AIN bytec
 - **Non-Destructive MOD Manager**: Install full or incremental MODs online or from local `.zip` / `.rar` / `.7z` archives and folders with automatic vanilla file backup and one-tap **Restore Vanilla (`还原原版`)**.
 - **Built-in Save Manager**: Bidirectional PC save compatibility (`SaveData` v26 `.asd` & `RSave` `.rsd`) with atomic `fsync` writes; import saves from `.zip` / `.rar` / `.7z` archives, folders, or individual files; export saves to ZIP or external folders; and back up, rename, or delete individual files.
 - **Standalone & In-Game Floating Modifier (Default ON)**:
-  - **In-Game Floating Modifier (`悬浮窗修改器`)**: Enabled by default via a draggable overlay icon; provides 11 real-time battle/campaign locks (Max HP, Infinite AP, 999 Combo, Round 1 Lock, One-Hit Kill, Enemy 0 ATK/DEF, Boost & Crit, Infinite Skill Uses, Infinite Zippo, Resources >= 999, 100% Treasure Drop), persistent **Disable Streamer Mode (`关闭主播模式`)** & cheat code submission for MODs, a draggable **`⏩ Ctrl`** latched skip button (enabled by default), and live resource/party/world/card editors.
-  - **Standalone Game Modifier (`游戏修改器`)**: Offline `GlobalSave.asd` / `Collection.asd` and `SaveData*.asd` slot editor, one-click full-unlock save installation with automatic `.modbak` backup, and master toggles for the floating modifier and **`⏩ Ctrl`** skip button (disabling **`⏩ Ctrl`** also blocks summoning it in-game).
+  - **In-Game Floating Modifier (`悬浮窗修改器`)**: Enabled by default via a draggable overlay icon; provides **live Font Size scaling (`75%–160%` with overflow-safe layout adaptation)**, **live Scrollbar width & touch-thumb enlargement (`100%–300%` with swipe-hijack protection)**, 11 real-time battle/campaign locks (Max HP, Infinite AP, 999 Combo, Round 1 Lock, One-Hit Kill, Enemy 0 ATK/DEF, Boost & Crit, Infinite Skill Uses, Infinite Zippo, Resources >= 999, 100% Treasure Drop), persistent **Disable Streamer Mode (`关闭主播模式`)** & cheat code submission for MODs, a draggable **`⏩ Ctrl`** latched skip button (enabled by default), and live resource/party/world/card editors.
+  - **Standalone Game Modifier (`游戏修改器`)**: Offline `GlobalSave.asd` / `Collection.asd` and `SaveData*.asd` slot editor, one-click full-unlock save installation with automatic `.modbak` backup, **Font Size** & **Scrollbar** presets, and master toggles for the floating modifier and **`⏩ Ctrl`** skip button (disabling **`⏩ Ctrl`** also blocks summoning it in-game).
 
 ---
 
@@ -95,8 +95,8 @@ Tap **Local Install (`本地安装`)** on the launcher and choose:
 - **Manage Save Files**: Switch or create save directories per game/MOD, inspect file tags, sizes, and modification timestamps, and export, back up (`.bak`), rename, or delete individual save files.
 
 ### 4. Game Modifier (`游戏修改器` & In-Game Floating Overlay)
-- **In-Game Floating Modifier**: Enabled by default when launching a game (draggable icon in the top-left corner). Tap it anytime to toggle real-time battle/resource locks, disable MOD streamer mode (persisted automatically across restarts), enter MOD cheat codes, toggle the draggable **`⏩ Ctrl`** skip button, or edit live campaign/battle stats.
-- **Launcher Game Modifier**: Edit `GlobalSave.asd` / `Collection.asd` and individual `SaveData*.asd` slots offline, install/restore full-unlock saves, or toggle the floating modifier icon and **`⏩ Ctrl`** skip button on/off (enabled by default; turning **`⏩ Ctrl`** off also disables summoning it in-game).
+- **In-Game Floating Modifier**: Enabled by default when launching a game (draggable icon in the top-left corner). Tap it anytime to preview and adjust **Font Size** and **Scrollbar Size** live (without modifying save files), toggle real-time battle/resource locks, disable MOD streamer mode (persisted automatically across restarts), enter MOD cheat codes, toggle the draggable **`⏩ Ctrl`** skip button, or edit live campaign/battle stats.
+- **Launcher Game Modifier**: Edit `GlobalSave.asd` / `Collection.asd` and individual `SaveData*.asd` slots offline, install/restore full-unlock saves, configure **Font Size** and **Scrollbar Size**, or toggle the floating modifier icon and **`⏩ Ctrl`** skip button on/off (enabled by default; turning **`⏩ Ctrl`** off also disables summoning it in-game).
 
 ---
 

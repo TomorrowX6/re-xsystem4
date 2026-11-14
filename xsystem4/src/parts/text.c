@@ -22,7 +22,42 @@
 #include "system4/utfsjis.h"
 
 #include "xsystem4.h"
+#include "parts.h"
 #include "parts_internal.h"
+
+static int s_modifier_font_scale_pct = 100;
+
+void parts_set_modifier_font_scale(int pct)
+{
+	if (pct < 70) pct = 70;
+	if (pct > 180) pct = 180;
+	s_modifier_font_scale_pct = pct;
+}
+
+int parts_get_modifier_font_scale(void)
+{
+	return s_modifier_font_scale_pct;
+}
+
+struct text_style parts_get_effective_text_style_pct(const struct text_style *src, int pct)
+{
+	struct text_style eff = *src;
+	if (pct != 100 && eff.size > 0.0f) {
+		float scaled = roundf(eff.size * ((float)pct / 100.0f));
+		if (scaled < 8.0f)
+			scaled = 8.0f;
+		if (fabsf(scaled - eff.size) > 0.01f) {
+			eff.size = scaled;
+			eff.font_size = NULL;
+		}
+	}
+	return eff;
+}
+
+struct text_style parts_get_effective_text_style(const struct text_style *src)
+{
+	return parts_get_effective_text_style_pct(src, s_modifier_font_scale_pct);
+}
 
 static int extract_sjis_char(const char *src, char *dst)
 {
@@ -176,6 +211,7 @@ static uint32_t glyph_key_hash(const struct parts_glyph_key *k)
 
 const char *parts_text_append_char(struct parts_text *t, const char *str)
 {
+	struct text_style eff_ts = parts_get_effective_text_style(&t->ts);
 	if (!t->nr_lines) {
 		t->lines = xcalloc(1, sizeof(struct parts_text_line));
 		t->lines[0].line_space = t->line_space;
@@ -184,7 +220,7 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 	if (*str == '\n') {
 		t->lines = xrealloc_array(t->lines, t->nr_lines, t->nr_lines + 1,
 				sizeof(struct parts_text_line));
-		t->lines[t->nr_lines].height = text_style_height(&t->ts);
+		t->lines[t->nr_lines].height = text_style_height(&eff_ts);
 		t->lines[t->nr_lines].line_space = t->line_space;
 		t->nr_lines++;
 		return str + 1;
@@ -195,7 +231,7 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 			sizeof(struct parts_text_char));
 	struct parts_text_char *ch = &line->chars[line->nr_chars++];
 
-	ch->off = text_style_offset(&t->ts);
+	ch->off = text_style_offset(&eff_ts);
 	memset(ch->ch, 0, sizeof(ch->ch));
 	int len = extract_sjis_char(str, ch->ch);
 
@@ -203,19 +239,19 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 	struct parts_glyph_key key;
 	memset(&key, 0, sizeof(key));
 	memcpy(key.ch, ch->ch, sizeof(key.ch));
-	key.face = t->ts.face;
-	key.size = t->ts.size;
-	key.bold_width = t->ts.bold_width;
-	key.weight = t->ts.weight;
-	key.edge_left = t->ts.edge_left;
-	key.edge_up = t->ts.edge_up;
-	key.edge_right = t->ts.edge_right;
-	key.edge_down = t->ts.edge_down;
-	key.color = t->ts.color;
-	key.edge_color = t->ts.edge_color;
-	key.scale_x = t->ts.scale_x;
-	key.space_scale_x = t->ts.space_scale_x;
-	key.font_spacing = t->ts.font_spacing;
+	key.face = eff_ts.face;
+	key.size = eff_ts.size;
+	key.bold_width = eff_ts.bold_width;
+	key.weight = eff_ts.weight;
+	key.edge_left = eff_ts.edge_left;
+	key.edge_up = eff_ts.edge_up;
+	key.edge_right = eff_ts.edge_right;
+	key.edge_down = eff_ts.edge_down;
+	key.color = eff_ts.color;
+	key.edge_color = eff_ts.edge_color;
+	key.scale_x = eff_ts.scale_x;
+	key.space_scale_x = eff_ts.space_scale_x;
+	key.font_spacing = eff_ts.font_spacing;
 	key.advance_edges = gfx_text_advance_edges;
 
 	uint32_t hash = glyph_key_hash(&key);
@@ -247,8 +283,8 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 		}
 	}
 
-	int width = gfx_size_char(&t->ts, ch->ch);
-	int height = text_style_height(&t->ts);
+	int width = gfx_size_char(&eff_ts, ch->ch);
+	int height = text_style_height(&eff_ts);
 	if (slot >= 0) {
 		struct parts_glyph_cache_entry *e = &glyph_cache[slot];
 		if (e->valid) {
@@ -257,7 +293,7 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 			gfx_delete_texture(&e->t);
 		}
 		gfx_init_texture_rgba(&e->t, width, height, (SDL_Color){0,0,0,0});
-		e->advance = ceilf(gfx_render_textf(&e->t, 0, 0, ch->ch, &t->ts, false));
+		e->advance = ceilf(gfx_render_textf(&e->t, 0, 0, ch->ch, &eff_ts, false));
 		e->height = height;
 		e->key = key;
 		e->hash = hash;
@@ -271,7 +307,7 @@ const char *parts_text_append_char(struct parts_text *t, const char *str)
 		ch->cache_idx = slot;
 	} else {
 		gfx_init_texture_rgba(&ch->t, width, height, (SDL_Color){0,0,0,0});
-		ch->advance = ceilf(gfx_render_textf(&ch->t, 0, 0, ch->ch, &t->ts, false));
+		ch->advance = ceilf(gfx_render_textf(&ch->t, 0, 0, ch->ch, &eff_ts, false));
 		ch->cache_idx = -1;
 	}
 	line->width += ch->advance;
@@ -337,6 +373,11 @@ static void parts_text_rerender(struct parts *parts, struct parts_text *t)
 	parts_text_append(parts, t, text);
 	free_string(text);
 	parts_dirty(parts);
+}
+
+void parts_text_rerender_all(struct parts *parts, struct parts_text *t)
+{
+	parts_text_rerender(parts, t);
 }
 
 static void parts_text_clear(struct parts *parts, int state)

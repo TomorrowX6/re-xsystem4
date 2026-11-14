@@ -456,4 +456,12 @@ int PE_get_layoutbox_padding_bottom(int parts_no);
 int PE_get_layoutbox_padding_left(int parts_no);
 int PE_get_layoutbox_padding_right(int parts_no);
 
+// Modifier UI scale hooks (100 = 100% original)
+void parts_set_modifier_font_scale(int pct);
+int parts_get_modifier_font_scale(void);
+void parts_refresh_live_font_scale(void);
+void parts_set_modifier_scrollbar_scale(int pct);
+int parts_get_modifier_scrollbar_scale(void);
+void parts_refresh_live_scrollbar_scale(void);
+
 #endif /* SYSTEM4_PARTS_H */
