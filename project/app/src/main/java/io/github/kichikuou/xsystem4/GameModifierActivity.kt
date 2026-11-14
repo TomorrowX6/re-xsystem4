@@ -185,7 +185,7 @@ class GameModifierActivity : Activity() {
             val saveDir = item.savedir ?: File(savesRoot, dirName)
             saveDir.mkdirs()
             found[dirName] = SaveTarget(
-                displayName = "${item.name} ($dirName)",
+                displayName = if (item.name == dirName) item.name else "${item.name} · $dirName",
                 dirName = dirName,
                 saveDir = saveDir,
                 externalGameDir = item.path
@@ -267,9 +267,9 @@ class GameModifierActivity : Activity() {
         val listView = findViewById<View>(R.id.mod_save_list)
         if (slots.isEmpty()) {
             emptyView.text = tr(
-                "当前目录暂无进度存档 (LocalSave*.asd)。\n可使用上方“全解锁存档”、“全局存档修改”或“实时锁定设置”。",
-                "進行セーブ (LocalSave*.asd) がありません。\n上部のボタンから全解放やロック設定を利用できます。",
-                "No progress saves (LocalSave*.asd) in this directory."
+                "当前目录暂无进度存档。\n可使用上方“全解锁存档”、“全局存档修改”或“实时锁定设置”。",
+                "進行セーブがありません。\n上部のボタンから全解放やロック設定を利用できます。",
+                "No progress saves in this directory."
             )
             emptyView.visibility = View.VISIBLE
             listView.visibility = View.GONE
@@ -319,7 +319,7 @@ class GameModifierActivity : Activity() {
                     refreshList()
                     Toast.makeText(
                         this,
-                        tr("已写入全解锁存档 ($count 个文件)", "全解放セーブを適用しました", "Installed $count unlock files"),
+                        tr("已写入全解锁存档 · $count 个文件", "全解放セーブを適用しました", "Installed $count unlock files"),
                         Toast.LENGTH_SHORT
                     ).show()
                 } else if (which == 1 && hasBak) {
@@ -376,7 +376,7 @@ class GameModifierActivity : Activity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle(tr("全局存档 (CP:$cp · 勋章:$medal · 经验+$expUp%)", "全体セーブ (CP:$cp · メダル:$medal)", "Global Save (CP:$cp)"))
+            .setTitle(tr("全局存档 · CP:$cp · 勋章:$medal · 经验+$expUp%", "全体セーブ · CP:$cp · メダル:$medal", "Global Save · CP:$cp"))
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> {
@@ -452,10 +452,10 @@ class GameModifierActivity : Activity() {
     private fun showFloatingLocksDialog() {
         val lockDefs = listOf(
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
-            GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
+            GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP", "AP 99ロック", "Lock Infinite AP"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
             GameModifierBridge.LOCK_BATTLE_ROUND_1 to tr("锁定战斗回合为1", "戦闘ラウンド1固定", "Lock Round to 1"),
-            GameModifierBridge.LOCK_ONE_HIT_KILL to tr("敌方1血秒杀", "敵HP1（一撃撃破）", "One-Hit Kill (Enemy HP=1)"),
+            GameModifierBridge.LOCK_ONE_HIT_KILL to tr("敌方1血秒杀", "敵HP1・一撃撃破", "One-Hit Kill"),
             GameModifierBridge.LOCK_ENEMY_ZERO_ATK to tr("敌方0攻击0防御", "敵の攻防0化", "Enemy 0 ATK/DEF"),
             GameModifierBridge.LOCK_LEADER_BOOST_CRIT to tr("全员蓄力必暴连击", "全員ブースト・必殺", "All Leaders Boost & Crit"),
             GameModifierBridge.LOCK_INFINITE_SKILL_USE to tr("技能无限使用次数", "スキル回数無限", "Infinite Skill Uses"),
@@ -532,7 +532,7 @@ class GameModifierActivity : Activity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("${entry.file.name} (${tr("回合", "T", "Turn")} $turn · ${tr("食券", "食券", "Food")} $food · ${tr("勋章", "勲章", "Medal")} $honor · HP $hp/$maxHp)")
+            .setTitle("${entry.file.name} · ${tr("回合", "T", "Turn")} $turn · ${tr("食券", "食券", "Food")} $food · ${tr("勋章", "勲章", "Medal")} $honor · HP $hp/$maxHp")
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> {
@@ -626,7 +626,7 @@ class GameModifierActivity : Activity() {
         val fields = listOf(
             Triple("turn", tr("当前回合", "現在ターン", "Current Turn"), info.optInt("turn", 1)),
             Triple("chapter", tr("当前章节", "現在チャプター", "Chapter"), info.optInt("chapter", 0)),
-            Triple("difficulty", tr("难度 (0易~10难)", "難易度 (0~10)", "Difficulty (0~10)"), info.optInt("difficulty", 1)),
+            Triple("difficulty", tr("难度 0~10", "難易度 0~10", "Difficulty 0~10"), info.optInt("difficulty", 1)),
             Triple("foodTicket", tr("食券数量", "食券", "Food Tickets"), info.optInt("foodTicket", 0)),
             Triple("honor", tr("勋章数量", "勲章", "Medals"), info.optInt("honor", 0)),
             Triple("friendPoint", tr("友情点数", "友好ポイント", "Friend Points"), info.optInt("friendPoint", 0)),
@@ -646,7 +646,7 @@ class GameModifierActivity : Activity() {
             Triple("partyHp", tr("部队当前生命", "現在HP", "Party HP"), info.optInt("partyHp", 1000)),
             Triple("partyMaxHp", tr("部队最大生命", "最大HP", "Party Max HP"), info.optInt("partyMaxHp", 1000)),
             Triple("partyAvailCount", tr("每回合出击人数", "出撃枠数", "Deploy Slots"), info.optInt("partyAvailCount", 4)),
-            Triple("partyIsFixStatus", tr("锁定属性不被重算(0/1)", "ステータス固定(0/1)", "Lock Stats (0/1)"), info.optInt("partyIsFixStatus", 0)),
+            Triple("partyIsFixStatus", tr("锁定属性不被重算 0/1", "ステータス固定 0/1", "Lock Stats 0/1"), info.optInt("partyIsFixStatus", 0)),
             Triple("partyAtk", tr("部队总攻击力", "総攻撃力", "Total ATK"), info.optInt("partyAtk", 500)),
             Triple("atkPerPhys", tr("物理攻击加成%", "物理攻撃%", "Phys ATK %"), info.optInt("atkPerPhys", 0)),
             Triple("atkPerMag", tr("魔法攻击加成%", "魔法攻撃%", "Mag ATK %"), info.optInt("atkPerMag", 0)),
@@ -688,7 +688,7 @@ class GameModifierActivity : Activity() {
             Triple("setCardCount", tr("全卡牌叠卡设为N张", "全カード枚数指定", "Set All Cards Count"), 99),
             Triple("cardAtkBonus", tr("全卡牌攻击加成", "全カード攻撃加算", "All Cards ATK Bonus"), 999),
             Triple("cardHpBonus", tr("全卡牌生命加成", "全カードHP加算", "All Cards HP Bonus"), 999),
-            Triple("setCharStar", tr("全角色星级 (1~5)", "全キャラ★ (1~5)", "All Chars Star (1~5)"), 5),
+            Triple("setCharStar", tr("全角色星级 1~5", "全キャラ★ 1~5", "All Chars Star 1~5"), 5),
             Triple("setCharExp", tr("全角色经验值", "全キャラ経験値", "All Chars EXP"), 999999)
         )
         showNumberEditDialog("${entry.file.name} - ${tr("卡牌与角色", "カード・キャラ", "Cards & Chars")}", fields) { mod ->

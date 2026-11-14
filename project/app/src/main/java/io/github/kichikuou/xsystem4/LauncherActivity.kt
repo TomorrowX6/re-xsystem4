@@ -269,11 +269,19 @@ class LauncherActivity : Activity(), GameListObserver {
 
     private fun confirmOnlineBaseGameInstall() {
         if (gameList.installState is InstallState.Installing) return
+        val lines = arrayOf(
+            getString(R.string.online_line_edgeone),
+            getString(R.string.online_line_cloudflare)
+        )
         AlertDialog.Builder(this)
-            .setTitle(R.string.online_base_confirm_title)
-            .setMessage(R.string.online_base_confirm_msg)
-            .setPositiveButton(R.string.ok) { _, _ ->
-                gameList.installOnlineBaseGame()
+            .setTitle(R.string.online_select_line_title)
+            .setItems(lines) { _, which ->
+                val chosen = if (which == 0) {
+                    BaseGameCdnLine.EDGEONE
+                } else {
+                    BaseGameCdnLine.CLOUDFLARE
+                }
+                gameList.installOnlineBaseGame(chosen)
                 renderInstallState(gameList.installState)
             }
             .setNegativeButton(R.string.cancel, null)

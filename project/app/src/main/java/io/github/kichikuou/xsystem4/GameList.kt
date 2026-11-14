@@ -242,7 +242,7 @@ class GameList(activity: Activity) {
         }
     }
 
-    fun installOnlineBaseGame() {
+    fun installOnlineBaseGame(cdnLine: BaseGameCdnLine = BaseGameCdnLine.EDGEONE) {
         if (installJob?.isActive == true) return
         pendingModAuthRetry = null
         installState = InstallState.Installing(
@@ -259,6 +259,7 @@ class GameList(activity: Activity) {
                     OnlineInstaller.installBaseGameFromCloud(
                         context = context,
                         storagePath = storagePath,
+                        cdnBaseUrl = cdnLine.baseUrl,
                         checkCancelled = {
                             if (myJob?.isActive == false) {
                                 throw CancellationException()

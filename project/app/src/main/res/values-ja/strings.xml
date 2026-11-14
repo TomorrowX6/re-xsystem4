@@ -123,6 +123,9 @@
     <string name="game_opt_dir">フォルダからインストール</string>
     <string name="online_base_confirm_title">ゲーム本体のオンライン導入</string>
     <string name="online_base_confirm_msg">クラウドから『ランス10』中国語版本体をダウンロードして自動導入します。約 4 GB の空き容量が必要です。レジューム再開に対応しています。</string>
+    <string name="online_select_line_title">ダウンロード回線を選択</string>
+    <string name="online_line_edgeone">EdgeOne 回線</string>
+    <string name="online_line_cloudflare">Cloudflare 回線</string>
     <string name="online_fetching_manifest">マニフェストを取得中…</string>
     <string name="online_base_download_progress">本体ダウンロード中 %1$d/%2$d · %3$d%% · %4$s\n%5$d / %6$d MB · %7$s</string>
     <string name="online_verifying_extracting">%1$s を検証・展開中…</string>

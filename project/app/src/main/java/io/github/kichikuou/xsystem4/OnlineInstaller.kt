@@ -121,8 +121,14 @@ data class OnlineProgressUpdate(
     val permille: Int? = null
 )
 
+enum class BaseGameCdnLine(val baseUrl: String) {
+    EDGEONE("https://r10.000.moe"),
+    CLOUDFLARE("https://r10-src.000.moe")
+}
+
 object OnlineInstaller {
-    const val BASE_GAME_CDN_URL = "https://rance10-cn-cdn.azusacv.workers.dev"
+    const val BASE_GAME_CDN_URL = "https://r10.000.moe"
+    const val BASE_GAME_CF_CDN_URL = "https://r10-src.000.moe"
     const val MOD_PORTAL_BASE_URL = "https://rance10sns.cn"
     const val DEFAULT_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
@@ -507,11 +513,13 @@ object OnlineInstaller {
     fun installBaseGameFromCloud(
         context: Context,
         storagePath: File,
+        cdnBaseUrl: String = BASE_GAME_CDN_URL,
         checkCancelled: () -> Unit,
         onProgress: (OnlineProgressUpdate) -> Unit
     ): File {
         onProgress(OnlineProgressUpdate(context.getString(R.string.online_fetching_manifest), null))
-        val manifest = fetchManifest(checkCancelled)
+        val cleanBaseUrl = cdnBaseUrl.trimEnd('/')
+        val manifest = fetchManifest(cleanBaseUrl, checkCancelled)
         if (manifest.entries.isEmpty()) {
             throw GameList.InstallFailureException(R.string.online_download_error)
         }
@@ -561,7 +569,7 @@ object OnlineInstaller {
             val partFile = File(finalFile.parentFile, "${finalFile.name}.part")
             val partMetaFile = File("${partFile.path}.meta")
             val encodedKey = entry.key.split('/').joinToString("/") { Uri.encode(it) }
-            val fileUrl = "$BASE_GAME_CDN_URL/files/$encodedKey"
+            val fileUrl = "$cleanBaseUrl/files/$encodedKey"
 
             downloadFileWithResume(
                 url = fileUrl,
@@ -784,14 +792,14 @@ object OnlineInstaller {
         return File(stagingDir, ".extracted_${safe}.done")
     }
 
-    private fun fetchManifest(checkCancelled: () -> Unit): OnlineManifest {
+    private fun fetchManifest(cdnBaseUrl: String, checkCancelled: () -> Unit): OnlineManifest {
         var lastErr: Exception? = null
         for (attempt in 0 until 3) {
             checkCancelled()
             var conn: HttpURLConnection? = null
             try {
                 conn = openFollowingRedirects(
-                    initialUrl = "$BASE_GAME_CDN_URL/manifest.json",
+                    initialUrl = "$cdnBaseUrl/manifest.json",
                     headers = mapOf(
                         "User-Agent" to DEFAULT_USER_AGENT,
                         "Accept" to "application/json",
@@ -856,7 +864,7 @@ object OnlineInstaller {
         val metaFile = File("${destPartFile.path}.meta")
         var knownTotal = expectedSize
 
-        val savedMeta = readSavedMeta(metaFile, url)
+        val savedMeta = readSavedMeta(metaFile, url, expectedSha256)
         if (savedMeta == null && metaFile.isFile) {
             destPartFile.delete()
             metaFile.delete()
@@ -903,12 +911,12 @@ object OnlineInstaller {
                 }
 
                 val respEtag = conn.getHeaderField("ETag")?.trim()
-                val curSavedEtag = readSavedMeta(metaFile, url)?.etag
+                val curSavedEtag = readSavedMeta(metaFile, url, expectedSha256)?.etag
                 var appendMode = false
 
                 when (code) {
                     HttpURLConnection.HTTP_PARTIAL -> {
-                        if (curSavedEtag != null && respEtag != null && curSavedEtag != respEtag) {
+                        if (expectedSha256.isNullOrBlank() && curSavedEtag != null && respEtag != null && curSavedEtag != respEtag) {
                             conn.disconnect()
                             conn = null
                             destPartFile.delete()
@@ -960,8 +968,8 @@ object OnlineInstaller {
                 if (knownTotal > 0L) {
                     ensureAvailableSpace(destPartFile.parentFile ?: destPartFile, (knownTotal - curLen).coerceAtLeast(0L))
                 }
-                if (!respEtag.isNullOrEmpty() || knownTotal > 0L) {
-                    writeSavedMeta(metaFile, url, respEtag ?: curSavedEtag, knownTotal)
+                if (!respEtag.isNullOrEmpty() || knownTotal > 0L || !expectedSha256.isNullOrBlank()) {
+                    writeSavedMeta(metaFile, url, respEtag ?: curSavedEtag, knownTotal, expectedSha256)
                 }
 
                 var speedWindowStartMs = SystemClock.elapsedRealtime()
@@ -1100,11 +1108,15 @@ object OnlineInstaller {
         }
     }
 
-    private fun readSavedMeta(metaFile: File, expectedUrl: String): SavedMeta? {
+    private fun readSavedMeta(metaFile: File, expectedUrl: String, expectedSha256: String?): SavedMeta? {
         if (!metaFile.isFile) return null
         return try {
             val j = JSONObject(metaFile.readText())
-            if (j.optString("url") != expectedUrl) return null
+            val savedSha = j.optString("sha256")
+            val shaMatched = !expectedSha256.isNullOrBlank() &&
+                savedSha.isNotEmpty() &&
+                savedSha.equals(expectedSha256, ignoreCase = true)
+            if (!shaMatched && j.optString("url") != expectedUrl) return null
             SavedMeta(
                 etag = j.optString("etag").takeIf { it.isNotEmpty() },
                 totalBytes = j.optLong("totalBytes", -1L)
@@ -1114,11 +1126,12 @@ object OnlineInstaller {
         }
     }
 
-    private fun writeSavedMeta(metaFile: File, url: String, etag: String?, totalBytes: Long) {
+    private fun writeSavedMeta(metaFile: File, url: String, etag: String?, totalBytes: Long, sha256: String?) {
         try {
             val j = JSONObject().put("url", url)
             if (!etag.isNullOrEmpty()) j.put("etag", etag)
             if (totalBytes > 0L) j.put("totalBytes", totalBytes)
+            if (!sha256.isNullOrBlank()) j.put("sha256", sha256)
             metaFile.writeText(j.toString())
         } catch (_: Throwable) {
         }

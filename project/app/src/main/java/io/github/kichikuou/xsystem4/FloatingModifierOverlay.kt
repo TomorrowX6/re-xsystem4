@@ -214,7 +214,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         }
 
         val streamerItemLabel = if (isStreamerDisabled) {
-            tr("关闭主播模式 (当前已关闭)", "配信者モード解除 (現在OFF)", "Disable Streamer Mode (OFF)")
+            tr("关闭主播模式 · 已关闭", "配信者モード解除 · 現在OFF", "Disable Streamer Mode · OFF")
         } else {
             tr("关闭主播模式", "配信者モード解除", "Disable Streamer Mode")
         }
@@ -226,7 +226,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         }
 
         val menuEntries = mutableListOf<Pair<String, () -> Unit>>(
-            tr("实时锁定开关 (已开启 $lockCount 项)…", "リアルタイムロック ($lockCount 項目)…", "Live Locks ($lockCount ON)…") to { showLocksDialog() },
+            tr("实时锁定开关 · 已开启 $lockCount 项…", "リアルタイムロック · $lockCount 項目…", "Live Locks · $lockCount ON…") to { showLocksDialog() },
             streamerItemLabel to { triggerDisableStreamerModeInGame(inGame) }
         )
         if (ctrlEnabled) {
@@ -237,7 +237,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
                     }
                     Toast.makeText(
                         activity,
-                        if (nextVisible) tr("已显示 Ctrl 快进悬浮键（单击锁定快进，可自由拖动，点击黑边也可显隐）", "Ctrl早送りボタンを表示しました", "Ctrl skip button shown")
+                        if (nextVisible) tr("已显示 Ctrl 快进悬浮键", "Ctrl早送りボタンを表示しました", "Ctrl skip button shown")
                         else tr("已隐藏 Ctrl 快进悬浮键", "Ctrl早送りボタンを非表示にしました", "Ctrl skip button hidden"),
                         Toast.LENGTH_SHORT
                     ).show()
@@ -274,10 +274,10 @@ class FloatingModifierOverlay(private val activity: Activity) {
     private fun showLocksDialog() {
         val lockDefs = listOf(
             GameModifierBridge.LOCK_PARTY_MAX_HP to tr("锁定我方满生命", "味方HP最大ロック", "Lock Party Max HP"),
-            GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP (99)", "AP 99ロック", "Lock Infinite AP (99)"),
+            GameModifierBridge.LOCK_INFINITE_AP to tr("锁定无限AP", "AP 99ロック", "Lock Infinite AP"),
             GameModifierBridge.LOCK_BATTLE_COMBO to tr("锁定999连击加成", "999コンボロック", "Lock 999 Combo"),
             GameModifierBridge.LOCK_BATTLE_ROUND_1 to tr("锁定战斗回合为1", "戦闘ラウンド1固定", "Lock Round to 1"),
-            GameModifierBridge.LOCK_ONE_HIT_KILL to tr("敌方1血秒杀", "敵HP1（一撃撃破）", "One-Hit Kill (Enemy HP=1)"),
+            GameModifierBridge.LOCK_ONE_HIT_KILL to tr("敌方1血秒杀", "敵HP1・一撃撃破", "One-Hit Kill"),
             GameModifierBridge.LOCK_ENEMY_ZERO_ATK to tr("敌方0攻击0防御", "敵の攻防0化", "Enemy 0 ATK/DEF"),
             GameModifierBridge.LOCK_LEADER_BOOST_CRIT to tr("全员蓄力必暴连击", "全員ブースト・必殺", "All Leaders Boost & Crit"),
             GameModifierBridge.LOCK_INFINITE_SKILL_USE to tr("技能无限使用次数", "スキル回数無限", "Infinite Skill Uses"),
@@ -314,7 +314,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         }
         val tip = TextView(activity).apply {
             text = tr(
-                "输入后自动解禁限制并提交生效（无需外接键盘按0，不含双引号）：",
+                "输入后自动解禁限制并提交生效：",
                 "入力すると自動的に制限を解除してMODチートを実行します：",
                 "Automatically unlocks restrictions and submits MOD cheat:"
             )
@@ -331,7 +331,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
         container.addView(et)
 
         AlertDialog.Builder(activity)
-            .setTitle(tr("输入作弊码 (日不落MOD)", "チートコード入力 (MOD)", "Enter Cheat Code (MOD)"))
+            .setTitle(tr("输入作弊码", "チートコード入力", "Enter Cheat Code"))
             .setView(container)
             .setPositiveButton(tr("执行", "実行", "Apply")) { _, _ ->
                 val code = et.text.toString().trim().trim('"', '“', '”')
@@ -368,27 +368,27 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showCheatCodePresetsDialog() {
         val presets = listOf(
-            "灌注Eins陈谢谢喵" to tr("关闭主播模式 (灌注Eins陈谢谢喵)", "配信者モード解除 (灌注Eins陈谢谢喵)", "Disable Streamer Mode (灌注Eins陈谢谢喵)"),
-            "界徐盛" to tr("解禁全部作弊码限制 (界徐盛，修改器也会自动解禁)", "全チート制限解除 (界徐盛)", "Unlock All Cheat Restrictions (界徐盛)"),
-            "whosyourdaddy" to tr("击杀当前敌人 (whosyourdaddy)", "敵を即撃破 (whosyourdaddy)", "Kill Enemy (whosyourdaddy)"),
-            "血量全满" to tr("战斗中我方血量全满 (血量全满)", "戦闘中の味方HP全回復", "Full Party HP in Battle (血量全满)"),
-            "重开" to tr("重新开始当前战斗 (重开)", "現在の戦闘をやり直す", "Restart Battle (重开)"),
-            "打败哈尼王" to tr("开启兰斯世界模式 (打败哈尼王)", "ランスワールド解放", "Unlock Rance World (打败哈尼王)"),
-            "111" to tr("遗物图鉴全展示 (111)", "遺物図鑑全表示 (111)", "Show All Relics (111)"),
-            "panzer" to tr("获得游戏管理者卡牌 (panzer)", "ゲーム管理者獲得 (panzer)", "Get Game Admin Card (panzer)"),
-            "餐券10" to tr("增加10张餐券 (餐券10，可改数字)", "食券+10 (数字変更可)", "Add 10 Food Tickets (餐券10)"),
-            "部队点数up10" to tr("增加10点部队点数 (部队点数up10，可改数字)", "部隊P+10 (数字変更可)", "Add 10 Party Points (部队点数up10)"),
-            "exp道具" to tr("获得1个EXP道具 (exp道具)", "EXPアイテム獲得", "Get 1 EXP Item (exp道具)"),
-            "难度up4" to tr("难度+4 (难度up4，可改负数降难度)", "難易度+4 (負数で低下)", "Difficulty +4 (难度up4)"),
-            "4000flag200" to tr("等级上限额外+200 (4000flag200)", "Lv上限+200 (4000flag200)", "Level Cap +200 (4000flag200)"),
-            "1505flag1" to tr("开启装备解封模式 (1505flag1)", "装備解放モードON (1505flag1)", "Unlock Equipment Mode (1505flag1)"),
-            "1522flag1" to tr("重置任务技能状态 (1522flag1)", "クエストスキル回数リセット", "Reset Quest Skills (1522flag1)"),
-            "2222flag0" to tr("清空敌方盾与复生 (2222flag0)", "敵の盾・蘇生解除 (2222flag0)", "Clear Enemy Shield/Revive (2222flag0)"),
-            "2233flag0" to tr("清空敌方自动恢复次数 (2233flag0)", "敵の自動回復解除 (2233flag0)", "Clear Enemy Auto-Heal (2233flag0)"),
-            "Lv42 兰斯卡牌追加" to tr("追加指定卡牌模板 (Lv42 兰斯卡牌追加)", "指定カード追加テンプレート", "Add Card Template (Lv42 兰斯卡牌追加)"),
-            "技能识别" to tr("识别正中间角色技能编号 (技能识别)", "中央キャラのスキルID確認", "Identify Center Leader Skills (技能识别)"),
-            "装备识别" to tr("识别当前武器与防具代码 (装备识别)", "現在装備のID確認", "Identify Current Equipment IDs (装备识别)"),
-            "梗概关闭" to tr("关闭梗概模式 (梗概关闭)", "ダイジェストモードOFF", "Disable Summary Mode (梗概关闭)")
+            "灌注Eins陈谢谢喵" to tr("关闭主播模式 · 灌注Eins陈谢谢喵", "配信者モード解除 · 灌注Eins陈谢谢喵", "Disable Streamer Mode · 灌注Eins陈谢谢喵"),
+            "界徐盛" to tr("解禁全部作弊码限制 · 界徐盛", "全チート制限解除 · 界徐盛", "Unlock All Cheat Restrictions · 界徐盛"),
+            "whosyourdaddy" to tr("击杀当前敌人 · whosyourdaddy", "敵を即撃破 · whosyourdaddy", "Kill Enemy · whosyourdaddy"),
+            "血量全满" to tr("战斗中我方血量全满", "戦闘中の味方HP全回復", "Full Party HP in Battle"),
+            "重开" to tr("重新开始当前战斗", "現在の戦闘をやり直す", "Restart Battle"),
+            "打败哈尼王" to tr("开启兰斯世界模式 · 打败哈尼王", "ランスワールド解放", "Unlock Rance World · 打败哈尼王"),
+            "111" to tr("遗物图鉴全展示 · 111", "遺物図鑑全表示 · 111", "Show All Relics · 111"),
+            "panzer" to tr("获得游戏管理者卡牌 · panzer", "ゲーム管理者獲得 · panzer", "Get Game Admin Card · panzer"),
+            "餐券10" to tr("增加10张餐券 · 餐券10", "食券+10 · 餐券10", "Add 10 Food Tickets · 餐券10"),
+            "部队点数up10" to tr("增加10点部队点数 · 部队点数up10", "部隊P+10 · 部队点数up10", "Add 10 Party Points · 部队点数up10"),
+            "exp道具" to tr("获得1个EXP道具 · exp道具", "EXPアイテム獲得", "Get 1 EXP Item · exp道具"),
+            "难度up4" to tr("难度+4 · 难度up4", "難易度+4 · 难度up4", "Difficulty +4 · 难度up4"),
+            "4000flag200" to tr("等级上限额外+200 · 4000flag200", "Lv上限+200 · 4000flag200", "Level Cap +200 · 4000flag200"),
+            "1505flag1" to tr("开启装备解封模式 · 1505flag1", "装備解放モードON · 1505flag1", "Unlock Equipment Mode · 1505flag1"),
+            "1522flag1" to tr("重置任务技能状态 · 1522flag1", "クエストスキル回数リセット", "Reset Quest Skills · 1522flag1"),
+            "2222flag0" to tr("清空敌方盾与复生 · 2222flag0", "敵の盾・蘇生解除 · 2222flag0", "Clear Enemy Shield/Revive · 2222flag0"),
+            "2233flag0" to tr("清空敌方自动恢复次数 · 2233flag0", "敵の自動回復解除 · 2233flag0", "Clear Enemy Auto-Heal · 2233flag0"),
+            "Lv42 兰斯卡牌追加" to tr("追加指定卡牌模板 · Lv42 兰斯卡牌追加", "指定カード追加テンプレート", "Add Card Template · Lv42 兰斯卡牌追加"),
+            "技能识别" to tr("识别正中间角色技能编号", "中央キャラのスキルID確認", "Identify Center Leader Skills"),
+            "装备识别" to tr("识别当前武器与防具代码", "現在装備のID確認", "Identify Current Equipment IDs"),
+            "梗概关闭" to tr("关闭梗概模式", "ダイジェストモードOFF", "Disable Summary Mode")
         )
         val labels = presets.map { it.second }.toTypedArray()
         AlertDialog.Builder(activity)
@@ -406,7 +406,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showBattleQuickDialog() {
         val items = arrayOf(
-            tr("敌方HP设为1 (秒杀)", "敵HPを1にする", "Set Enemy HP = 1"),
+            tr("敌方HP设为1", "敵HPを1にする", "Set Enemy HP = 1"),
             tr("废除敌方攻击与防御", "敵の攻防を0にする", "Set Enemy ATK/DEF = 0"),
             tr("我方生命回满", "味方HP全回復", "Refill Party HP"),
             tr("AP设为99 + 连击999 + 回合1", "AP99＋999コンボ＋R1", "AP 99 + Combo 999 + Round 1"),
@@ -446,13 +446,13 @@ class FloatingModifierOverlay(private val activity: Activity) {
 
     private fun showOneClickBoostDialog() {
         val items = arrayOf(
-            tr("一键满资源 (食券/勋章/友情999 + 经验 + 装备+99)", "全リソース・経験値・装備★最大", "Max Resources, EXP & Item Star"),
+            tr("一键满资源与经验装备", "全リソース・経験値・装備★最大", "Max Resources, EXP & Item Star"),
             tr("一键宝箱100%掉落", "宝箱100%ドロップ化", "100% Treasure Drop"),
             tr("一键部队满血与全属性+999%", "部隊HP99万＋全ステータス+999%", "Max Party HP & +999% Multipliers"),
             tr("一键全卡牌99叠卡 + 全角色5星", "全カード99枚＋全キャラ★5", "All Cards x99 & All Chars 5★"),
             tr("一键四国满兵力 + 人类零伤亡", "四国兵力最大＋人類被害ゼロ", "Max Armies & Zero Casualties"),
             tr("一键关闭主播模式", "配信者モード解除", "Disable Streamer Mode"),
-            tr("打开MOD内置作弊器 (按键0)", "MOD内蔵チートを開く (キー0)", "Open MOD Cheat Console (Key 0)")
+            tr("打开MOD内置作弊器", "MOD内蔵チートを開く", "Open MOD Cheat Console")
         )
         AlertDialog.Builder(activity)
             .setTitle(tr("一键全局强化", "一括強化プリセット", "One-Click Boosts"))
@@ -548,7 +548,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
     private fun showEditResourcesDialog(j: JSONObject) {
         val fields = listOf(
             Triple("turn", tr("当前回合", "現在ターン", "Turn"), j.optInt("turn", 1)),
-            Triple("difficulty", tr("难度 (0~10)", "難易度 (0~10)", "Difficulty"), j.optInt("difficulty", 1)),
+            Triple("difficulty", tr("难度 0~10", "難易度 0~10", "Difficulty 0~10"), j.optInt("difficulty", 1)),
             Triple("foodTicket", tr("食券数量", "食券", "Food Tickets"), j.optInt("foodTicket", 0)),
             Triple("honor", tr("勋章数量", "勲章", "Medals"), j.optInt("honor", 0)),
             Triple("friendPoint", tr("友情点数", "友好ポイント", "Friend Points"), j.optInt("friendPoint", 0)),
@@ -565,7 +565,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             Triple("partyHp", tr("部队当前生命", "現在HP", "Party HP"), j.optInt("partyHp", 1000)),
             Triple("partyMaxHp", tr("部队最大生命", "最大HP", "Party Max HP"), j.optInt("partyMaxHp", 1000)),
             Triple("partyAvailCount", tr("每回合出击人数", "出撃枠数", "Deploy Slots"), j.optInt("partyAvailCount", 4)),
-            Triple("partyIsFixStatus", tr("锁定属性不被重算(0/1)", "ステータス固定(0/1)", "Lock Stats (0/1)"), j.optInt("partyIsFixStatus", 0)),
+            Triple("partyIsFixStatus", tr("锁定属性不被重算 0/1", "ステータス固定 0/1", "Lock Stats 0/1"), j.optInt("partyIsFixStatus", 0)),
             Triple("partyAtk", tr("部队总攻击力", "総攻撃力", "Total ATK"), j.optInt("partyAtk", 500)),
             Triple("atkPerPhys", tr("物理攻击加成%", "物理攻撃%", "Phys ATK %"), j.optInt("atkPerPhys", 0)),
             Triple("atkPerMag", tr("魔法攻击加成%", "魔法攻撃%", "Mag ATK %"), j.optInt("atkPerMag", 0)),
@@ -601,7 +601,7 @@ class FloatingModifierOverlay(private val activity: Activity) {
             Triple("setCardCount", tr("全卡牌叠卡设为N张", "全カード枚数指定", "Set All Cards Count"), 99),
             Triple("cardAtkBonus", tr("全卡牌攻击加成", "全カード攻撃加算", "All Cards ATK Bonus"), 999),
             Triple("cardHpBonus", tr("全卡牌生命加成", "全カードHP加算", "All Cards HP Bonus"), 999),
-            Triple("setCharStar", tr("全角色星级 (1~5)", "全キャラ★ (1~5)", "All Chars Star (1~5)"), 5),
+            Triple("setCharStar", tr("全角色星级 1~5", "全キャラ★ 1~5", "All Chars Star 1~5"), 5),
             Triple("setCharExp", tr("全角色经验值", "全キャラ経験値", "All Chars EXP"), 999999)
         )
         showNumberInputDialog(tr("修改卡牌与角色", "カード・キャラ", "Edit Cards & Chars"), fields)

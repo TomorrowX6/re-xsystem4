@@ -235,7 +235,7 @@ class SaveManagerActivity : Activity() {
             val saveDir = item.savedir ?: File(savesRoot, dirName)
             saveDir.mkdirs()
             found[dirName] = SaveTarget(
-                displayName = "${item.name} ($dirName)",
+                displayName = if (item.name == dirName) item.name else "${item.name} · $dirName",
                 dirName = dirName,
                 saveDir = saveDir,
                 externalGameDir = item.path

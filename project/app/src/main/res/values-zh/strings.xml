@@ -123,6 +123,9 @@
     <string name="game_opt_dir">从文件夹安装</string>
     <string name="online_base_confirm_title">在线安装游戏本体</string>
     <string name="online_base_confirm_msg">即将从云端下载《兰斯10》中文游戏本体并自动完成安装，约需 4 GB 可用空间，支持断点续传。</string>
+    <string name="online_select_line_title">选择下载线路</string>
+    <string name="online_line_edgeone">EdgeOne 线路</string>
+    <string name="online_line_cloudflare">Cloudflare 线路</string>
     <string name="online_fetching_manifest">正在获取云端资源清单…</string>
     <string name="online_base_download_progress">正在下载本体 %1$d/%2$d · %3$d%% · %4$s\n%5$d / %6$d MB · %7$s</string>
     <string name="online_verifying_extracting">正在校验并解压 %1$s…</string>
