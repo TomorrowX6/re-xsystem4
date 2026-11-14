@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.StatFs
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -766,8 +767,6 @@ object OnlineInstaller {
             tempExtractDir.deleteRecursively()
         }
     }
-
-    private typealias CancellationException = kotlinx.coroutines.CancellationException
 
     private fun isManifestEntryDone(stagingDir: File, stagingPrefix: String, entry: ManifestEntry): Boolean {
         if (entry.extract) {
