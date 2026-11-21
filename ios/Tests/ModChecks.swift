@@ -19,7 +19,7 @@ struct ModChecks {
         func read(_ root: URL, _ name: String) throws -> String { try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8) }
         func snapshot(_ root: URL) throws -> [String: Data] {
             var result: [String: Data] = [:]
-            for file in try ModFiles.walk(root).filter(ModFiles.isFile) { result[ModFiles.relative(file, to: root)] = try Data(contentsOf: file) }
+            for file in try ModFiles.walk(root).filter(ModFiles.isFile) { result[try ModFiles.relative(file, to: root)] = try Data(contentsOf: file) }
             return result
         }
         let json = #"{"releases":[{"fileId":5,"version":"v2.0 修复补丁2","fileName":"p2.zip","key":"mods/中文 #2.zip","isPatch":true},{"fileId":4,"version":"v2.0 修复补丁1","fileName":"p1.zip","key":"mods/p1.zip","isPatch":true},{"fileId":3,"version":"v2.0正式版","fileName":"full.zip","key":"mods/full.zip","isPatch":false},{"fileId":1,"version":"v1.0正式版","fileName":"old.zip","key":"mods/old.zip","isPatch":false}]}"#
@@ -63,8 +63,45 @@ struct ModChecks {
         let privateRoot = try directory("private-path-game")
         let viaPrivate = URL(fileURLWithPath: privateRoot.canonicalFileURL.path.hasPrefix("/var/") || privateRoot.canonicalFileURL.path.hasPrefix("/tmp/") ? "/private" + privateRoot.canonicalFileURL.path : privateRoot.path)
         precondition(viaPrivate.appendingPathComponent("mai/sc/new.ain").canonicalFileURL.path == privateRoot.canonicalFileURL.path + "/mai/sc/new.ain")
-        precondition(try ModOverlay.resolveCaseInsensitiveDest(privateRoot, "mai/sc/new.ain").lastPathComponent == "new.ain")
-        precondition(ModFiles.relative(viaPrivate.appendingPathComponent("mai/new.ain"), to: privateRoot) == "mai/new.ain")
+        let privateDestination = try ModOverlay.resolveCaseInsensitiveDest(privateRoot, "mai/sc/new.ain")
+        precondition(privateDestination.lastPathComponent == "new.ain")
+        let privateRelative = try ModFiles.relative(viaPrivate.appendingPathComponent("mai/new.ain"), to: privateRoot)
+        precondition(privateRelative == "mai/new.ain")
+        let sandbox = try directory("sandbox")
+        let physicalGame = try directory("sandbox/var/mobile/Containers/Data/Application/UUID/Documents/Games/Evenicle2")
+        _ = try directory("sandbox/private")
+        try fm.createSymbolicLink(atPath: sandbox.appendingPathComponent("private/var").path, withDestinationPath: "../var")
+        let aliasedGame = sandbox.appendingPathComponent("private/var/mobile/Containers/Data/Application/UUID/Documents/Games/Evenicle2/")
+        let missing = aliasedGame.appendingPathComponent("mai/deep/new.ain")
+        precondition(missing.canonicalFileURL.path == physicalGame.canonicalFileURL.appendingPathComponent("mai/deep/new.ain").path)
+        let relativeMissing = try ModFiles.relative(missing, to: aliasedGame)
+        precondition(relativeMissing == "mai/deep/new.ain")
+        for outside in [aliasedGame, physicalGame.deletingLastPathComponent().appendingPathComponent("Evenicle2-other/mai")] {
+            do { _ = try ModFiles.relative(outside, to: aliasedGame); preconditionFailure("Accepted non-descendant") } catch {}
+        }
+        let iosRoot = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/UUID/Documents/Games/Evenicle2")
+        let privateIosRoot = URL(fileURLWithPath: "/private" + iosRoot.path)
+        precondition(iosRoot.canonicalFileURL.path == privateIosRoot.canonicalFileURL.path)
+        let iosRelative = try ModFiles.relative(privateIosRoot.appendingPathComponent("mai/word.mai"), to: iosRoot)
+        precondition(iosRelative == "mai/word.mai")
+        let aliasExtraction = aliasedGame.deletingLastPathComponent().appendingPathComponent("missing-stage/nested")
+        try ModArchiveExtractor.extract(file: root.appendingPathComponent("online.zip"), to: aliasExtraction)
+        precondition(ModFiles.isFile(aliasExtraction.appendingPathComponent("Rance10.ain")))
+        try write(physicalGame, "Evenicle2.ain", "original")
+        let aliasBefore = try snapshot(physicalGame)
+        let aliasStaging = try directory("alias-stage")
+        try write(aliasStaging, "mai/sc/Evenicle2.ain", "translated")
+        try write(aliasStaging, "mai/sc/Evenicle2EX.ex", "translated ex")
+        try write(aliasStaging, "mai/word.mai", "mapping")
+        _ = try ModOverlay.applyModStaging(aliasStaging, to: aliasedGame, isCnPatch: true)
+        let aliasJournal = try read(aliasedGame, ModOverlay.journalName)
+        precondition(aliasJournal.contains("mai/word.mai") && !aliasJournal.contains("enicle2/"))
+        let mapped = try read(physicalGame, "mai/word.mai")
+        precondition(mapped == "mapping")
+        try ModOverlay.restoreVanilla(aliasedGame)
+        let aliasAfter = try snapshot(physicalGame)
+        precondition(aliasAfter == aliasBefore && !ModFiles.exists(physicalGame.appendingPathComponent("mai")))
+        print("PASS: symlinked sandbox root, missing nested paths, /var vs /private/var, component containment, extraction, Evenicle2 normalization/apply/restore")
         print("PASS: catalog parsing, patch bases, URL encoding, update plans/selected steps, matching and version inference")
 
         func actions(_ index: Int, _ hasMod: Bool, _ info: InstalledModInfo?) -> [String] {

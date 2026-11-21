@@ -98,7 +98,7 @@ final class ModInstaller: ObservableObject {
                     var total: Int64 = 0
                     for file in try ModFiles.walk(readable) {
                         try self.checkCancelled()
-                        let relative = ModFiles.relative(file, to: readable)
+                        let relative = try ModFiles.relative(file, to: readable)
                         if NativeGameImport.skip(relative) { continue }
                         let destination = try ModFiles.checked(staging, relative)
                         if ModFiles.isDirectory(file) { try ModFiles.files.createDirectory(at: destination, withIntermediateDirectories: true) }

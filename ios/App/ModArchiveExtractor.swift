@@ -162,7 +162,7 @@ private final class ExtractionState {
             }
         }
         let output = root.appendingPathComponent(relative).canonicalFileURL
-        guard output.path.hasPrefix(root.path + "/") else { throw ArchiveExtractionError.unsafePath(decoded) }
+        guard output.relativeFilePath(to: root) != nil else { throw ArchiveExtractionError.unsafePath(decoded) }
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         if size > 0,
            let free = try FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize] as? NSNumber,
@@ -173,11 +173,24 @@ private final class ExtractionState {
 }
 
 extension URL {
-    /// Resolves symlinks, folding `/private/var` and `/private/tmp` back to `/var` and `/tmp` so existing
-    /// and not-yet-created paths canonicalize the same way (Foundation only strips `/private` for existing files).
+    /// Resolves the existing ancestor before appending missing components; Foundation does not resolve
+    /// ancestor symlinks consistently when the full path does not exist.
     var canonicalFileURL: URL {
-        let path = resolvingSymlinksInPath().standardizedFileURL.path
-        for prefix in ["/private/var/", "/private/tmp/"] where path.hasPrefix(prefix) { return URL(fileURLWithPath: String(path.dropFirst(8))) }
-        return URL(fileURLWithPath: path)
+        var ancestor = standardizedFileURL
+        var missing: [String] = []
+        while ancestor.path != "/" && !FileManager.default.fileExists(atPath: ancestor.path) {
+            missing.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+        var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
+        for component in missing.reversed() { resolved.appendPathComponent(component) }
+        return resolved
+    }
+
+    func relativeFilePath(to root: URL) -> String? {
+        let path = canonicalFileURL.pathComponents
+        let base = root.canonicalFileURL.pathComponents
+        guard path.count > base.count, path.starts(with: base) else { return nil }
+        return path.dropFirst(base.count).joined(separator: "/")
     }
 }

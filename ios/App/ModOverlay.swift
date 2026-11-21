@@ -23,8 +23,9 @@ enum ModFiles {
         }
         return result
     }
-    static func relative(_ url: URL, to root: URL) -> String {
-        String(url.canonicalFileURL.path.dropFirst(root.canonicalFileURL.path.count + 1))
+    static func relative(_ url: URL, to root: URL) throws -> String {
+        guard let relative = url.relativeFilePath(to: root) else { throw ModError.message("无效文件路径：" + url.path) }
+        return relative
     }
     static func ini(_ directory: URL) -> [String: String] {
         let children = children(directory)
@@ -50,8 +51,7 @@ enum ModFiles {
             current.appendPathComponent(String(part))
             if (try? files.destinationOfSymbolicLink(atPath: current.path)) != nil { throw ModError.message("不支持符号链接：" + relative) }
         }
-        let canonical = current.canonicalFileURL
-        guard canonical.path.hasPrefix(root.canonicalFileURL.path + "/") else { throw ModError.message("无效文件路径：" + relative) }
+        guard current.relativeFilePath(to: root) != nil else { throw ModError.message("无效文件路径：" + relative) }
         return current
     }
     static func replace(_ source: URL, _ destination: URL) throws {
@@ -182,7 +182,7 @@ enum ModOverlay {
         let directoryPaths = Set(directories.map(\.path))
         let originalFiles = Set(before.filter(ModFiles.isFile).map { $0.canonicalFileURL.path })
         for file in try ModFiles.walk(root) where ModFiles.isFile(file) {
-            let relative = ModFiles.relative(file, to: root)
+            let relative = try ModFiles.relative(file, to: root)
             if relative.hasPrefix(".") || NativeGameImport.skip(relative) { continue }
             let destination = try resolveCaseInsensitiveDest(target, relative)
             let artifacts = [destination.appendingPathExtension("vanilla.bak"), destination.appendingPathExtension("vanilla.bak.tmp"), destination.deletingLastPathComponent().appendingPathComponent(".mod_apply_" + destination.lastPathComponent + ".tmp")]
@@ -214,7 +214,7 @@ enum ModOverlay {
         defer { if !keepRollback { try? ModFiles.removeIfPresent(rollback) } }
         var saved: [URL: URL] = [:]
         for file in affected.sorted(by: { $0.path < $1.path }) where ModFiles.isFile(file) {
-            let copy = rollback.appendingPathComponent(ModFiles.relative(file, to: target))
+            let copy = rollback.appendingPathComponent(try ModFiles.relative(file, to: target))
             try ModFiles.files.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
             try ModFiles.files.copyItem(at: file, to: copy)
             saved[file] = copy
@@ -263,8 +263,8 @@ enum ModOverlay {
         func persist() throws {
             if persisted != added { try ModFiles.journal(added, to: journal); persisted = added }
         }
-        let accepted = files.compactMap { file -> (URL, String)? in
-            let relative = ModFiles.relative(file, to: root)
+        let accepted = try files.compactMap { file -> (URL, String)? in
+            let relative = try ModFiles.relative(file, to: root)
             if relative.isEmpty || relative.hasPrefix(".") || relative.contains("..") || relative.hasSuffix(".vanilla.bak") || relative.hasSuffix(".vanilla.bak.tmp") || NativeGameImport.skip(relative) || (evenicle2 && isEvenicle2CnPatchJunkRelPath(relative)) { return nil }
             return (file, relative)
         }
@@ -273,13 +273,14 @@ enum ModOverlay {
                 let destination = try resolveCaseInsensitiveDest(target, relative)
                 guard !ModFiles.isDirectory(destination) else { throw ModError.message("MOD 目标路径不是文件：" + relative) }
                 try ModFiles.files.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                let resolved = ModFiles.relative(destination, to: target)
+                let resolved = try ModFiles.relative(destination, to: target)
                 if !ModFiles.exists(destination) && addedNames.insert(resolved.lowercased()).inserted { added.append(resolved) }
             }
             if !added.isEmpty || ModFiles.exists(journal) { try persist() }
             for (source, relative) in accepted {
                 let destination = try resolveCaseInsensitiveDest(target, relative)
-                if ModFiles.exists(destination) && !addedNames.contains(ModFiles.relative(destination, to: target).lowercased()) {
+                let resolved = try ModFiles.relative(destination, to: target)
+                if ModFiles.exists(destination) && !addedNames.contains(resolved.lowercased()) {
                     let backup = destination.appendingPathExtension("vanilla.bak")
                     if !ModFiles.exists(backup) {
                         let temporary = destination.appendingPathExtension("vanilla.bak.tmp")
